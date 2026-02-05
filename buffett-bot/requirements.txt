@@ -2,6 +2,10 @@
 requests>=2.31.0
 httpx>=0.25.0
 
+# Financial Data (yfinance is free, no API key needed)
+yfinance>=0.2.36
+finnhub-python>=2.4.19
+
 # Anthropic Claude API
 anthropic>=0.39.0
 
