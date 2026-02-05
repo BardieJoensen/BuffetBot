@@ -20,6 +20,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Cache directory for stock list (reduces API calls)
+# Try /app/data/cache first, fall back to /tmp if permission denied
 CACHE_DIR = Path(__file__).parent.parent / "data" / "cache"
 
 
@@ -92,11 +93,20 @@ class StockScreener:
         self.api_key = api_key or os.getenv("FMP_API_KEY")
         if not self.api_key:
             raise ValueError("FMP_API_KEY not found in environment")
-        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+        # Set up cache directory with fallback for permission issues
+        self.cache_dir = CACHE_DIR
+        try:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+        except PermissionError:
+            # Fall back to temp directory if data/cache isn't writable
+            self.cache_dir = Path("/tmp/buffett-bot-cache")
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+            logger.warning(f"Using fallback cache dir: {self.cache_dir}")
 
     def _get_cached_stock_list(self) -> Optional[list[dict]]:
         """Load stock list from cache if fresh enough"""
-        cache_file = CACHE_DIR / "stock_list.json"
+        cache_file = self.cache_dir / "stock_list.json"
 
         if not cache_file.exists():
             return None
@@ -114,7 +124,7 @@ class StockScreener:
 
     def _save_stock_list_cache(self, stocks: list[dict]):
         """Save stock list to cache"""
-        cache_file = CACHE_DIR / "stock_list.json"
+        cache_file = self.cache_dir / "stock_list.json"
         with open(cache_file, "w") as f:
             json.dump(stocks, f)
         logger.info(f"Cached {len(stocks)} stocks")

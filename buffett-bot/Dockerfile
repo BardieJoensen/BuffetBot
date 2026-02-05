@@ -20,8 +20,8 @@ COPY src/ ./src/
 COPY scripts/ ./scripts/
 COPY config/ ./config/
 
-# Create data directory
-RUN mkdir -p /app/data/briefings /app/data/analyses
+# Create data directories (including cache for stock list)
+RUN mkdir -p /app/data/briefings /app/data/analyses /app/data/cache
 
 # Create non-root user
 RUN useradd -m -u 1000 botuser && \
