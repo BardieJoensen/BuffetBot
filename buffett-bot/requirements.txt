@@ -11,7 +11,7 @@ numpy>=1.24.0
 
 # Database / Storage
 sqlalchemy>=2.0.0
-sqlite3
+# sqlite3 is built-in to Python, no install needed
 
 # Configuration
 pyyaml>=6.0

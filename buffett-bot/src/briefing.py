@@ -327,7 +327,7 @@ class BriefingGenerator:
         lines.append("QUALITATIVE ASSESSMENT:")
         lines.append("┌" + "─" * 58 + "┐")
         lines.append(f"│ Moat:       {briefing.analysis.moat_rating.value.upper():12} │ Conviction: {briefing.analysis.conviction_level:10} │")
-        lines.append(f"│ Management: {briefing.analysis.management_rating.value.upper():12} │            {:10} │")
+        lines.append(f"│ Management: {briefing.analysis.management_rating.value.upper():12} │            {'':10} │")
         lines.append("└" + "─" * 58 + "┘")
         
         if briefing.analysis.moat_sources:

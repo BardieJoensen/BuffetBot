@@ -139,11 +139,20 @@ def run_monthly_briefing(
         symbols = [s["symbol"] for s in cached_stocks]
         logger.info(f"Using {len(symbols)} stocks from cache")
     else:
-        screener = StockScreener()
-        criteria = ScreeningCriteria()
-        
-        candidates = screener.screen(criteria)
-        logger.info(f"Initial screen: {len(candidates)} candidates")
+        try:
+            screener = StockScreener()
+            criteria = ScreeningCriteria()
+            
+            candidates = screener.screen(criteria)
+            logger.info(f"Initial screen: {len(candidates)} candidates")
+        except ValueError as e:
+            logger.error(f"\n❌ SCREENING FAILED: {e}\n")
+            logger.error("🔧 TROUBLESHOOTING:")
+            logger.error("  1. Verify FMP_API_KEY is set in .env file")
+            logger.error("  2. Check if your FMP plan supports stock screener (may need paid plan)")
+            logger.error("  3. Test API key directly: Visit https://financialmodelingprep.com/api/v3/stock-screener?apikey=YOUR_KEY&limit=10")
+            logger.error("  4. Verify account status: https://financialmodelingprep.com\n")
+            return
         
         if len(candidates) > 100:
             candidates = candidates[:100]
