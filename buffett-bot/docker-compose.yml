@@ -1,0 +1,84 @@
+version: '3.8'
+
+services:
+  buffett-bot:
+    build: .
+    container_name: buffett-bot
+    restart: unless-stopped
+    
+    environment:
+      - TZ=Europe/Copenhagen
+    
+    env_file:
+      - .env
+    
+    volumes:
+      # Persist data between restarts
+      - ./data:/app/data
+      
+      # Config files (can edit without rebuild)
+      - ./config:/app/config:ro
+    
+    # No ports needed - this is a batch job, not a server
+    # If you add Grafana dashboard later, expose port 3000
+    
+    # Resource limits (adjust based on your server)
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"  # Don't auto-update
+
+  # Optional: Scheduler for automated runs
+  scheduler:
+    build: .
+    container_name: buffett-bot-scheduler
+    restart: unless-stopped
+    
+    environment:
+      - TZ=Europe/Copenhagen
+    
+    env_file:
+      - .env
+    
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config:ro
+    
+    # Override command to run scheduler
+    command: python -m scripts.scheduler
+    
+    depends_on:
+      - buffett-bot
+    
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+# Optional: Add Grafana for dashboards
+#  grafana:
+#    image: grafana/grafana:latest
+#    container_name: buffett-bot-grafana
+#    restart: unless-stopped
+#    ports:
+#      - "3000:3000"
+#    volumes:
+#      - grafana-data:/var/lib/grafana
+#      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards
+#    environment:
+#      - GF_SECURITY_ADMIN_PASSWORD=admin
+
+volumes:
+  grafana-data:

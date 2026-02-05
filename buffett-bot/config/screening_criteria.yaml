@@ -1,0 +1,48 @@
+# Screening Criteria Configuration
+# Adjust these values based on market conditions and your risk tolerance
+
+screening:
+  # Market cap range (in USD)
+  min_market_cap: 300000000    # $300M - avoid micro-caps
+  max_market_cap: 10000000000  # $10B - focus on small/mid-caps
+  
+  # Valuation
+  max_pe_ratio: 20             # Avoid overpaying
+  
+  # Financial health
+  max_debt_equity: 0.5         # Conservative balance sheet
+  min_current_ratio: 1.5       # Can pay short-term debts
+  
+  # Profitability
+  min_roe: 0.12                # 12% return on equity
+  min_revenue_growth: 0.05     # 5% year-over-year growth
+  
+  # Geographic focus
+  country: "US"
+  exchanges: "NASDAQ,NYSE"
+
+valuation:
+  # Minimum margin of safety to flag as BUY
+  min_margin_of_safety: 0.20   # 20% below fair value
+  
+  # Sources to use (in order of preference)
+  sources:
+    - fmp_analyst_consensus
+    - fmp_dcf
+    - finnhub_price_target
+    - pe_multiple
+
+analysis:
+  # Max stocks to run deep LLM analysis on per month
+  max_deep_analyses: 10
+  
+  # Model to use for analysis
+  model: "claude-sonnet-4-20250514"
+
+monitoring:
+  # How often to check news for portfolio holdings
+  news_check_frequency: "daily"
+  
+  # Alert thresholds
+  price_drop_alert: 0.10       # Alert if down 10% from purchase
+  price_target_alert: 0.90     # Alert when within 10% of fair value
