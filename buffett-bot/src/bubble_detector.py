@@ -11,7 +11,7 @@ Signals:
 - Revenue decline + price increase
 - Excessive debt accumulation
 
-NOTE: Uses yfinance (free) and Finnhub (free tier) since FMP deprecated their API.
+NOTE: Uses yfinance (free) and Finnhub (free tier).
 """
 
 import os
@@ -84,8 +84,7 @@ class BubbleDetector:
     Uses yfinance (free) and Finnhub (free tier).
     """
 
-    def __init__(self, fmp_key: Optional[str] = None, finnhub_key: Optional[str] = None):
-        # fmp_key kept for compatibility but not used (deprecated)
+    def __init__(self, finnhub_key: Optional[str] = None):
         self.finnhub_key = finnhub_key or os.getenv("FINNHUB_API_KEY")
 
     def scan_for_bubbles(self, symbols: Optional[list[str]] = None) -> list[BubbleWarning]:
@@ -248,7 +247,7 @@ class BubbleDetector:
         return None
 
 
-def get_market_temperature(fmp_key: Optional[str] = None) -> dict:
+def get_market_temperature() -> dict:
     """
     Assess overall market valuation level using yfinance.
 

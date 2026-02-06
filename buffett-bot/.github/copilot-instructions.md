@@ -1,7 +1,7 @@
 # Buffett Bot - AI Copilot Instructions
 
 ## Project Overview
-Buffett Bot is a **Buffett-style value investing research assistant** that combines quantitative stock screening with LLM qualitative analysis. It generates monthly investment briefings by orchestrating multiple external APIs (FMP, SEC EDGAR, Finnhub) and using Claude for document analysis and thesis assessment.
+Buffett Bot is a **Buffett-style value investing research assistant** that combines quantitative stock screening with LLM qualitative analysis. It generates monthly investment briefings by orchestrating multiple external APIs (yfinance, SEC EDGAR, Finnhub) and using Claude for document analysis and thesis assessment.
 
 **Key Philosophy**: LLMs do narrative analysis (moat, management, risks); APIs do math (valuation, financials).
 
@@ -11,12 +11,12 @@ LLM Layer (Claude) → Data Services (APIs) → Output (Briefing/DB)
 ```
 
 ### 1. **Screening Layer** (`src/screener.py`)
-- Uses FMP API to filter stocks by value criteria (`ScreeningCriteria` dataclass)
+- Uses yfinance to filter stocks by value criteria (`ScreeningCriteria` dataclass)
 - Returns 30-50 candidates passing P/E, debt, ROE, growth thresholds
 - Criteria loaded from `config/screening_criteria.yaml`
 
 ### 2. **Valuation Layer** (`src/valuation.py`)
-- Aggregates fair value estimates from multiple sources (FMP, Finnhub)
+- Aggregates fair value estimates from multiple sources (yfinance, Finnhub)
 - **Does NOT calculate intrinsic value** - fetches external estimates only
 - Computes margin of safety: `(Fair Value - Price) / Fair Value`
 - Returns `AggregatedValuation` dataclass
@@ -67,15 +67,14 @@ Edit `config/screening_criteria.yaml` to tune:
 
 ### Environment
 Create `.env` with:
-- `FMP_API_KEY` (Financial Modeling Prep)
 - `ANTHROPIC_API_KEY` (Claude)
-- `FINNHUB_API_KEY` (backup data)
+- `FINNHUB_API_KEY` (backup data, optional)
 - SMTP/email/Telegram config (optional)
 
 ## Project-Specific Patterns & Conventions
 
 ### 1. **API Rate Limiting**
-- FMP: 250 calls/day (free tier) - cache watchlist results
+- yfinance: no hard limit but avoid excessive requests - cache watchlist results
 - Finnhub: 60 calls/minute - respect limits in loops
 - Use `ratelimit` decorator when fetching multiple stocks
 
@@ -115,7 +114,7 @@ See [src/portfolio.py](src/portfolio.py#L45) for pattern.
 - See [src/portfolio.py](src/portfolio.py#L20) for Position dataclass
 
 ## Integration Points & Dependencies
-- **FMP API**: Stock screening, fundamentals, ratios
+- **yfinance**: Stock screening, fundamentals, ratios, company profiles
 - **SEC EDGAR**: 10-K annual reports (parsed by `sec-edgar-downloader`)
 - **Finnhub**: News, backup financial data
 - **Anthropic Claude**: Qualitative analysis via API

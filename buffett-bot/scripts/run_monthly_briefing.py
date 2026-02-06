@@ -86,41 +86,43 @@ def save_watchlist(stocks: list, cache_path: Path):
 
 
 def fetch_company_summary(symbol: str) -> str:
-    """Fetch company description for LLM analysis"""
-    import requests
-    
-    api_key = os.getenv("FMP_API_KEY")
-    if not api_key:
-        return f"Company: {symbol}. Unable to fetch details."
-    
-    response = requests.get(
-        f"https://financialmodelingprep.com/api/v3/profile/{symbol}",
-        params={"apikey": api_key}
-    )
-    
-    if response.status_code == 200:
-        data = response.json()
-        if data:
-            company = data[0]
-            return f"""
-Company: {company.get('companyName', symbol)}
-Sector: {company.get('sector', 'Unknown')}
-Industry: {company.get('industry', 'Unknown')}
-CEO: {company.get('ceo', 'Unknown')}
-Employees: {company.get('fullTimeEmployees', 'Unknown')}
-Website: {company.get('website', 'Unknown')}
+    """Fetch company description for LLM analysis using yfinance"""
+    import yfinance as yf
+
+    try:
+        ticker = yf.Ticker(symbol)
+        info = ticker.info
+
+        name = info.get("longName") or info.get("shortName") or symbol
+        sector = info.get("sector", "Unknown")
+        industry = info.get("industry", "Unknown")
+        description = info.get("longBusinessSummary", "No description available.")
+        market_cap = info.get("marketCap", 0)
+        price = info.get("regularMarketPrice") or info.get("currentPrice") or 0
+        beta = info.get("beta", "N/A")
+        low_52 = info.get("fiftyTwoWeekLow")
+        high_52 = info.get("fiftyTwoWeekHigh")
+        range_52 = f"${low_52:.2f} - ${high_52:.2f}" if low_52 and high_52 else "N/A"
+        employees = info.get("fullTimeEmployees", "Unknown")
+
+        return f"""
+Company: {name}
+Sector: {sector}
+Industry: {industry}
+Employees: {employees}
 
 Description:
-{company.get('description', 'No description available.')}
+{description}
 
 Key Financials:
-- Market Cap: ${company.get('mktCap', 0):,.0f}
-- Price: ${company.get('price', 0):.2f}
-- Beta: {company.get('beta', 'N/A')}
-- 52-Week Range: ${company.get('range', 'N/A')}
+- Market Cap: ${market_cap:,.0f}
+- Price: ${price:.2f}
+- Beta: {beta}
+- 52-Week Range: {range_52}
 """
-    
-    return f"Company: {symbol}. Unable to fetch details."
+    except Exception as e:
+        logger.warning(f"Error fetching company summary for {symbol}: {e}")
+        return f"Company: {symbol}. Unable to fetch details."
 
 
 def run_monthly_briefing(
@@ -195,10 +197,9 @@ def run_monthly_briefing(
         except ValueError as e:
             logger.error(f"\n❌ SCREENING FAILED: {e}\n")
             logger.error("🔧 TROUBLESHOOTING:")
-            logger.error("  1. Verify FMP_API_KEY is set in .env file")
-            logger.error("  2. Check if your FMP plan supports stock screener (may need paid plan)")
-            logger.error("  3. Test API key directly: Visit https://financialmodelingprep.com/api/v3/stock-screener?apikey=YOUR_KEY&limit=10")
-            logger.error("  4. Verify account status: https://financialmodelingprep.com\n")
+            logger.error("  1. Check your internet connection")
+            logger.error("  2. yfinance may be temporarily unavailable - try again later")
+            logger.error("  3. Try relaxing screening criteria in config/screening_criteria.yaml\n")
             return
         
         if len(candidates) > 100:
@@ -339,7 +340,7 @@ def run_monthly_briefing(
         "win_rate": perf.get("win_rate", 0)
     }
     
-    generator = BriefingGenerator()
+    generator = BriefingGenerator(output_dir=str(data_dir / "briefings"))
     briefing_text = generator.generate_briefing(
         briefings=briefings,
         portfolio_summary=portfolio_summary,
@@ -388,7 +389,7 @@ if __name__ == "__main__":
     load_dotenv()
     
     # Check for required API keys
-    required_keys = ["FMP_API_KEY", "ANTHROPIC_API_KEY"]
+    required_keys = ["ANTHROPIC_API_KEY"]
     missing = [k for k in required_keys if not os.getenv(k)]
     
     if missing:

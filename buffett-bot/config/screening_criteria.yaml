@@ -27,10 +27,10 @@ valuation:
   
   # Sources to use (in order of preference)
   sources:
-    - fmp_analyst_consensus
-    - fmp_dcf
+    - yfinance_analyst_target
     - finnhub_price_target
     - pe_multiple
+    - graham_number
 
 analysis:
   # Max stocks to run deep LLM analysis on per month

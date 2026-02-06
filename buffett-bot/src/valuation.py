@@ -5,7 +5,7 @@ Aggregates fair value estimates from multiple external sources.
 Does NOT calculate intrinsic value (LLMs are bad at this).
 Instead, fetches estimates from services that specialize in valuation.
 
-NOTE: Uses yfinance (free) and Finnhub (free tier) since FMP deprecated their API.
+NOTE: Uses yfinance (free) and Finnhub (free tier).
 """
 
 import os
@@ -91,11 +91,7 @@ class ValuationAggregator:
     - Simple P/E multiples: Calculated from EPS × fair P/E
     """
 
-    def __init__(
-        self,
-        fmp_key: Optional[str] = None,  # Kept for compatibility, not used
-        finnhub_key: Optional[str] = None
-    ):
+    def __init__(self, finnhub_key: Optional[str] = None):
         self.finnhub_key = finnhub_key or os.getenv("FINNHUB_API_KEY")
 
     def get_valuation(self, symbol: str) -> AggregatedValuation:

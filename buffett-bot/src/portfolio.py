@@ -11,13 +11,12 @@ Features:
 """
 
 import json
-import os
 from dataclasses import dataclass, field
 from datetime import datetime, date
 from typing import Optional
 from pathlib import Path
 import logging
-import requests
+import yfinance as yf
 
 logger = logging.getLogger(__name__)
 
@@ -133,9 +132,7 @@ class PortfolioTracker:
         
         self.portfolio_file = self.data_dir / "portfolio.json"
         self.trades_file = self.data_dir / "trades.json"
-        
-        self.fmp_key = os.getenv("FMP_API_KEY")
-        
+
         self.positions: list[Position] = []
         self.trades: list[TradeRecord] = []
         self.cash: float = 0
@@ -237,34 +234,26 @@ class PortfolioTracker:
         logger.info(f"Closed position: {symbol} at ${price}")
     
     def update_prices(self):
-        """Fetch current prices for all positions"""
-        if not self.fmp_key or not self.positions:
+        """Fetch current prices for all positions using yfinance"""
+        if not self.positions:
             return
-        
-        symbols = [p.symbol for p in self.positions]
-        
-        for symbol in symbols:
+
+        for position in self.positions:
             try:
-                response = requests.get(
-                    f"https://financialmodelingprep.com/api/v3/quote/{symbol}",
-                    params={"apikey": self.fmp_key}
-                )
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    if data:
-                        quote = data[0]
-                        
-                        position = next(p for p in self.positions if p.symbol == symbol)
-                        position.current_price = quote.get("price", 0)
-                        position.current_value = position.current_price * position.shares
-                        position.gain_loss = position.current_value - (position.cost_basis * position.shares)
-                        position.gain_loss_pct = (position.current_price - position.cost_basis) / position.cost_basis
-                        position.sector = quote.get("sector", "Unknown")
-                        
+                ticker = yf.Ticker(position.symbol)
+                info = ticker.info
+
+                price = info.get("regularMarketPrice") or info.get("currentPrice")
+                if price:
+                    position.current_price = price
+                    position.current_value = price * position.shares
+                    position.gain_loss = position.current_value - (position.cost_basis * position.shares)
+                    position.gain_loss_pct = (price - position.cost_basis) / position.cost_basis
+                    position.sector = info.get("sector", "Unknown")
+
             except Exception as e:
-                logger.error(f"Error fetching price for {symbol}: {e}")
-        
+                logger.error(f"Error fetching price for {position.symbol}: {e}")
+
         self._save()
     
     def get_sector_exposure(self) -> dict[str, float]:

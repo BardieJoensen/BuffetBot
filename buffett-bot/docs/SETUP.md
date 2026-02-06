@@ -8,7 +8,6 @@ You need accounts (free tier is fine) from:
 
 | Service | Sign Up | What You Get |
 |---------|---------|--------------|
-| Financial Modeling Prep | [financialmodelingprep.com](https://financialmodelingprep.com/developer) | 250 API calls/day |
 | Anthropic Claude | [console.anthropic.com](https://console.anthropic.com/) | Pay per use (~$10-15/mo) |
 | Finnhub | [finnhub.io](https://finnhub.io/) | 60 calls/min |
 | Alpaca (optional) | [alpaca.markets](https://alpaca.markets/) | Paper trading |
@@ -28,7 +27,6 @@ nano .env
 
 Fill in your keys:
 ```
-FMP_API_KEY=your_key_here
 ANTHROPIC_API_KEY=your_key_here
 FINNHUB_API_KEY=your_key_here
 ```
@@ -99,8 +97,8 @@ QUALITATIVE ASSESSMENT:
 
 VALUATION ESTIMATES:
 ┌──────────────────────────────────────────────────────────────┐
-│ FMP Analyst Consensus         $58.00              │
-│ FMP DCF Model                 $62.00              │
+│ Yahoo Finance Analyst Target   $58.00              │
+│ Graham Number                  $62.00              │
 │ P/E Multiple (Conservative)   $55.00              │
 ├──────────────────────────────────────────────────────────────┤
 │ AVERAGE FAIR VALUE:           $58.33              │
@@ -196,8 +194,8 @@ The bot will monitor news and alert you to potential thesis-breaking events.
 ## Troubleshooting
 
 ### "API rate limit exceeded"
-- FMP free tier: 250 calls/day
-- Solution: Reduce `max_analyses` in `.env` or wait until tomorrow
+- yfinance may throttle requests if too many are made quickly
+- Solution: Reduce `max_analyses` in `.env` or wait and try again
 
 ### "No stocks passed screening"
 - Your criteria might be too strict
@@ -224,7 +222,7 @@ docker-compose up -d
 
 | Component | Monthly Cost |
 |-----------|--------------|
-| FMP API | $0 (free tier) |
+| yfinance | $0 (free, no key) |
 | Finnhub API | $0 (free tier) |
 | Claude API | $5-15 (depends on analyses) |
 | Alpaca | $0 (paper trading) |

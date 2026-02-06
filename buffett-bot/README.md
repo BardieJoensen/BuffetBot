@@ -17,7 +17,7 @@ A value investing research assistant that combines LLM qualitative analysis with
 ┌──────────────────────────▼──────────────────────────────────────┐
 │                   LAYER 2: Data Services                        │
 │               (APIs + External Tools - Quantitative)            │
-│  • FMP API: Screening, fundamentals, ratios                     │
+│  • yfinance: Screening, fundamentals, ratios                    │
 │  • SEC EDGAR: 10-K filings (primary source)                     │
 │  • Seeking Alpha: Earnings transcripts (scraped/free)           │
 │  • GuruFocus/SimplyWallSt: Fair value estimates                 │
@@ -76,7 +76,7 @@ buffett-bot/
 ## Data Flow
 
 ### Weekly Screen (automated)
-1. `screener.py` calls FMP API with value criteria
+1. `screener.py` uses yfinance with value criteria
 2. Returns ~30-50 candidates passing quantitative filters
 3. Stores in `watchlist.json` with timestamp
 
@@ -107,7 +107,7 @@ buffett-bot/
 
 | Service | Purpose | Cost | Sign Up |
 |---------|---------|------|---------|
-| FMP | Screening + fundamentals | Free (250/day) | financialmodelingprep.com |
+| yfinance | Screening + fundamentals | Free (no key) | pypi.org/project/yfinance |
 | Claude API | Qualitative analysis | ~$10-15/mo | console.anthropic.com |
 | Finnhub | News + backup data | Free (60/min) | finnhub.io |
 | SEC EDGAR | 10-K filings | Free | No signup needed |

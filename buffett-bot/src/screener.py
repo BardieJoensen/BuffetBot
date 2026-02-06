@@ -5,7 +5,6 @@ Filters stocks based on Buffett-style value criteria.
 Returns candidates that pass quantitative filters for further analysis.
 
 NOTE: Uses yfinance (completely free, no API key) for all stock data.
-FMP's free tier no longer provides the needed endpoints.
 """
 
 import os
