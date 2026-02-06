@@ -137,6 +137,7 @@ class StockScreener:
             data = {
                 "symbol": symbol,
                 "name": info.get("longName") or info.get("shortName") or symbol,
+                "quote_type": info.get("quoteType", "EQUITY"),
                 "price": info.get("regularMarketPrice") or info.get("currentPrice"),
                 "market_cap": info.get("marketCap", 0),
                 "pe_ratio": info.get("trailingPE") or info.get("forwardPE"),
@@ -193,6 +194,19 @@ class StockScreener:
 
             if data is None:
                 errors += 1
+                continue
+
+            # Skip non-equity securities (closed-end funds, ETFs, etc.)
+            quote_type = data.get("quote_type", "EQUITY")
+            if quote_type != "EQUITY":
+                continue
+
+            # Skip closed-end funds and asset management vehicles
+            industry = (data.get("industry") or "").lower()
+            if any(term in industry for term in [
+                "closed-end fund", "asset management", "shell companies",
+                "exchange traded fund",
+            ]):
                 continue
 
             # Apply filters
