@@ -1,0 +1,127 @@
+{
+  "generated_at": "2026-02-06T09:33:50.952907",
+  "market_temperature": {
+    "temperature": "HOT",
+    "market_pe": 27.469559,
+    "interpretation": "Market P/E of 27.5 is elevated. Few bargains, consider holding cash.",
+    "checked_at": "2026-02-06T09:32:57.065834"
+  },
+  "summary": {
+    "total_analyzed": 3,
+    "buy_candidates": 0,
+    "watchlist": 0,
+    "bubble_warnings": 4,
+    "radar": 10
+  },
+  "portfolio": {
+    "positions": [],
+    "position_count": 0,
+    "total_invested": 0,
+    "current_value": 0,
+    "total_gain_loss": 0,
+    "total_gain_loss_pct": 0,
+    "sector_exposure": {},
+    "sector_warnings": [],
+    "performance": {
+      "total_trades": 0,
+      "winning_trades": 0,
+      "losing_trades": 0,
+      "win_rate": 0
+    }
+  },
+  "performance": {
+    "total_trades": 0,
+    "winning_trades": 0,
+    "losing_trades": 0,
+    "win_rate": 0
+  },
+  "top_picks": [],
+  "watchlist": [],
+  "radar": [
+    "CRUS",
+    "PLAB",
+    "ACLS",
+    "ACAD",
+    "ALKS",
+    "DIN",
+    "FIZZ",
+    "AX",
+    "SFBS",
+    "RRC"
+  ],
+  "bubble_watch": [
+    {
+      "symbol": "NET",
+      "company_name": "Cloudflare, Inc.",
+      "current_price": 163.05,
+      "signals": [
+        "Extreme P/E of 138 - priced for perfection",
+        "High debt/equity of 2.6",
+        "Price/Sales of 28 - extremely speculative"
+      ],
+      "signal_count": 3,
+      "risk_level": "HIGH",
+      "metrics": {
+        "pe_ratio": 137.964,
+        "revenue_growth": 0.307,
+        "insider_selling": "0 sells, 0 buys recently",
+        "debt_change": 2.59964
+      },
+      "summary": "\u26a0\ufe0f 3 warning signals detected. Valuation appears disconnected from fundamentals. Insiders are selling. "
+    },
+    {
+      "symbol": "TSLA",
+      "company_name": "Tesla, Inc.",
+      "current_price": 397.21,
+      "signals": [
+        "P/E of 371 with only -3% revenue growth",
+        "Extreme P/E of 371 - priced for perfection"
+      ],
+      "signal_count": 2,
+      "risk_level": "MEDIUM",
+      "metrics": {
+        "pe_ratio": 371.22427,
+        "revenue_growth": -0.031,
+        "insider_selling": "0 sells, 0 buys recently",
+        "debt_change": null
+      },
+      "summary": "\u26a0\ufe0f 2 warning signals detected. Valuation appears disconnected from fundamentals. Insiders are selling. "
+    },
+    {
+      "symbol": "PLTR",
+      "company_name": "Palantir Technologies Inc.",
+      "current_price": 130.01,
+      "signals": [
+        "Extreme P/E of 210 - priced for perfection",
+        "Price/Sales of 69 - extremely speculative"
+      ],
+      "signal_count": 2,
+      "risk_level": "MEDIUM",
+      "metrics": {
+        "pe_ratio": 209.69354,
+        "revenue_growth": 0.7,
+        "insider_selling": "0 sells, 0 buys recently",
+        "debt_change": null
+      },
+      "summary": "\u26a0\ufe0f 2 warning signals detected. Valuation appears disconnected from fundamentals. Insiders are selling. "
+    },
+    {
+      "symbol": "RBLX",
+      "company_name": "Roblox Corporation",
+      "current_price": 60.57,
+      "signals": [
+        "No earnings (negative P/E) with $43B market cap",
+        "High debt/equity of 4.5"
+      ],
+      "signal_count": 2,
+      "risk_level": "MEDIUM",
+      "metrics": {
+        "pe_ratio": -55.854744,
+        "revenue_growth": 0.48,
+        "insider_selling": "0 sells, 0 buys recently",
+        "debt_change": 4.52128
+      },
+      "summary": "\u26a0\ufe0f 2 warning signals detected. Insiders are selling. "
+    }
+  ]
+}
