@@ -7,7 +7,6 @@ Returns candidates that pass quantitative filters for further analysis.
 NOTE: Uses yfinance (completely free, no API key) for all stock data.
 """
 
-import os
 import json
 import time
 from dataclasses import dataclass
@@ -17,50 +16,12 @@ from pathlib import Path
 import logging
 import yfinance as yf
 
+from src.universe import get_stock_universe, set_cache_dir as set_universe_cache_dir
+
 logger = logging.getLogger(__name__)
 
 # Cache directory for stock data
 CACHE_DIR = Path(__file__).parent.parent / "data" / "cache"
-
-# Curated small/mid-cap stock universe
-# These are well-known small and mid-cap stocks across various sectors
-CURATED_UNIVERSE = [
-    # Technology - Semiconductors
-    "LSCC", "DIOD", "SLAB", "POWI", "AOSL", "AMBA", "SITM", "CRUS", "FORM", "MTSI",
-    "SMCI", "CRDO", "AEHR", "RMBS", "HIMX", "PLAB", "ICHR", "ACLS", "COHU", "KLIC",
-
-    # Technology - Software
-    "ALRM", "APPF", "BAND", "BRZE", "DOCN", "ESTC", "FSLY", "GTLB", "JAMF", "QLYS",
-    "SMAR", "TENB", "NCNO", "EVBG",
-
-    # Healthcare - Biotech/Medical Devices
-    "ABCL", "ACAD", "ALKS", "ARVN", "AXSM", "BCRX", "BMRN", "EXAS", "GMED", "HOLX",
-    "INCY", "INSM", "IONS", "JAZZ", "LGND", "MASI", "NVCR", "RARE", "SRPT", "UTHR",
-    "VCYT", "XENE", "MEDP", "ITCI", "CORT", "HALO", "RVMD", "NBIX",
-
-    # Industrials
-    "AEIS", "AGCO", "ALG", "ASTE", "BWXT", "CMC", "ENS", "GGG", "GVA", "HUBB",
-    "KBR", "LDOS", "MLI", "NVT", "PRIM", "RBC", "TRN", "VMI", "WCC", "WSC",
-    "POWL", "ROAD", "STRL", "DY", "MTZ", "BLDR", "UFPI", "TREX", "ATKR", "GNRC",
-    "AAON", "LECO", "MIDD",
-
-    # Consumer - Retail/Restaurants
-    "BJRI", "BOOT", "CAKE", "DIN", "EAT", "FIZZ", "HIBB", "PLAY", "PLNT", "SHAK",
-    "TXRH", "WING", "LULU", "DECK", "CROX", "SKX", "DKS",
-
-    # Financials
-    "ALLY", "AX", "CADE", "EWBC", "FHN", "GBCI", "HBAN", "IBOC", "NWBI", "ONB",
-    "PNFP", "SBCF", "SFBS", "SNV", "TFIN", "UBSI", "VLY", "WAL", "LPLA", "PIPR",
-    "IBKR", "MKTX", "VIRT", "CACC", "SLM", "ENVA", "OMF", "LC", "UPST", "SOFI",
-
-    # Energy & Materials
-    "AROC", "BCPC", "CEIX", "CNX", "CTRA", "FANG", "HLX", "HP", "KOS", "MTDR",
-    "OVV", "PARR", "RRC", "SM", "SWN", "CLF", "STLD", "NUE", "RS", "ATI", "AA",
-
-    # REITs
-    "AIRC", "BRX", "COLD", "CPT", "CUZ", "DEI", "EGP", "FR", "GTY", "HIW",
-    "IIPR", "KRC", "LSI", "NNN", "OHI", "ROIC", "STAG", "SBRA", "VTR", "LTC",
-]
 
 
 @dataclass
@@ -111,16 +72,15 @@ class StockScreener:
     Screens stocks using yfinance (completely free, no API key).
 
     Strategy:
-    1. Use curated universe of small/mid-cap stocks
-    2. Fetch data via yfinance (no rate limits, just don't abuse)
+    1. Get dynamic universe from Finviz/Wikipedia/fallback (see universe.py)
+    2. Fetch detailed data via yfinance
     3. Filter locally by market cap, P/E, fundamentals
     """
 
     BATCH_SIZE = 20  # Process in smaller batches for reliability
     CACHE_HOURS = 24  # Cache stock data for 24 hours
 
-    def __init__(self, api_key: Optional[str] = None):
-        # api_key not needed for yfinance, kept for compatibility
+    def __init__(self):
         self.cache_dir = CACHE_DIR
         try:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -128,6 +88,8 @@ class StockScreener:
             self.cache_dir = Path("/tmp/buffett-bot-cache")
             self.cache_dir.mkdir(parents=True, exist_ok=True)
             logger.warning(f"Using fallback cache dir: {self.cache_dir}")
+        # Share the resolved cache dir with the universe module
+        set_universe_cache_dir(self.cache_dir)
 
     def _get_cached_data(self, symbol: str) -> Optional[dict]:
         """Load cached stock data if fresh"""
@@ -208,19 +170,21 @@ class StockScreener:
         """
         criteria = criteria or ScreeningCriteria()
 
+        universe = get_stock_universe()
+
         logger.info(f"Running screen with criteria: market_cap={criteria.min_market_cap:,.0f}-{criteria.max_market_cap:,.0f}")
-        logger.info(f"Stock universe: {len(CURATED_UNIVERSE)} stocks")
+        logger.info(f"Stock universe: {len(universe)} stocks")
         logger.info("Fetching data from yfinance (free, no API key)...")
 
         candidates = []
         processed = 0
         errors = 0
 
-        for symbol in CURATED_UNIVERSE:
+        for symbol in universe:
             processed += 1
 
             if processed % 20 == 0:
-                logger.info(f"Progress: {processed}/{len(CURATED_UNIVERSE)} stocks processed...")
+                logger.info(f"Progress: {processed}/{len(universe)} stocks processed...")
 
             data = self._fetch_stock_data(symbol)
 
