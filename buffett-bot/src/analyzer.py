@@ -30,8 +30,18 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Cache directory for analysis results
-ANALYSIS_CACHE_DIR = Path("data/analyses")
+# Default cache directory for analysis results
+DEFAULT_CACHE_DIR = Path("data/analyses")
+
+# Runtime cache dir (can be overridden via set_cache_dir)
+_cache_dir = DEFAULT_CACHE_DIR
+
+
+def set_cache_dir(path: Path):
+    """Override the analysis cache directory (e.g. for permission fallback)"""
+    global _cache_dir
+    _cache_dir = path
+    logger.info(f"Analysis cache dir set to: {_cache_dir}")
 
 
 class MoatRating(Enum):
@@ -101,7 +111,7 @@ class QualitativeAnalysis:
 
 def get_cached_analysis(symbol: str, max_age_days: int = 30) -> Optional[dict]:
     """Return cached analysis if recent enough"""
-    cache_file = ANALYSIS_CACHE_DIR / f"{symbol}.json"
+    cache_file = _cache_dir / f"{symbol}.json"
     if cache_file.exists():
         try:
             data = json.loads(cache_file.read_text())
@@ -117,9 +127,9 @@ def get_cached_analysis(symbol: str, max_age_days: int = 30) -> Optional[dict]:
 def save_analysis_to_cache(symbol: str, analysis: dict):
     """Cache analysis result"""
     try:
-        ANALYSIS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        _cache_dir.mkdir(parents=True, exist_ok=True)
         analysis['analyzed_at'] = datetime.now().isoformat()
-        (ANALYSIS_CACHE_DIR / f"{symbol}.json").write_text(json.dumps(analysis, indent=2))
+        (_cache_dir / f"{symbol}.json").write_text(json.dumps(analysis, indent=2))
         logger.info(f"Cached analysis for {symbol}")
     except Exception as e:
         logger.warning(f"Failed to cache analysis for {symbol}: {e}")

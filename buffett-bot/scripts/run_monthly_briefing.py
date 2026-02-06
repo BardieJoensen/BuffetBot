@@ -35,7 +35,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.screener import StockScreener, ScreeningCriteria
 from src.valuation import ValuationAggregator, screen_for_undervalued
-from src.analyzer import CompanyAnalyzer
+from src.analyzer import CompanyAnalyzer, set_cache_dir
 from src.briefing import BriefingGenerator, StockBriefing, determine_recommendation
 from src.portfolio import PortfolioTracker, calculate_position_size
 from src.bubble_detector import BubbleDetector, get_market_temperature
@@ -167,6 +167,7 @@ def run_monthly_briefing(
         data_dir.mkdir(exist_ok=True)
         logger.warning(f"Using fallback data dir: {data_dir}")
 
+    set_cache_dir(data_dir / "analyses")
     watchlist_cache = data_dir / "watchlist_cache.json"
     
     # ─────────────────────────────────────────────────────────────
@@ -380,7 +381,7 @@ def run_monthly_briefing(
     logger.info(f"Watchlist:          {watch_count}")
     logger.info(f"Bubble Warnings:    {len(bubble_warnings)}")
     logger.info(f"Radar:              {len(radar_stocks)}")
-    logger.info(f"\nBriefing saved to: ./data/briefings/")
+    logger.info(f"\nBriefing saved to: {data_dir / 'briefings'}")
     
     return briefings
 

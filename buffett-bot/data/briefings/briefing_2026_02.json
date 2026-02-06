@@ -1,15 +1,15 @@
 {
-  "generated_at": "2026-02-06T09:33:50.952907",
+  "generated_at": "2026-02-06T11:00:33.855054",
   "market_temperature": {
     "temperature": "HOT",
     "market_pe": 27.469559,
     "interpretation": "Market P/E of 27.5 is elevated. Few bargains, consider holding cash.",
-    "checked_at": "2026-02-06T09:32:57.065834"
+    "checked_at": "2026-02-06T10:59:58.745306"
   },
   "summary": {
     "total_analyzed": 3,
     "buy_candidates": 0,
-    "watchlist": 0,
+    "watchlist": 1,
     "bubble_warnings": 4,
     "radar": 10
   },
@@ -36,7 +36,78 @@
     "win_rate": 0
   },
   "top_picks": [],
-  "watchlist": [],
+  "watchlist": [
+    {
+      "symbol": "BCRX",
+      "company_name": "BCRX",
+      "recommendation": "WATCHLIST",
+      "quantitative": {
+        "current_price": 6.24,
+        "market_cap": 0,
+        "pe_ratio": null,
+        "debt_equity": null,
+        "roe": null,
+        "revenue_growth": null
+      },
+      "valuation": {
+        "symbol": "BCRX",
+        "current_price": 6.24,
+        "average_fair_value": 21.66667,
+        "margin_of_safety": 0.7120000443076855,
+        "upside_potential": 2.472222756410256,
+        "estimates": [
+          {
+            "source": "Yahoo Finance Analyst Target",
+            "fair_value": 21.66667,
+            "methodology": "Analyst Price Targets"
+          }
+        ]
+      },
+      "qualitative": {
+        "symbol": "BCRX",
+        "company_name": "BCRX",
+        "moat": {
+          "rating": "narrow",
+          "sources": [
+            "Regulatory barriers (FDA approvals)",
+            "Patent protection on approved drugs",
+            "Specialized R&D capabilities in rare diseases"
+          ],
+          "explanation": "Pharmaceutical companies can develop narrow moats through patent-protected drugs and regulatory exclusivity, but these advantages are typically time-limited and require constant innovation to maintain."
+        },
+        "management": {
+          "rating": "poor",
+          "notes": "Rating: UNABLE TO ASSESS\nNotes: Without access to recent filings, I cannot evaluate management's capital allocation decisions, communication with shareholders, or track record of execution.\nInsider Ownership: Unknown",
+          "insider_ownership": null
+        },
+        "business_summary": "BioCryst Pharmaceuticals is a biotechnology company focused on developing treatments for rare diseases, particularly hereditary angioedema and other complement-mediated diseases. The company generates revenue primarily through drug sales and licensing agreements.",
+        "competitive_position": "Operating in the rare disease pharmaceutical space, BCRX faces competition from larger pharmaceutical companies with greater resources. The rare disease market offers opportunities for premium pricing but requires significant R&D investment and regulatory expertise.",
+        "risks": {
+          "key_risks": [
+            "Drug development failure risk - clinical trials may not succeed",
+            "Regulatory risk - FDA approval uncertainty",
+            "Patent cliff risk - loss of exclusivity on key products"
+          ],
+          "thesis_risks": [
+            "Major clinical trial failure for lead drug candidates",
+            "Generic competition significantly earlier than expected due to patent challenges",
+            "Severe adverse events leading to FDA warnings or drug withdrawals"
+          ]
+        },
+        "investment_thesis": "Without current financial data, I cannot formulate a proper investment thesis. Any biotech investment requires thorough analysis of pipeline assets, cash runway, and competitive positioning.",
+        "conviction_level": "LOW"
+      },
+      "position_size": {
+        "conviction": "LOW",
+        "recommended_pct": 0.06,
+        "recommended_amount": 3000.0,
+        "max_pct": 0.15,
+        "max_amount": 7500.0,
+        "reasoning": "LOW conviction = 6% allocation ($3,000)"
+      },
+      "generated_at": "2026-02-06T11:00:32.944232"
+    }
+  ],
   "radar": [
     "CRUS",
     "PLAB",
