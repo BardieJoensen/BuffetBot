@@ -10,16 +10,28 @@ Responsibilities:
 - Evaluate management from earnings calls
 - Identify risks and red flags
 - Monitor news for thesis-breaking events
+
+COST OPTIMIZATION:
+- Sonnet for deep analysis (~$0.05 per stock)
+- Haiku for news monitoring (~$0.002 per check) - 20x cheaper
+- Analysis caching to avoid re-analyzing same stocks
+- Reduced input truncation limits
 """
 
 import os
+import json
 from anthropic import Anthropic
 from dataclasses import dataclass
 from typing import Optional
 from enum import Enum
+from datetime import datetime
+from pathlib import Path
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Cache directory for analysis results
+ANALYSIS_CACHE_DIR = Path("data/analyses")
 
 
 class MoatRating(Enum):
@@ -87,61 +99,137 @@ class QualitativeAnalysis:
         }
 
 
+def get_cached_analysis(symbol: str, max_age_days: int = 30) -> Optional[dict]:
+    """Return cached analysis if recent enough"""
+    cache_file = ANALYSIS_CACHE_DIR / f"{symbol}.json"
+    if cache_file.exists():
+        try:
+            data = json.loads(cache_file.read_text())
+            analyzed_date = datetime.fromisoformat(data.get('analyzed_at', '2000-01-01'))
+            if (datetime.now() - analyzed_date).days < max_age_days:
+                logger.info(f"Using cached analysis for {symbol} ({(datetime.now() - analyzed_date).days} days old)")
+                return data
+        except Exception as e:
+            logger.warning(f"Error reading cache for {symbol}: {e}")
+    return None
+
+
+def save_analysis_to_cache(symbol: str, analysis: dict):
+    """Cache analysis result"""
+    try:
+        ANALYSIS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        analysis['analyzed_at'] = datetime.now().isoformat()
+        (ANALYSIS_CACHE_DIR / f"{symbol}.json").write_text(json.dumps(analysis, indent=2))
+        logger.info(f"Cached analysis for {symbol}")
+    except Exception as e:
+        logger.warning(f"Failed to cache analysis for {symbol}: {e}")
+
+
 class CompanyAnalyzer:
     """
     Uses Claude to perform qualitative company analysis.
-    
+
     Key principle: LLM does reading and reasoning, NOT calculations.
+
+    Cost optimization:
+    - model_deep (Sonnet): For 10-K analysis, ~$0.05/stock
+    - model_light (Haiku): For news monitoring, ~$0.002/check (20x cheaper)
     """
-    
+
+    # Input truncation limits (reduced from original to save costs)
+    # 15k chars ≈ 4k tokens, 8k chars ≈ 2k tokens, 5k chars ≈ 1.2k tokens
+    MAX_FILING_CHARS = 15000
+    MAX_TRANSCRIPT_CHARS = 8000
+    MAX_NEWS_CHARS = 5000
+
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
         if not self.api_key:
             raise ValueError("ANTHROPIC_API_KEY not found")
-        
+
         self.client = Anthropic(api_key=self.api_key)
-        self.model = "claude-sonnet-4-20250514"  # Good balance of cost/quality
+
+        # Two models: expensive for deep analysis, cheap for simple tasks
+        self.model_deep = "claude-sonnet-4-20250514"    # For 10-K analysis
+        self.model_light = "claude-haiku-4-5-20251001"  # For news monitoring (20x cheaper)
     
     def analyze_company(
-        self, 
+        self,
         symbol: str,
         company_name: str,
         filing_text: str,           # 10-K summary or full text
         earnings_transcript: Optional[str] = None,
-        recent_news: Optional[str] = None
+        recent_news: Optional[str] = None,
+        use_cache: bool = True,
+        cache_max_age_days: int = 30
     ) -> QualitativeAnalysis:
         """
         Perform deep qualitative analysis of a company.
-        
+
         Args:
             symbol: Stock ticker
             company_name: Full company name
             filing_text: 10-K annual report text (or summary)
             earnings_transcript: Recent earnings call transcript
             recent_news: Recent news articles about the company
-        
+            use_cache: If True, return cached analysis if available
+            cache_max_age_days: Max age of cached analysis to use
+
         Returns:
             QualitativeAnalysis with LLM assessments
         """
-        
+        # Check cache first to avoid expensive API calls
+        if use_cache:
+            cached = get_cached_analysis(symbol, cache_max_age_days)
+            if cached:
+                return self._dict_to_analysis(cached)
+
         prompt = self._build_analysis_prompt(
             symbol, company_name, filing_text, earnings_transcript, recent_news
         )
-        
-        logger.info(f"Analyzing {symbol} with Claude...")
-        
+
+        logger.info(f"Analyzing {symbol} with Claude (Sonnet)...")
+
         response = self.client.messages.create(
-            model=self.model,
+            model=self.model_deep,  # Use Sonnet for deep analysis
             max_tokens=4096,
             messages=[
                 {"role": "user", "content": prompt}
             ]
         )
-        
+
         # Parse the response
         analysis_text = response.content[0].text
-        
-        return self._parse_analysis(symbol, company_name, analysis_text)
+
+        analysis = self._parse_analysis(symbol, company_name, analysis_text)
+
+        # Cache the result
+        save_analysis_to_cache(symbol, analysis.to_dict())
+
+        return analysis
+
+    def _dict_to_analysis(self, data: dict) -> QualitativeAnalysis:
+        """Convert cached dict back to QualitativeAnalysis"""
+        moat_data = data.get("moat", {})
+        mgmt_data = data.get("management", {})
+        risks_data = data.get("risks", {})
+
+        return QualitativeAnalysis(
+            symbol=data.get("symbol", ""),
+            company_name=data.get("company_name", ""),
+            moat_rating=MoatRating(moat_data.get("rating", "none")),
+            moat_sources=moat_data.get("sources", []),
+            moat_explanation=moat_data.get("explanation", ""),
+            management_rating=ManagementRating(mgmt_data.get("rating", "poor")),
+            management_notes=mgmt_data.get("notes", ""),
+            insider_ownership=mgmt_data.get("insider_ownership"),
+            business_summary=data.get("business_summary", ""),
+            competitive_position=data.get("competitive_position", ""),
+            key_risks=risks_data.get("key_risks", []),
+            thesis_risks=risks_data.get("thesis_risks", []),
+            investment_thesis=data.get("investment_thesis", ""),
+            conviction_level=data.get("conviction_level", "LOW")
+        )
     
     def _build_analysis_prompt(
         self,
@@ -152,28 +240,28 @@ class CompanyAnalyzer:
         recent_news: Optional[str]
     ) -> str:
         """Build the analysis prompt for Claude"""
-        
-        prompt = f"""You are a value investing analyst in the style of Warren Buffett. 
+
+        prompt = f"""You are a value investing analyst in the style of Warren Buffett.
 Analyze the following company for potential long-term investment.
 
 COMPANY: {company_name} ({symbol})
 
 === ANNUAL REPORT (10-K) ===
-{filing_text[:50000]}  # Truncate if too long
+{filing_text[:self.MAX_FILING_CHARS]}
 
 """
-        
+
         if earnings_transcript:
             prompt += f"""
 === RECENT EARNINGS CALL ===
-{earnings_transcript[:20000]}
+{earnings_transcript[:self.MAX_TRANSCRIPT_CHARS]}
 
 """
-        
+
         if recent_news:
             prompt += f"""
 === RECENT NEWS ===
-{recent_news[:10000]}
+{recent_news[:self.MAX_NEWS_CHARS]}
 
 """
         
@@ -332,7 +420,7 @@ THESIS-BREAKING RISKS (events that would signal sell):
 {chr(10).join(f"- {risk}" for risk in thesis_risks)}
 
 RECENT NEWS:
-{recent_news}
+{recent_news[:self.MAX_NEWS_CHARS]}
 
 Analyze the news and determine:
 1. Are there any events that match the thesis-breaking risks?
@@ -347,9 +435,10 @@ CONCERNING ITEMS:
 RECOMMENDATION: [HOLD / REVIEW / SELL]
 EXPLANATION: [1-2 sentences]
 """
-        
+
+        # Use Haiku for news monitoring - 20x cheaper than Sonnet
         response = self.client.messages.create(
-            model=self.model,
+            model=self.model_light,
             max_tokens=1024,
             messages=[{"role": "user", "content": prompt}]
         )

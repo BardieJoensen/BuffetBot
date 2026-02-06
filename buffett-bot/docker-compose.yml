@@ -1,69 +1,72 @@
 services:
+  # =============================================================
+  # MANUAL BRIEFING RUNNER - COSTS MONEY (Claude API)
+  # =============================================================
+  # Run manually when you want a full analysis:
+  #   docker compose run --rm buffett-bot
+  #
+  # This calls Claude API which costs ~$0.50 per run (10 analyses)
+  # Do NOT auto-start this service!
+  # =============================================================
   buffett-bot:
     build: .
     container_name: buffett-bot
-    restart: unless-stopped
-    
+    restart: "no"  # NEVER auto-restart
+    profiles:
+      - manual  # Only starts when explicitly requested
+
     environment:
       - TZ=Europe/Copenhagen
-    
+
     env_file:
       - .env
-    
+
     volumes:
-      # Persist data between restarts
       - ./data:/app/data
-      
-      # Config files (can edit without rebuild)
       - ./config:/app/config:ro
-    
-    # No ports needed - this is a batch job, not a server
-    # If you add Grafana dashboard later, expose port 3000
-    
-    # Resource limits (adjust based on your server)
+
     deploy:
       resources:
         limits:
           memory: 512M
         reservations:
           memory: 256M
-    
-    # Health check
-    healthcheck:
-      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    
-    labels:
-      - "com.centurylinklabs.watchtower.enable=false"  # Don't auto-update
 
-  # Optional: Scheduler for automated runs
+  # =============================================================
+  # BACKGROUND SCHEDULER - FREE (no Claude API calls)
+  # =============================================================
+  # Start with: docker compose up -d scheduler
+  #
+  # This runs 24/7 but only does FREE operations:
+  # - Weekly stock screening (yfinance - free)
+  # - Daily watchlist price checks (yfinance - free)
+  #
+  # It will NOT run expensive Claude analyses automatically.
+  # =============================================================
   scheduler:
     build: .
     container_name: buffett-bot-scheduler
     restart: unless-stopped
-    
+
     environment:
       - TZ=Europe/Copenhagen
-    
+
     env_file:
       - .env
-    
+
     volumes:
       - ./data:/app/data
       - ./config:/app/config:ro
-    
-    # Override command to run scheduler
+
     command: python -m scripts.scheduler
-    
-    depends_on:
-      - buffett-bot
-    
+
     deploy:
       resources:
         limits:
           memory: 256M
+
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
 
 # Optional: Add Grafana for dashboards
 #  grafana:

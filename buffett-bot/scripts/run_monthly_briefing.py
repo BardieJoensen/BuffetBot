@@ -6,13 +6,20 @@ Orchestrates the full pipeline:
 1. Check market temperature
 2. Screen stocks with value criteria
 3. Detect bubble stocks to avoid
-4. Fetch valuations for candidates  
+4. Fetch valuations for candidates
 5. Run LLM analysis on top picks
 6. Calculate position sizing
 7. Generate comprehensive briefing
 8. Send notifications
 
-Run manually or via cron monthly.
+COST WARNING:
+This script calls the Claude API which costs money!
+- Each deep analysis costs ~$0.03-0.05 (Sonnet)
+- 10 analyses = ~$0.30-0.50 per run
+- Analyses are cached for 30 days to avoid re-running
+
+Run manually: docker compose run --rm buffett-bot
+DO NOT run this automatically via scheduler.
 """
 
 import os
@@ -44,13 +51,20 @@ logger = logging.getLogger(__name__)
 
 def load_cached_watchlist(cache_path: Path) -> list[dict]:
     """Load watchlist from cache if recent enough"""
-    if cache_path.exists():
-        data = json.loads(cache_path.read_text())
-        cached_date = datetime.fromisoformat(data.get("generated_at", "2000-01-01"))
-        age_days = (datetime.now() - cached_date).days
-        if age_days < 7:
-            logger.info(f"Using cached watchlist ({age_days} days old)")
-            return data.get("stocks", [])
+    # Check both primary and fallback locations
+    paths_to_check = [cache_path, Path("/tmp/buffett-bot-watchlist.json")]
+
+    for path in paths_to_check:
+        if path.exists():
+            try:
+                data = json.loads(path.read_text())
+                cached_date = datetime.fromisoformat(data.get("generated_at", "2000-01-01"))
+                age_days = (datetime.now() - cached_date).days
+                if age_days < 7:
+                    logger.info(f"Using cached watchlist from {path} ({age_days} days old)")
+                    return data.get("stocks", [])
+            except Exception as e:
+                logger.warning(f"Error reading cache from {path}: {e}")
     return []
 
 
@@ -60,8 +74,15 @@ def save_watchlist(stocks: list, cache_path: Path):
         "generated_at": datetime.now().isoformat(),
         "stocks": [s.to_dict() if hasattr(s, 'to_dict') else s for s in stocks]
     }
-    cache_path.write_text(json.dumps(data, indent=2))
-    logger.info(f"Saved {len(stocks)} stocks to watchlist cache")
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(json.dumps(data, indent=2))
+        logger.info(f"Saved {len(stocks)} stocks to watchlist cache")
+    except PermissionError:
+        # Fall back to /tmp if data directory isn't writable
+        fallback_path = Path("/tmp/buffett-bot-watchlist.json")
+        fallback_path.write_text(json.dumps(data, indent=2))
+        logger.warning(f"Permission denied for {cache_path}, saved to {fallback_path}")
 
 
 def fetch_company_summary(symbol: str) -> str:
@@ -110,14 +131,40 @@ def run_monthly_briefing(
 ):
     """
     Run the full monthly briefing pipeline.
+
+    Args:
+        max_analyses: Maximum number of stocks to analyze with Claude (costs ~$0.05 each)
+        min_margin_of_safety: Minimum margin of safety to consider (0.20 = 20%)
+        use_cache: Use cached analyses to avoid re-running (recommended)
+        send_notifications: Send results via configured notification channels
     """
-    
+
+    # Hard limit on analyses to prevent runaway costs
+    max_analyses = min(max_analyses, 15)
+
     logger.info("═" * 60)
     logger.info("STARTING MONTHLY BRIEFING GENERATION")
     logger.info("═" * 60)
-    
+    logger.info("")
+    logger.info("💰 COST ESTIMATE:")
+    logger.info(f"   Max analyses: {max_analyses} stocks")
+    logger.info(f"   Est. cost: ~${max_analyses * 0.05:.2f} (Sonnet)")
+    logger.info(f"   Cache enabled: {use_cache} (reuses analyses < 30 days old)")
+    logger.info("")
+
+    # Set up data directory with fallback for permission issues
     data_dir = Path("./data")
-    data_dir.mkdir(exist_ok=True)
+    try:
+        data_dir.mkdir(exist_ok=True)
+        # Test write permission
+        test_file = data_dir / ".write_test"
+        test_file.write_text("test")
+        test_file.unlink()
+    except PermissionError:
+        data_dir = Path("/tmp/buffett-bot-data")
+        data_dir.mkdir(exist_ok=True)
+        logger.warning(f"Using fallback data dir: {data_dir}")
+
     watchlist_cache = data_dir / "watchlist_cache.json"
     
     # ─────────────────────────────────────────────────────────────
@@ -209,24 +256,34 @@ def run_monthly_briefing(
     logger.info(f"Portfolio: {current_positions} positions, ${portfolio_summary.get('current_value', 0):,.0f} value")
     
     # ─────────────────────────────────────────────────────────────
-    # Step 6: LLM Analysis
+    # Step 6: LLM Analysis (COSTS MONEY - uses Claude API)
     # ─────────────────────────────────────────────────────────────
-    logger.info(f"\n[6/8] RUNNING LLM ANALYSIS ON TOP {min(max_analyses, len(valuations))} CANDIDATES...")
-    
+    num_to_analyze = min(max_analyses, len(valuations))
+    logger.info(f"\n[6/8] RUNNING LLM ANALYSIS ON TOP {num_to_analyze} CANDIDATES...")
+    logger.info("   💡 Cached analyses (<30 days old) will be reused to save costs")
+
+    # Check how many are already cached
+    from src.analyzer import get_cached_analysis
+    pre_cached = sum(1 for v in valuations[:max_analyses] if get_cached_analysis(v.symbol, 30))
+    if pre_cached > 0:
+        logger.info(f"   ✓ Found {pre_cached} cached analyses (will save ~${pre_cached * 0.05:.2f})")
+
     analyzer = CompanyAnalyzer()
     briefings = []
     analyzed_symbols = []
-    
+
     for val in valuations[:max_analyses]:
         try:
             logger.info(f"Analyzing {val.symbol}...")
-            
+
             filing_text = fetch_company_summary(val.symbol)
-            
+
+            # analyze_company will use cache if available (default)
             analysis = analyzer.analyze_company(
                 symbol=val.symbol,
                 company_name=val.symbol,
-                filing_text=filing_text
+                filing_text=filing_text,
+                use_cache=use_cache  # Pass through cache setting
             )
             
             # Determine recommendation
@@ -262,7 +319,9 @@ def run_monthly_briefing(
         except Exception as e:
             logger.error(f"Error analyzing {val.symbol}: {e}")
             continue
-    
+
+    logger.info(f"   ✓ Completed {len(briefings)} analyses")
+
     # ─────────────────────────────────────────────────────────────
     # Step 7: Generate Briefing
     # ─────────────────────────────────────────────────────────────
