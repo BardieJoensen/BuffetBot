@@ -5,6 +5,7 @@ Delivers briefings and alerts via:
 - Email (SMTP)
 - Telegram Bot
 - Ntfy.sh (simple push notifications)
+- Discord Webhook
 
 Configure your preferred method in .env
 """
@@ -338,6 +339,122 @@ class NtfyNotifier:
             return False
 
 
+class DiscordNotifier:
+    """
+    Send briefings via Discord webhook.
+
+    Setup:
+    1. In Discord: Server Settings → Integrations → Webhooks
+    2. Create webhook, copy URL
+    3. Add to .env: DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
+    """
+
+    def __init__(self, webhook_url: Optional[str] = None):
+        self.webhook_url = webhook_url or os.getenv("DISCORD_WEBHOOK_URL")
+        self.configured = bool(self.webhook_url)
+
+    def send_briefing(self, briefing_text: str) -> bool:
+        """Send monthly briefing via Discord"""
+
+        if not self.configured:
+            logger.warning("Discord not configured. Skipping.")
+            return False
+
+        # Discord has 2000 char limit per message
+        # Split into chunks and send as code blocks for formatting
+        chunks = self._split_message(briefing_text, 1900)
+
+        success = True
+        for i, chunk in enumerate(chunks):
+            embed = {
+                "title": "📊 Investment Briefing" if i == 0 else f"(continued {i+1}/{len(chunks)})",
+                "description": f"```\n{chunk}\n```",
+                "color": 3066993  # Green
+            }
+
+            if not self._send(embed=embed):
+                success = False
+
+        return success
+
+    def send_alert(self, symbol: str, message: str) -> bool:
+        """Send urgent alert"""
+
+        if not self.configured:
+            return False
+
+        embed = {
+            "title": f"⚠️ ALERT: {symbol}",
+            "description": message,
+            "color": 15158332  # Red
+        }
+
+        return self._send(embed=embed)
+
+    def send_buy_signal(self, symbol: str, margin_of_safety: float, thesis: str = "") -> bool:
+        """Notify of a new buy candidate"""
+
+        if not self.configured:
+            return False
+
+        embed = {
+            "title": f"🟢 Buy Signal: {symbol}",
+            "fields": [
+                {"name": "Margin of Safety", "value": f"{margin_of_safety:.1%}", "inline": True},
+            ],
+            "color": 3066993  # Green
+        }
+
+        if thesis:
+            embed["fields"].append({"name": "Thesis", "value": thesis[:1000], "inline": False})
+
+        return self._send(embed=embed)
+
+    def _send(self, content: str = None, embed: dict = None) -> bool:
+        """Send message to Discord webhook"""
+
+        try:
+            payload = {}
+            if content:
+                payload["content"] = content
+            if embed:
+                payload["embeds"] = [embed]
+
+            response = requests.post(self.webhook_url, json=payload)
+
+            if response.status_code in [200, 204]:
+                return True
+            else:
+                logger.error(f"Discord error: {response.status_code} - {response.text}")
+                return False
+
+        except Exception as e:
+            logger.error(f"Failed to send Discord message: {e}")
+            return False
+
+    def _split_message(self, text: str, max_length: int) -> list[str]:
+        """Split long message into chunks"""
+
+        if len(text) <= max_length:
+            return [text]
+
+        chunks = []
+        lines = text.split("\n")
+        current_chunk = ""
+
+        for line in lines:
+            if len(current_chunk) + len(line) + 1 > max_length:
+                chunks.append(current_chunk)
+                current_chunk = line
+            else:
+                current_chunk += "\n" + line if current_chunk else line
+
+        if current_chunk:
+            chunks.append(current_chunk)
+
+        return chunks
+
+
 class NotificationManager:
     """
     Unified notification manager.
@@ -349,7 +466,8 @@ class NotificationManager:
         self.email = EmailNotifier()
         self.telegram = TelegramNotifier()
         self.ntfy = NtfyNotifier()
-        
+        self.discord = DiscordNotifier()
+
         configured = []
         if self.email.configured:
             configured.append("Email")
@@ -357,7 +475,9 @@ class NotificationManager:
             configured.append("Telegram")
         if self.ntfy.configured:
             configured.append("Ntfy")
-        
+        if self.discord.configured:
+            configured.append("Discord")
+
         if configured:
             logger.info(f"Notifications configured: {', '.join(configured)}")
         else:
@@ -365,34 +485,40 @@ class NotificationManager:
     
     def send_briefing(self, briefing_text: str) -> dict:
         """Send briefing via all channels"""
-        
+
         results = {}
-        
+
         if self.email.configured:
             results["email"] = self.email.send_briefing(briefing_text)
-        
+
         if self.telegram.configured:
             results["telegram"] = self.telegram.send_briefing(briefing_text)
-        
+
         if self.ntfy.configured:
             results["ntfy"] = self.ntfy.send_briefing_ready()
-        
+
+        if self.discord.configured:
+            results["discord"] = self.discord.send_briefing(briefing_text)
+
         return results
     
     def send_alert(self, symbol: str, message: str) -> dict:
         """Send alert via all channels"""
-        
+
         results = {}
-        
+
         if self.email.configured:
             results["email"] = self.email.send_alert(symbol, message)
-        
+
         if self.telegram.configured:
             results["telegram"] = self.telegram.send_alert(symbol, message)
-        
+
         if self.ntfy.configured:
             results["ntfy"] = self.ntfy.send_alert(symbol, message)
-        
+
+        if self.discord.configured:
+            results["discord"] = self.discord.send_alert(symbol, message)
+
         return results
 
 
