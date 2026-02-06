@@ -42,6 +42,7 @@ A value investing research assistant that combines LLM qualitative analysis with
 buffett-bot/
 ├── src/
 │   ├── __init__.py
+│   ├── universe.py          # Dynamic stock universe (Finviz/Wikipedia/fallback)
 │   ├── screener.py          # Stock screening logic
 │   ├── fundamentals.py      # Fetch financial data
 │   ├── valuation.py         # Aggregate fair value estimates
@@ -75,23 +76,16 @@ buffett-bot/
 
 ## Data Flow
 
-### Weekly Screen (automated)
-1. `screener.py` uses yfinance with value criteria
-2. Returns ~30-50 candidates passing quantitative filters
-3. Stores in `watchlist.json` with timestamp
+### Weekly Screen (automated, free)
+1. `universe.py` fetches ~800 stocks dynamically from Finviz (fallback: Wikipedia S&P 600, then curated list)
+2. `screener.py` filters with yfinance data by market cap, P/E, debt, ROE
+3. Returns ~20-50 candidates, stored in watchlist cache
 
-### Weekly Valuation Check (automated)
-1. For each watchlist company:
-   - `fundamentals.py` fetches current ratios
-   - `valuation.py` fetches fair value from external sources
-   - Calculates margin of safety
-2. Updates watchlist with current valuations
-
-### Monthly Deep Dive (automated)
+### Monthly Deep Dive (manual, costs ~$0.50)
 1. Top candidates by margin of safety go to `analyzer.py`
-2. LLM reads 10-K summary, earnings transcript
-3. Generates qualitative assessment (moat, management, risks)
-4. `briefing.py` combines quant + qual into report
+2. Claude reads company summary and provides qualitative assessment (moat, management, risks)
+3. `briefing.py` combines quant + qual into report
+4. Notifications sent via email/Discord/Telegram
 
 ### Continuous Monitoring (automated)
 1. `monitor.py` checks news daily for portfolio holdings
@@ -122,10 +116,28 @@ buffett-bot/
 
 ## Quick Start
 
-1. Copy `.env.example` to `.env` and add your API keys
-2. Run `docker-compose up -d`
-3. Execute first screen: `docker exec buffett-bot python scripts/run_weekly_screen.py`
-4. Check results in `data/watchlist.json`
+```bash
+# 1. Copy example env and add your Anthropic API key
+cp .env.example .env
+nano .env
+
+# 2. Pull the latest image
+docker compose pull
+
+# 3. Start the scheduler (runs free weekly screens automatically)
+docker compose up -d scheduler
+
+# 4. Run a full briefing manually (costs ~$0.50 in Claude API)
+docker compose run --rm buffett-bot
+```
+
+After updating code, pull the new image and restart:
+```bash
+docker compose pull
+docker compose up -d scheduler
+```
+
+Results are saved to `./data/briefings/` and sent via your configured notifications (email, Discord, etc).
 
 ## Screening Criteria (Default)
 
