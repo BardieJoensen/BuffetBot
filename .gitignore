@@ -2,3 +2,7 @@
 __pycache__/
 *.pyc
 .claude/
+
+# Runtime data (generated each run)
+buffett-bot/data/analyses/
+buffett-bot/data/briefings/
