@@ -4,10 +4,6 @@ on:
   push:
     branches: [main]
 
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository_owner }}/buffett-bot
-
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
@@ -22,13 +18,9 @@ jobs:
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Lowercase image name
-        id: lower
-        run: echo "image=${IMAGE_NAME,,}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push
         uses: docker/build-push-action@v6
@@ -36,5 +28,5 @@ jobs:
           context: .
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ steps.lower.outputs.image }}:latest
-            ${{ env.REGISTRY }}/${{ steps.lower.outputs.image }}:${{ github.sha }}
+            ghcr.io/bardiejoensen/buffett-bot:latest
+            ghcr.io/bardiejoensen/buffett-bot:${{ github.sha }}
