@@ -395,7 +395,13 @@ def run_monthly_briefing(
         radar_stocks=radar_stocks,
         performance_metrics=performance_metrics
     )
-    
+
+    # Read the generated HTML for email delivery
+    html_content = None
+    if hasattr(generator, 'html_path') and generator.html_path.exists():
+        html_content = generator.html_path.read_text()
+        logger.info(f"HTML briefing: {generator.html_path}")
+
     # ─────────────────────────────────────────────────────────────
     # Step 8: Send Notifications
     # ─────────────────────────────────────────────────────────────
@@ -403,7 +409,7 @@ def run_monthly_briefing(
         logger.info("\n[8/9] SENDING NOTIFICATIONS...")
 
         notifier = NotificationManager()
-        results = notifier.send_briefing(briefing_text)
+        results = notifier.send_briefing(briefing_text, html_content=html_content)
 
         for channel, success in results.items():
             status = "✓" if success else "✗"
@@ -427,6 +433,8 @@ def run_monthly_briefing(
     logger.info(f"Bubble Warnings:    {len(bubble_warnings)}")
     logger.info(f"Radar:              {len(radar_stocks)}")
     logger.info(f"\nBriefing saved to: {data_dir / 'briefings'}")
+    if html_content:
+        logger.info(f"HTML report:        {generator.html_path}")
     
     return briefings
 

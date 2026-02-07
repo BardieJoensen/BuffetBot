@@ -55,42 +55,55 @@ class EmailNotifier:
             self.email_to
         ])
     
-    def send_briefing(self, briefing_text: str, subject: Optional[str] = None) -> bool:
-        """Send monthly briefing via email"""
-        
+    def send_briefing(
+        self,
+        briefing_text: str,
+        subject: Optional[str] = None,
+        html_content: Optional[str] = None
+    ) -> bool:
+        """Send monthly briefing via email.
+
+        Args:
+            briefing_text: Plain-text briefing (used as fallback).
+            subject: Email subject line.
+            html_content: Full HTML briefing. When provided, sent as the
+                HTML part instead of wrapping plain text in <pre> tags.
+        """
+
         if not self.configured:
             logger.warning("Email not configured. Skipping.")
             return False
-        
+
         subject = subject or f"Investment Briefing - {datetime.now().strftime('%B %Y')}"
-        
+
         try:
-            msg = MIMEMultipart()
+            msg = MIMEMultipart("alternative")
             msg["From"] = self.smtp_user
             msg["To"] = self.email_to
             msg["Subject"] = subject
-            
-            # Use monospace font for formatting
-            html_body = f"""
-            <html>
-            <body>
-            <pre style="font-family: 'Courier New', monospace; font-size: 12px;">
-{briefing_text}
-            </pre>
-            </body>
-            </html>
-            """
-            
-            msg.attach(MIMEText(html_body, "html"))
-            
+
+            # Always attach plain text as fallback
+            msg.attach(MIMEText(briefing_text, "plain"))
+
+            if html_content:
+                msg.attach(MIMEText(html_content, "html"))
+            else:
+                # Wrap plain text in monospace for basic formatting
+                html_body = (
+                    '<html><body>'
+                    '<pre style="font-family:\'Courier New\',monospace;font-size:12px;">'
+                    f'{briefing_text}</pre></body></html>'
+                )
+                msg.attach(MIMEText(html_body, "html"))
+
             with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
                 server.starttls()
                 server.login(self.smtp_user, self.smtp_password)
                 server.send_message(msg)
-            
+
             logger.info(f"Briefing sent to {self.email_to}")
             return True
-            
+
         except Exception as e:
             logger.error(f"Failed to send email: {e}")
             return False
@@ -483,13 +496,18 @@ class NotificationManager:
         else:
             logger.warning("No notification channels configured")
     
-    def send_briefing(self, briefing_text: str) -> dict:
-        """Send briefing via all channels"""
+    def send_briefing(self, briefing_text: str, html_content: Optional[str] = None) -> dict:
+        """Send briefing via all channels.
+
+        Args:
+            briefing_text: Plain-text briefing.
+            html_content: Optional HTML briefing for email delivery.
+        """
 
         results = {}
 
         if self.email.configured:
-            results["email"] = self.email.send_briefing(briefing_text)
+            results["email"] = self.email.send_briefing(briefing_text, html_content=html_content)
 
         if self.telegram.configured:
             results["telegram"] = self.telegram.send_briefing(briefing_text)
