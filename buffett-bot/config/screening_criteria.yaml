@@ -5,26 +5,55 @@ screening:
   # Market cap range (in USD)
   min_market_cap: 300000000    # $300M - avoid micro-caps
   max_market_cap: 10000000000  # $10B - focus on small/mid-caps
-  
+
   # Valuation
   max_pe_ratio: 20             # Avoid overpaying
-  
+
   # Financial health
   max_debt_equity: 0.5         # Conservative balance sheet
   min_current_ratio: 1.5       # Can pay short-term debts
-  
+
   # Profitability
   min_roe: 0.12                # 12% return on equity
   min_revenue_growth: 0.05     # 5% year-over-year growth
-  
+
+  # Hard filters (must pass)
+  min_price: 5.0
+
   # Geographic focus
   country: "US"
   exchanges: "NASDAQ,NYSE"
 
+  # Scored criteria (higher = better, weighted)
+  scoring:
+    pe_ratio:
+      ideal: 12        # Best score at this value
+      max: 30           # Zero score above this
+      weight: 2.0
+    debt_equity:
+      ideal: 0.0
+      max: 1.0
+      weight: 1.5
+    roe:
+      ideal: 0.20
+      min: 0.05         # Zero score below this
+      weight: 2.0
+    revenue_growth:
+      ideal: 0.15
+      min: 0.0
+      weight: 1.0
+    current_ratio:
+      ideal: 2.0
+      min: 1.0
+      weight: 1.0
+
+  # How many top-scoring stocks to keep
+  top_n: 100
+
 valuation:
   # Minimum margin of safety to flag as BUY
   min_margin_of_safety: 0.20   # 20% below fair value
-  
+
   # Sources to use (in order of preference)
   sources:
     - yfinance_analyst_target
@@ -35,14 +64,14 @@ valuation:
 analysis:
   # Max stocks to run deep LLM analysis on per month
   max_deep_analyses: 10
-  
+
   # Model to use for analysis
   model: "claude-sonnet-4-20250514"
 
 monitoring:
   # How often to check news for portfolio holdings
   news_check_frequency: "daily"
-  
+
   # Alert thresholds
   price_drop_alert: 0.10       # Alert if down 10% from purchase
   price_target_alert: 0.90     # Alert when within 10% of fair value

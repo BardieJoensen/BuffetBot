@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
 """
-Scheduler Module - SAFE MODE
+Scheduler Module
 
-This scheduler ONLY runs lightweight, free operations automatically.
-Expensive Claude API operations require MANUAL triggering.
+Runs automated jobs on a schedule:
 
-AUTOMATIC (free/cheap):
-- Weekly stock screening using yfinance (no API cost)
-- Daily news fetching using Finnhub (free tier)
+AUTOMATIC (free):
+- Weekly screen:    Every Friday at 17:00 (yfinance, free)
+- Daily check:      Every day at 08:00 (yfinance, free)
 
-MANUAL ONLY (costs money):
-- Full monthly briefing with Claude analysis
-- Use: docker compose run --rm buffett-bot
+AUTOMATIC (cheap, needs API keys):
+- Weekly auto-trade: Every Friday at 18:00 (Haiku ~$0.10-0.20/week)
+- Monthly briefing:  1st of month at 09:00 (Sonnet ~$0.30-0.50/run)
 
-This prevents accidental API costs from scheduler bugs.
+Kill switch: set AUTO_TRADE_ENABLED=false in .env to disable
+auto-trading without removing Alpaca keys.
+
+Set MONTHLY_BRIEFING_ENABLED=false to disable auto-briefing
+(you can still run manually: docker compose run --rm buffett-bot).
 """
 
 import os
@@ -46,12 +49,13 @@ def weekly_screen():
     logger.info("=" * 50)
 
     try:
-        from src.screener import StockScreener, ScreeningCriteria
+        from src.screener import StockScreener, load_criteria_from_yaml
         from src.valuation import screen_for_undervalued
         import json
 
         screener = StockScreener()
-        candidates = screener.screen(ScreeningCriteria())
+        criteria = load_criteria_from_yaml()
+        candidates = screener.screen(criteria)
 
         logger.info(f"Screened {len(candidates)} candidates")
 
@@ -147,30 +151,208 @@ def daily_watchlist_check():
         logger.error(f"Daily check failed: {e}")
 
 
+def weekly_auto_trade():
+    """
+    Weekly auto-trade job using Haiku pre-screening.
+
+    Runs Friday at 18:00 (after market close at 16:00 ET).
+    Orders placed now will queue for Monday open via Alpaca.
+    Cost: ~$0.10-0.20/week (Haiku only, no Sonnet).
+
+    - Loads watchlist from weekly_screen
+    - Runs Haiku quick-screen on top candidates
+    - Fetches valuations, determines recommendations
+    - Executes paper buys for BUY signals
+    - Checks existing positions: sells if stock has risen to near fair value
+      (margin of safety < 5% = take-profit, the stock is no longer undervalued)
+    """
+    logger.info("=" * 50)
+    logger.info("WEEKLY AUTO-TRADE (Haiku + Alpaca paper)")
+    logger.info("=" * 50)
+
+    try:
+        from src.paper_trader import PaperTrader
+
+        # Check kill switch
+        if not PaperTrader.auto_trade_enabled():
+            logger.info("AUTO_TRADE_ENABLED=false — skipping auto-trade")
+            return
+
+        trader = PaperTrader()
+        if not trader.is_enabled():
+            logger.info("Alpaca not configured — skipping auto-trade")
+            return
+
+        import json
+        from src.valuation import screen_for_undervalued, ValuationAggregator
+        from src.analyzer import CompanyAnalyzer
+
+        # Load watchlist from weekly_screen
+        watchlist_path = Path("./data/watchlist.json")
+        if not watchlist_path.exists():
+            watchlist_path = Path("/tmp/buffett-bot-data/watchlist.json")
+        if not watchlist_path.exists():
+            logger.info("No watchlist found — run weekly_screen first")
+            return
+
+        watchlist = json.loads(watchlist_path.read_text())
+        stocks = watchlist.get("stocks", [])
+        if not stocks:
+            logger.info("Watchlist is empty")
+            return
+
+        # Get top undervalued symbols
+        symbols = [s.get("symbol") for s in stocks[:30] if s.get("symbol")]
+        valuations = screen_for_undervalued(symbols, min_margin_of_safety=0.10)
+
+        if not valuations:
+            logger.info("No undervalued stocks found")
+            return
+
+        # Haiku quick-screen on top candidates
+        analyzer = CompanyAnalyzer()
+        import yfinance as yf
+
+        haiku_results = []
+        for val in valuations[:20]:
+            try:
+                ticker = yf.Ticker(val.symbol)
+                desc = ticker.info.get("longBusinessSummary", f"Company: {val.symbol}")
+                result = analyzer.quick_screen(val.symbol, desc)
+                result["valuation"] = val
+                haiku_results.append(result)
+            except Exception as e:
+                logger.warning(f"Haiku screen failed for {val.symbol}: {e}")
+
+        # Sort by quality and buy top picks
+        haiku_results.sort(key=lambda r: r["moat_hint"] + r["quality_hint"], reverse=True)
+
+        min_margin = float(os.getenv("MIN_MARGIN_OF_SAFETY", 0.20))
+        portfolio_value = float(os.getenv("PORTFOLIO_VALUE", 50000))
+        current_positions = len(trader.get_positions())
+        max_positions = 10
+
+        for result in haiku_results[:5]:
+            val = result["valuation"]
+            if not result["worth_analysis"]:
+                continue
+            if val.margin_of_safety < min_margin:
+                continue
+            if current_positions >= max_positions:
+                logger.info("Max positions reached — stopping buys")
+                break
+
+            # Simple position sizing: equal weight
+            amount = portfolio_value * 0.10  # 10% per position
+            order = trader.buy(val.symbol, amount)
+            if order:
+                current_positions += 1
+                logger.info(f"Bought {val.symbol}: ${amount:,.0f}")
+
+        # Check existing positions for take-profit sells.
+        # Margin of safety = (fair_value - price) / fair_value.
+        # When margin drops below 5%, the stock has risen to near fair value
+        # — it's no longer undervalued, so we take profit and free up capital.
+        positions = trader.get_positions()
+        if positions:
+            logger.info(f"\nChecking {len(positions)} existing positions for sell signals...")
+            aggregator = ValuationAggregator()
+
+            for pos in positions:
+                symbol = pos["symbol"]
+                try:
+                    val = aggregator.get_valuation(symbol)
+                    if val and val.margin_of_safety < 0.05:
+                        trader.sell(
+                            symbol,
+                            reason=f"Take profit: margin of safety {val.margin_of_safety:.1%} "
+                                   f"(stock near fair value ${val.fair_value:.2f})"
+                        )
+                except Exception as e:
+                    logger.warning(f"Error checking {symbol}: {e}")
+
+        logger.info("Weekly auto-trade complete")
+
+    except Exception as e:
+        logger.error(f"Weekly auto-trade failed: {e}")
+
+
+def monthly_briefing():
+    """
+    Run the full monthly briefing pipeline automatically.
+
+    Scheduled for the 1st of each month at 09:00.
+    Cost: ~$0.30-0.50 per run (Sonnet deep analyses, cached for 30 days).
+
+    Disable with MONTHLY_BRIEFING_ENABLED=false in .env.
+    """
+    # Only run on the 1st of the month
+    if datetime.now().day != 1:
+        return
+
+    if os.getenv("MONTHLY_BRIEFING_ENABLED", "true").lower() == "false":
+        logger.info("MONTHLY_BRIEFING_ENABLED=false — skipping auto-briefing")
+        return
+
+    logger.info("=" * 50)
+    logger.info("MONTHLY BRIEFING (automatic)")
+    logger.info("=" * 50)
+
+    try:
+        from scripts.run_monthly_briefing import run_monthly_briefing
+
+        run_monthly_briefing(
+            max_analyses=int(os.getenv("MAX_DEEP_ANALYSES", 10)),
+            min_margin_of_safety=float(os.getenv("MIN_MARGIN_OF_SAFETY", 0.20)),
+            send_notifications=True,
+        )
+
+    except Exception as e:
+        logger.error(f"Monthly briefing failed: {e}")
+
+        # Try to notify about the failure
+        try:
+            from src.notifications import NotificationManager
+            notifier = NotificationManager()
+            notifier.send_alert("SYSTEM", f"Monthly briefing failed: {e}")
+        except Exception:
+            pass
+
+
 def run_scheduler():
-    """Start the scheduler - SAFE MODE"""
+    """Start the scheduler"""
+
+    auto_trade = os.getenv("AUTO_TRADE_ENABLED", "true").lower() != "false"
+    auto_briefing = os.getenv("MONTHLY_BRIEFING_ENABLED", "true").lower() != "false"
 
     logger.info("=" * 60)
-    logger.info("BUFFETT BOT SCHEDULER - SAFE MODE")
+    logger.info("BUFFETT BOT SCHEDULER")
     logger.info("=" * 60)
     logger.info("")
-    logger.info("AUTOMATIC (free operations only):")
-    logger.info("  - Weekly screen:   Every Sunday at 18:00 (yfinance)")
-    logger.info("  - Daily check:     Every day at 08:00 (yfinance)")
+    logger.info("SCHEDULED JOBS:")
+    logger.info("  - Weekly screen:     Every Friday at 17:00 (yfinance, free)")
+    logger.info(f"  - Weekly auto-trade: Every Friday at 18:00 (Haiku ~$0.10-0.20) [{'ON' if auto_trade else 'OFF'}]")
+    logger.info("  - Daily check:       Every day at 08:00 (yfinance, free)")
+    logger.info(f"  - Monthly briefing:  1st of month at 09:00 (Sonnet ~$0.50) [{'ON' if auto_briefing else 'OFF'}]")
     logger.info("")
-    logger.info("MANUAL ONLY (requires explicit trigger):")
-    logger.info("  - Full briefing:   docker compose run --rm buffett-bot")
+    logger.info("KILL SWITCHES (in .env):")
+    logger.info(f"  AUTO_TRADE_ENABLED={auto_trade}        — disable weekly auto-trading")
+    logger.info(f"  MONTHLY_BRIEFING_ENABLED={auto_briefing} — disable monthly briefing")
     logger.info("")
-    logger.info("This prevents accidental Claude API costs.")
+    logger.info("MANUAL TRIGGER:")
+    logger.info("  docker compose run --rm buffett-bot")
+    logger.info("")
+    logger.info("TRADE LOG: data/trade_log.json")
     logger.info("=" * 60)
     logger.info("")
 
-    # Schedule ONLY free operations
-    schedule.every().sunday.at("18:00").do(weekly_screen)
+    # Free operations
+    schedule.every().friday.at("17:00").do(weekly_screen)
     schedule.every().day.at("08:00").do(daily_watchlist_check)
 
-    # NO automatic monthly briefing - that costs money!
-    # User must manually run: docker compose run --rm buffett-bot
+    # Paid operations (have their own kill switches)
+    schedule.every().friday.at("18:00").do(weekly_auto_trade)
+    schedule.every().day.at("09:00").do(monthly_briefing)  # Only actually runs on the 1st
 
     logger.info("Scheduler running. Press Ctrl+C to stop.")
     logger.info(f"Next scheduled job: {schedule.next_run()}")

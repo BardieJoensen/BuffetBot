@@ -15,11 +15,12 @@ Orchestrates the full pipeline:
 COST WARNING:
 This script calls the Claude API which costs money!
 - Each deep analysis costs ~$0.03-0.05 (Sonnet)
+- Haiku pre-screen costs ~$0.002 per stock
 - 10 analyses = ~$0.30-0.50 per run
 - Analyses are cached for 30 days to avoid re-running
 
-Run manually: docker compose run --rm buffett-bot
-DO NOT run this automatically via scheduler.
+Run manually:  docker compose run --rm buffett-bot
+Auto-schedule: scheduler.py runs this on 1st of each month (if enabled)
 """
 
 import os
@@ -33,7 +34,7 @@ from dotenv import load_dotenv
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.screener import StockScreener, ScreeningCriteria
+from src.screener import StockScreener, ScreeningCriteria, load_criteria_from_yaml
 from src.valuation import ValuationAggregator, screen_for_undervalued
 from src.analyzer import CompanyAnalyzer, set_cache_dir
 from src.briefing import BriefingGenerator, StockBriefing, determine_recommendation
@@ -191,8 +192,8 @@ def run_monthly_briefing(
     else:
         try:
             screener = StockScreener()
-            criteria = ScreeningCriteria()
-            
+            criteria = load_criteria_from_yaml()
+
             candidates = screener.screen(criteria)
             logger.info(f"Initial screen: {len(candidates)} candidates")
         except ValueError as e:
@@ -258,23 +259,50 @@ def run_monthly_briefing(
     logger.info(f"Portfolio: {current_positions} positions, ${portfolio_summary.get('current_value', 0):,.0f} value")
     
     # ─────────────────────────────────────────────────────────────
+    # Step 5.5: Haiku Pre-Screen (cheap filter before expensive Sonnet)
+    # ─────────────────────────────────────────────────────────────
+    haiku_candidates = min(30, len(valuations))
+    logger.info(f"\n[5.5/9] HAIKU PRE-SCREEN ON TOP {haiku_candidates} UNDERVALUED STOCKS...")
+    logger.info(f"   💡 Cost: ~${haiku_candidates * 0.002:.2f} (Haiku, 25x cheaper than Sonnet)")
+
+    analyzer = CompanyAnalyzer()
+    haiku_results = []
+
+    for val in valuations[:haiku_candidates]:
+        try:
+            filing_text = fetch_company_summary(val.symbol)
+            result = analyzer.quick_screen(val.symbol, filing_text)
+            result["valuation"] = val
+            haiku_results.append(result)
+            logger.info(f"  {val.symbol}: moat={result['moat_hint']}, quality={result['quality_hint']} - {result['reason'][:60]}")
+        except Exception as e:
+            logger.warning(f"  {val.symbol}: Haiku screen failed: {e}")
+            # Fail open — include it
+            haiku_results.append({"symbol": val.symbol, "worth_analysis": True, "moat_hint": 3, "quality_hint": 3, "valuation": val})
+
+    # Sort by combined moat + quality score, take top max_analyses for Sonnet
+    haiku_results.sort(key=lambda r: r["moat_hint"] + r["quality_hint"], reverse=True)
+    top_for_analysis = [r["valuation"] for r in haiku_results if r["worth_analysis"]][:max_analyses]
+
+    logger.info(f"   ✓ Haiku selected {len(top_for_analysis)} stocks for deep analysis (from {haiku_candidates})")
+
+    # ─────────────────────────────────────────────────────────────
     # Step 6: LLM Analysis (COSTS MONEY - uses Claude API)
     # ─────────────────────────────────────────────────────────────
-    num_to_analyze = min(max_analyses, len(valuations))
-    logger.info(f"\n[6/8] RUNNING LLM ANALYSIS ON TOP {num_to_analyze} CANDIDATES...")
+    num_to_analyze = len(top_for_analysis)
+    logger.info(f"\n[6/9] RUNNING LLM ANALYSIS ON TOP {num_to_analyze} CANDIDATES...")
     logger.info("   💡 Cached analyses (<30 days old) will be reused to save costs")
 
     # Check how many are already cached
     from src.analyzer import get_cached_analysis
-    pre_cached = sum(1 for v in valuations[:max_analyses] if get_cached_analysis(v.symbol, 30))
+    pre_cached = sum(1 for v in top_for_analysis if get_cached_analysis(v.symbol, 30))
     if pre_cached > 0:
         logger.info(f"   ✓ Found {pre_cached} cached analyses (will save ~${pre_cached * 0.05:.2f})")
 
-    analyzer = CompanyAnalyzer()
     briefings = []
     analyzed_symbols = []
 
-    for val in valuations[:max_analyses]:
+    for val in top_for_analysis:
         try:
             logger.info(f"Analyzing {val.symbol}...")
 
@@ -325,9 +353,26 @@ def run_monthly_briefing(
     logger.info(f"   ✓ Completed {len(briefings)} analyses")
 
     # ─────────────────────────────────────────────────────────────
+    # Step 6.5: Execute paper trades for BUY recommendations
+    # ─────────────────────────────────────────────────────────────
+    from src.paper_trader import PaperTrader, set_trade_log_dir
+
+    set_trade_log_dir(data_dir)
+    trader = PaperTrader()
+    if trader.is_enabled():
+        logger.info("\n[6.5/9] EXECUTING PAPER TRADES...")
+        for briefing in briefings:
+            if briefing.recommendation == "BUY":
+                amount = briefing.position_size.get("recommended_amount", 0) if isinstance(briefing.position_size, dict) else 0
+                if amount > 0:
+                    trader.buy(briefing.symbol, amount)
+    else:
+        logger.info("\n[6.5/9] PAPER TRADING SKIPPED (Alpaca not configured)")
+
+    # ─────────────────────────────────────────────────────────────
     # Step 7: Generate Briefing
     # ─────────────────────────────────────────────────────────────
-    logger.info("\n[7/8] GENERATING BRIEFING DOCUMENT...")
+    logger.info("\n[7/9] GENERATING BRIEFING DOCUMENT...")
     
     # Radar = screened but not analyzed
     radar_stocks = [s for s in all_screened_symbols if s not in analyzed_symbols][:30]
@@ -355,16 +400,16 @@ def run_monthly_briefing(
     # Step 8: Send Notifications
     # ─────────────────────────────────────────────────────────────
     if send_notifications:
-        logger.info("\n[8/8] SENDING NOTIFICATIONS...")
-        
+        logger.info("\n[8/9] SENDING NOTIFICATIONS...")
+
         notifier = NotificationManager()
         results = notifier.send_briefing(briefing_text)
-        
+
         for channel, success in results.items():
             status = "✓" if success else "✗"
             logger.info(f"  {status} {channel}")
     else:
-        logger.info("\n[8/8] NOTIFICATIONS SKIPPED")
+        logger.info("\n[8/9] NOTIFICATIONS SKIPPED")
     
     # ─────────────────────────────────────────────────────────────
     # Summary

@@ -9,7 +9,8 @@ NOTE: Uses yfinance (completely free, no API key) for all stock data.
 
 import json
 import time
-from dataclasses import dataclass
+import yaml
+from dataclasses import dataclass, field
 from typing import Optional
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -23,6 +24,18 @@ logger = logging.getLogger(__name__)
 # Cache directory for stock data
 CACHE_DIR = Path(__file__).parent.parent / "data" / "cache"
 
+# Default YAML config path
+DEFAULT_CONFIG_PATH = Path(__file__).parent.parent / "config" / "screening_criteria.yaml"
+
+
+@dataclass
+class ScoringRule:
+    """A single scored metric rule"""
+    ideal: float
+    weight: float = 1.0
+    min: Optional[float] = None  # Zero score below this (for "higher is better" metrics)
+    max: Optional[float] = None  # Zero score above this (for "lower is better" metrics)
+
 
 @dataclass
 class ScreeningCriteria:
@@ -34,6 +47,132 @@ class ScreeningCriteria:
     min_roe: float = 0.12                    # 12% return on equity
     min_revenue_growth: float = 0.05         # 5% growth
     min_current_ratio: float = 1.5           # Can pay short-term debts
+    min_price: float = 5.0                   # Minimum stock price
+    scoring: dict[str, ScoringRule] = field(default_factory=dict)
+    top_n: int = 100                         # How many top-scoring stocks to keep
+
+
+def load_criteria_from_yaml(config_path: Optional[Path] = None) -> ScreeningCriteria:
+    """
+    Load screening criteria from YAML config file.
+
+    Falls back to hardcoded defaults if the file is missing or has parse errors.
+    """
+    path = config_path or DEFAULT_CONFIG_PATH
+
+    try:
+        with open(path) as f:
+            config = yaml.safe_load(f)
+
+        screening = config.get("screening", {})
+
+        # Parse scoring rules
+        scoring = {}
+        scoring_raw = screening.get("scoring", {})
+        for metric, rule_data in scoring_raw.items():
+            scoring[metric] = ScoringRule(
+                ideal=float(rule_data.get("ideal", 0)),
+                weight=float(rule_data.get("weight", 1.0)),
+                min=float(rule_data["min"]) if "min" in rule_data else None,
+                max=float(rule_data["max"]) if "max" in rule_data else None,
+            )
+
+        return ScreeningCriteria(
+            min_market_cap=float(screening.get("min_market_cap", 300_000_000)),
+            max_market_cap=float(screening.get("max_market_cap", 10_000_000_000)),
+            max_pe_ratio=float(screening.get("max_pe_ratio", 20.0)),
+            max_debt_equity=float(screening.get("max_debt_equity", 0.5)),
+            min_roe=float(screening.get("min_roe", 0.12)),
+            min_revenue_growth=float(screening.get("min_revenue_growth", 0.05)),
+            min_current_ratio=float(screening.get("min_current_ratio", 1.5)),
+            min_price=float(screening.get("min_price", 5.0)),
+            scoring=scoring,
+            top_n=int(screening.get("top_n", 100)),
+        )
+
+    except FileNotFoundError:
+        logger.warning(f"Config file not found at {path}, using hardcoded defaults")
+        return ScreeningCriteria()
+    except Exception as e:
+        logger.warning(f"Error parsing config file {path}: {e}, using hardcoded defaults")
+        return ScreeningCriteria()
+
+
+def score_stock(data: dict, criteria: ScreeningCriteria) -> float:
+    """
+    Score a stock based on how close each metric is to the ideal value.
+
+    Each metric gets a 0-1 score, multiplied by its weight.
+    Returns the total weighted score.
+    """
+    if not criteria.scoring:
+        return 0.0
+
+    total_score = 0.0
+
+    metric_keys = {
+        "pe_ratio": "pe_ratio",
+        "debt_equity": "debt_equity",
+        "roe": "roe",
+        "revenue_growth": "revenue_growth",
+        "current_ratio": "current_ratio",
+    }
+
+    for metric_name, rule in criteria.scoring.items():
+        data_key = metric_keys.get(metric_name)
+        if not data_key:
+            continue
+
+        value = data.get(data_key)
+        if value is None:
+            continue
+
+        # For debt_equity, yfinance returns as percentage - normalize
+        if metric_name == "debt_equity" and value > 5:
+            value = value / 100.0
+
+        score = _compute_metric_score(value, rule)
+        total_score += score * rule.weight
+
+    return total_score
+
+
+def _compute_metric_score(value: float, rule: ScoringRule) -> float:
+    """
+    Compute 0-1 score for a single metric.
+
+    - At ideal value: score = 1.0
+    - At min/max boundary: score = 0.0
+    - Linear interpolation between
+    """
+    # "Lower is better" metrics (have a max, e.g., PE, debt)
+    if rule.max is not None and rule.min is None:
+        if value <= rule.ideal:
+            return 1.0
+        if value >= rule.max:
+            return 0.0
+        # Linear decay from ideal to max
+        return 1.0 - (value - rule.ideal) / (rule.max - rule.ideal)
+
+    # "Higher is better" metrics (have a min, e.g., ROE, growth)
+    if rule.min is not None and rule.max is None:
+        if value >= rule.ideal:
+            return 1.0
+        if value <= rule.min:
+            return 0.0
+        # Linear rise from min to ideal
+        return (value - rule.min) / (rule.ideal - rule.min)
+
+    # Metrics with both min and max (e.g., current_ratio)
+    if rule.min is not None and rule.max is not None:
+        if value >= rule.ideal:
+            return 1.0 if value <= rule.max else max(0.0, 1.0 - (value - rule.max) / rule.max)
+        if value <= rule.min:
+            return 0.0
+        return (value - rule.min) / (rule.ideal - rule.min)
+
+    # No boundaries defined, just check if at ideal
+    return 1.0 if value == rule.ideal else 0.5
 
 
 @dataclass
@@ -50,6 +189,7 @@ class ScreenedStock:
     industry: str
     screened_at: datetime
     price: Optional[float] = None
+    score: float = 0.0
 
     def to_dict(self) -> dict:
         return {
@@ -63,7 +203,8 @@ class ScreenedStock:
             "sector": self.sector,
             "industry": self.industry,
             "screened_at": self.screened_at.isoformat(),
-            "price": self.price
+            "price": self.price,
+            "score": self.score
         }
 
 
@@ -74,7 +215,8 @@ class StockScreener:
     Strategy:
     1. Get dynamic universe from Finviz/Wikipedia/fallback (see universe.py)
     2. Fetch detailed data via yfinance
-    3. Filter locally by market cap, P/E, fundamentals
+    3. Apply hard filters (market cap, price, quote type, industry)
+    4. Score remaining stocks and return top N
     """
 
     BATCH_SIZE = 20  # Process in smaller batches for reliability
@@ -167,7 +309,8 @@ class StockScreener:
         """
         Run stock screen with given criteria using yfinance.
 
-        Returns list of stocks passing all filters.
+        Hard filters: market cap, price, quote_type, industry.
+        Scoring: all passing stocks are scored and sorted; top N returned.
         """
         criteria = criteria or ScreeningCriteria()
 
@@ -196,6 +339,8 @@ class StockScreener:
                 errors += 1
                 continue
 
+            # === Hard filters (must pass) ===
+
             # Skip non-equity securities (closed-end funds, ETFs, etc.)
             quote_type = data.get("quote_type", "EQUITY")
             if quote_type != "EQUITY":
@@ -209,23 +354,25 @@ class StockScreener:
             ]):
                 continue
 
-            # Apply filters
+            # Market cap filter
             market_cap = data.get("market_cap", 0) or 0
             if market_cap < criteria.min_market_cap or market_cap > criteria.max_market_cap:
                 continue
 
+            # Minimum price filter
             price = data.get("price", 0)
-            if not price or price < 5:
+            if not price or price < criteria.min_price:
                 continue
 
+            # Negative P/E means losses — skip
             pe = data.get("pe_ratio")
-            if pe is not None and (pe <= 0 or pe > criteria.max_pe_ratio):
+            if pe is not None and pe <= 0:
                 continue
 
-            # Optional: filter by debt/equity if available
+            # === Score the stock ===
+            stock_score = score_stock(data, criteria)
+
             de = data.get("debt_equity")
-            if de is not None and de > criteria.max_debt_equity * 100:  # yfinance returns as percentage
-                continue
 
             candidates.append(ScreenedStock(
                 symbol=symbol,
@@ -238,11 +385,22 @@ class StockScreener:
                 sector=data.get("sector", "Unknown"),
                 industry=data.get("industry", "Unknown"),
                 screened_at=datetime.now(),
-                price=price
+                price=price,
+                score=stock_score
             ))
 
         logger.info(f"Processed {processed} stocks, {errors} errors")
-        logger.info(f"After filtering: {len(candidates)} candidates")
+        logger.info(f"After hard filters: {len(candidates)} candidates")
+
+        # Sort by score descending and return top N
+        if criteria.scoring:
+            candidates.sort(key=lambda s: s.score, reverse=True)
+            top_n = criteria.top_n
+            if len(candidates) > top_n:
+                logger.info(f"Keeping top {top_n} by score (from {len(candidates)})")
+                candidates = candidates[:top_n]
+
+        logger.info(f"Returning {len(candidates)} candidates")
 
         return candidates
 
@@ -262,22 +420,24 @@ class StockScreener:
         """
         Apply additional filters using detailed metrics.
 
-        With yfinance, most data is already fetched in screen(),
-        but this can apply stricter filters.
+        With score-based screening, this is a lightweight pass-through
+        since scoring already handles metric quality. Kept for backward
+        compatibility.
         """
-        filtered = []
+        # With scoring enabled, skip binary filters — scoring handles ranking
+        if criteria.scoring:
+            logger.info(f"Score-based screening active, skipping binary filters ({len(candidates)} stocks)")
+            return candidates
 
+        # Fallback: binary filters when no scoring config
+        filtered = []
         for stock in candidates:
-            # Check ROE
             if stock.roe is not None and stock.roe < criteria.min_roe:
                 logger.debug(f"{stock.symbol}: ROE {stock.roe:.2%} below threshold")
                 continue
-
-            # Check Debt/Equity
             if stock.debt_equity is not None and stock.debt_equity > criteria.max_debt_equity:
                 logger.debug(f"{stock.symbol}: D/E {stock.debt_equity:.2f} above threshold")
                 continue
-
             filtered.append(stock)
 
         logger.info(f"After detailed filtering: {len(filtered)} stocks")
@@ -292,7 +452,7 @@ def run_screen(apply_detailed: bool = False) -> list[ScreenedStock]:
         apply_detailed: If True, apply additional fundamental filters
     """
     screener = StockScreener()
-    criteria = ScreeningCriteria()
+    criteria = load_criteria_from_yaml()
 
     candidates = screener.screen(criteria)
 
@@ -309,7 +469,7 @@ if __name__ == "__main__":
     print(f"\nFound {len(stocks)} candidates:\n")
 
     for stock in stocks[:10]:
-        print(f"  {stock.symbol}: {stock.name}")
+        print(f"  {stock.symbol}: {stock.name} (score: {stock.score:.2f})")
         print(f"    Market Cap: ${stock.market_cap:,.0f}")
         print(f"    Price: ${stock.price:.2f}")
         print(f"    P/E: {stock.pe_ratio}")

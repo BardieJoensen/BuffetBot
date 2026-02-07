@@ -403,6 +403,81 @@ IMPORTANT:
             conviction_level=conviction
         )
     
+    def quick_screen(self, symbol: str, filing_text: str) -> dict:
+        """
+        Haiku-powered quick screen to decide if a stock is worth deep analysis.
+
+        Cost: ~$0.002 per stock (25x cheaper than Sonnet deep analysis).
+        Results are NOT cached — too cheap to bother, and we want fresh signals.
+
+        Returns:
+            dict with worth_analysis (bool), moat_hint (1-5), quality_hint (1-5), reason (str)
+        """
+        prompt = f"""You are a value investing analyst. Quickly assess this company.
+
+COMPANY: {symbol}
+
+{filing_text[:5000]}
+
+Is this company worth deep analysis for a long-term value investor?
+Rate moat strength 1-5, business quality 1-5, one-sentence reason.
+Respond in exactly 3 lines:
+MOAT: <1-5>
+QUALITY: <1-5>
+REASON: <one sentence>"""
+
+        try:
+            response = self.client.messages.create(
+                model=self.model_light,
+                max_tokens=256,
+                messages=[{"role": "user", "content": prompt}]
+            )
+
+            text = response.content[0].text
+            lines = [l.strip() for l in text.strip().split("\n") if l.strip()]
+
+            moat_hint = 3
+            quality_hint = 3
+            reason = "Unable to parse response"
+
+            for line in lines:
+                upper = line.upper()
+                if upper.startswith("MOAT:"):
+                    try:
+                        moat_hint = int(line.split(":")[-1].strip()[0])
+                        moat_hint = max(1, min(5, moat_hint))
+                    except (ValueError, IndexError):
+                        pass
+                elif upper.startswith("QUALITY:"):
+                    try:
+                        quality_hint = int(line.split(":")[-1].strip()[0])
+                        quality_hint = max(1, min(5, quality_hint))
+                    except (ValueError, IndexError):
+                        pass
+                elif upper.startswith("REASON:"):
+                    reason = line.split(":", 1)[-1].strip()
+
+            worth_analysis = (moat_hint + quality_hint) >= 6
+
+            return {
+                "symbol": symbol,
+                "worth_analysis": worth_analysis,
+                "moat_hint": moat_hint,
+                "quality_hint": quality_hint,
+                "reason": reason,
+            }
+
+        except Exception as e:
+            logger.warning(f"Haiku quick-screen failed for {symbol}: {e}")
+            # On failure, assume worth analyzing (fail open)
+            return {
+                "symbol": symbol,
+                "worth_analysis": True,
+                "moat_hint": 3,
+                "quality_hint": 3,
+                "reason": f"Quick-screen error: {e}",
+            }
+
     def check_news_for_red_flags(
         self, 
         symbol: str, 
