@@ -372,9 +372,9 @@ section{{background:#fff;padding:24px;margin-bottom:2px}}
 section:last-child{{border-radius:0 0 8px 8px;margin-bottom:24px}}
 h2{{font-size:1.2rem;color:#1a237e;border-bottom:2px solid #e8eaf6;
   padding-bottom:8px;margin-bottom:16px}}
-.summary-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
-  gap:12px;margin-bottom:16px}}
-.summary-card{{background:#f5f5f5;border-radius:8px;padding:16px;text-align:center}}
+.summary-grid{{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:16px}}
+.summary-card{{background:#f5f5f5;border-radius:8px;padding:16px;text-align:center;
+  flex:1 1 0;min-width:80px}}
 .summary-card .num{{font-size:1.8rem;font-weight:700;color:#1a237e}}
 .summary-card .label{{font-size:.8rem;color:#666;text-transform:uppercase}}
 .stock-card{{border:1px solid #e0e0e0;border-radius:8px;padding:20px;margin-bottom:16px;
@@ -404,12 +404,11 @@ summary:hover{{text-decoration:underline}}
 .bar-fill{{background:#3f51b5;border-radius:4px;height:100%;min-width:2px}}
 .bar-pct{{width:50px;text-align:right;padding-left:8px;color:#555;font-size:.8rem}}
 .risk-item{{padding:4px 0;font-size:.9rem}}
-.radar-grid{{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}}
+.radar-grid{{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;max-width:100%;overflow:hidden}}
 .radar-chip{{background:#e8eaf6;color:#3f51b5;padding:4px 12px;border-radius:16px;
   font-size:.8rem;font-weight:500}}
-.portfolio-stats{{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
-  gap:12px;margin-bottom:16px}}
-.portfolio-stat{{padding:8px 0}}
+.portfolio-stats{{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:16px}}
+.portfolio-stat{{padding:8px 0;flex:1 1 0;min-width:120px}}
 .portfolio-stat .val{{font-size:1.2rem;font-weight:600}}
 .portfolio-stat .lbl{{font-size:.8rem;color:#666}}
 .gain-pos{{color:#4CAF50}}
@@ -420,7 +419,8 @@ footer{{text-align:center;padding:16px;font-size:.8rem;color:#999}}
   .container{{padding:8px}}
   header{{padding:20px 16px}}
   section{{padding:16px}}
-  .summary-grid{{grid-template-columns:repeat(2,1fr)}}
+  .summary-card{{min-width:60px}}
+  .portfolio-stat{{min-width:100px}}
   .bar-label{{width:100px;font-size:.75rem}}
 }}
 </style>
