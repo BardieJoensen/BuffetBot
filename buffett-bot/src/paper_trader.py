@@ -129,6 +129,32 @@ class PaperTrader:
             logger.error(f"Failed to get positions: {e}")
             return []
 
+    def get_open_orders(self) -> list[dict]:
+        """Return open/pending orders."""
+        if not self._enabled:
+            return []
+
+        try:
+            from alpaca.trading.requests import GetOrdersRequest
+            from alpaca.trading.enums import QueryOrderStatus
+
+            request = GetOrdersRequest(status=QueryOrderStatus.OPEN)
+            orders = self._trading_client.get_orders(filter=request)
+            return [
+                {
+                    "symbol": o.symbol,
+                    "side": str(o.side).lower(),
+                    "notional": float(o.notional) if o.notional else None,
+                    "qty": float(o.qty) if o.qty else None,
+                    "status": str(o.status),
+                    "order_id": str(o.id),
+                }
+                for o in orders
+            ]
+        except Exception as e:
+            logger.error(f"Failed to get open orders: {e}")
+            return []
+
     def buy(self, symbol: str, dollar_amount: float) -> Optional[dict]:
         """
         Place a market buy order for a given dollar amount.
@@ -146,6 +172,12 @@ class PaperTrader:
             existing = self.get_positions()
             if any(p["symbol"] == symbol for p in existing):
                 logger.warning(f"Already holding {symbol} — skipping duplicate buy")
+                return None
+
+            # Check for pending/open orders (e.g. market closed, order queued)
+            pending = self.get_open_orders()
+            if any(o["symbol"] == symbol and o["side"] == "buy" for o in pending):
+                logger.warning(f"Already have a pending buy order for {symbol} — skipping duplicate")
                 return None
 
             # Validate position size against account
