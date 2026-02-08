@@ -14,6 +14,8 @@ Responsibilities:
 COST OPTIMIZATION:
 - Sonnet for deep analysis (~$0.05 per stock)
 - Haiku for news monitoring (~$0.002 per check) - 20x cheaper
+- Prompt caching: static system prompts cached across calls (20-30% savings)
+- Batch API: 50% discount on all requests submitted together
 - Analysis caching to avoid re-analyzing same stocks
 - Reduced input truncation limits
 """
@@ -21,6 +23,7 @@ COST OPTIMIZATION:
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -36,6 +39,75 @@ DEFAULT_CACHE_DIR = Path("data/analyses")
 
 # Runtime cache dir (can be overridden via set_cache_dir)
 _cache_dir = DEFAULT_CACHE_DIR
+
+# ─────────────────────────────────────────────────────────────
+# System prompts (cached across API calls for token savings)
+# ─────────────────────────────────────────────────────────────
+
+ANALYSIS_SYSTEM_PROMPT = """\
+You are a value investing analyst in the style of Warren Buffett.
+Analyze companies for potential long-term investment.
+
+Provide your analysis in the following format:
+
+## MOAT ASSESSMENT
+Rating: [WIDE / NARROW / NONE]
+Sources of moat (list each):
+- [e.g., Switching costs, Network effects, Brand, Cost advantages, etc.]
+Explanation: [2-3 sentences on durability of competitive advantage]
+
+## MANAGEMENT ASSESSMENT
+Rating: [EXCELLENT / ADEQUATE / POOR]
+Notes: [Assessment of capital allocation, alignment with shareholders, track record]
+Insider Ownership: [If mentioned in documents]
+
+## BUSINESS SUMMARY
+[2-3 sentence description of what the company does and how it makes money]
+
+## COMPETITIVE POSITION
+[Assessment of market position, competitors, industry dynamics]
+
+## KEY RISKS
+1. [Risk 1]
+2. [Risk 2]
+3. [Risk 3]
+
+## THESIS-BREAKING RISKS
+[What specific events would invalidate an investment thesis? Be specific.]
+1. [Event that would signal "sell immediately"]
+2. [Event that would signal "sell immediately"]
+
+## INVESTMENT THESIS
+[If you were to invest, what is the bull case? 2-3 sentences]
+
+## CONVICTION LEVEL
+[HIGH / MEDIUM / LOW] - [One sentence explanation]
+
+IMPORTANT:
+- Do NOT calculate valuations or fair values
+- Do NOT make price predictions
+- Focus on qualitative business analysis only
+- Be skeptical and highlight genuine risks"""
+
+QUICK_SCREEN_SYSTEM_PROMPT = """\
+You are a value investing analyst. Quickly assess companies for long-term value.
+Rate moat strength 1-5, business quality 1-5, one-sentence reason.
+Respond in exactly 3 lines:
+MOAT: <1-5>
+QUALITY: <1-5>
+REASON: <one sentence>"""
+
+NEWS_MONITOR_SYSTEM_PROMPT = """\
+You are monitoring stock positions for potential red flags.
+Analyze news and determine if there are thesis-breaking events.
+
+Respond in this format:
+RED FLAGS DETECTED: [YES / NO]
+CONCERNING ITEMS:
+- [item 1 if any]
+- [item 2 if any]
+RECOMMENDATION: [HOLD / REVIEW / SELL]
+EXPLANATION: [1-2 sentences]"""
 
 
 def set_cache_dir(path: Path):
@@ -159,7 +231,7 @@ class CompanyAnalyzer:
         self.client = Anthropic(api_key=self.api_key)
 
         # Two models: expensive for deep analysis, cheap for simple tasks
-        self.model_deep = "claude-sonnet-4-20250514"  # For 10-K analysis
+        self.model_deep = "claude-sonnet-4-5-20250929"  # For 10-K analysis
         self.model_light = "claude-haiku-4-5-20251001"  # For news monitoring (20x cheaper)
 
     def analyze_company(
@@ -193,19 +265,27 @@ class CompanyAnalyzer:
             if cached:
                 return self._dict_to_analysis(cached)
 
-        prompt = self._build_analysis_prompt(symbol, company_name, filing_text, earnings_transcript, recent_news)
+        user_prompt = self._build_analysis_user_prompt(
+            symbol, company_name, filing_text, earnings_transcript, recent_news
+        )
 
         logger.info(f"Analyzing {symbol} with Claude (Sonnet)...")
 
         response = self.client.messages.create(
-            model=self.model_deep,  # Use Sonnet for deep analysis
+            model=self.model_deep,
             max_tokens=4096,
-            messages=[{"role": "user", "content": prompt}],
+            system=[
+                {
+                    "type": "text",
+                    "text": ANALYSIS_SYSTEM_PROMPT,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+            messages=[{"role": "user", "content": user_prompt}],
         )
 
         # Parse the response
-        analysis_text: str = response.content[0].text  # type: ignore[union-attr]
-
+        analysis_text: str = response.content[0].text
         analysis = self._parse_analysis(symbol, company_name, analysis_text)
 
         # Cache the result
@@ -236,7 +316,7 @@ class CompanyAnalyzer:
             conviction_level=data.get("conviction_level", "LOW"),
         )
 
-    def _build_analysis_prompt(
+    def _build_analysis_user_prompt(
         self,
         symbol: str,
         company_name: str,
@@ -244,74 +324,27 @@ class CompanyAnalyzer:
         earnings_transcript: Optional[str],
         recent_news: Optional[str],
     ) -> str:
-        """Build the analysis prompt for Claude"""
+        """Build the per-stock user prompt (system instructions are separate)."""
 
-        prompt = f"""You are a value investing analyst in the style of Warren Buffett.
-Analyze the following company for potential long-term investment.
-
-COMPANY: {company_name} ({symbol})
+        prompt = f"""COMPANY: {company_name} ({symbol})
 
 === ANNUAL REPORT (10-K) ===
 {filing_text[: self.MAX_FILING_CHARS]}
-
 """
 
         if earnings_transcript:
             prompt += f"""
 === RECENT EARNINGS CALL ===
 {earnings_transcript[: self.MAX_TRANSCRIPT_CHARS]}
-
 """
 
         if recent_news:
             prompt += f"""
 === RECENT NEWS ===
 {recent_news[: self.MAX_NEWS_CHARS]}
-
 """
 
-        prompt += """
-Based on the above information, provide your analysis in the following format:
-
-## MOAT ASSESSMENT
-Rating: [WIDE / NARROW / NONE]
-Sources of moat (list each):
-- [e.g., Switching costs, Network effects, Brand, Cost advantages, etc.]
-Explanation: [2-3 sentences on durability of competitive advantage]
-
-## MANAGEMENT ASSESSMENT
-Rating: [EXCELLENT / ADEQUATE / POOR]
-Notes: [Assessment of capital allocation, alignment with shareholders, track record]
-Insider Ownership: [If mentioned in documents]
-
-## BUSINESS SUMMARY
-[2-3 sentence description of what the company does and how it makes money]
-
-## COMPETITIVE POSITION
-[Assessment of market position, competitors, industry dynamics]
-
-## KEY RISKS
-1. [Risk 1]
-2. [Risk 2]
-3. [Risk 3]
-
-## THESIS-BREAKING RISKS
-[What specific events would invalidate an investment thesis? Be specific.]
-1. [Event that would signal "sell immediately"]
-2. [Event that would signal "sell immediately"]
-
-## INVESTMENT THESIS
-[If you were to invest, what is the bull case? 2-3 sentences]
-
-## CONVICTION LEVEL
-[HIGH / MEDIUM / LOW] - [One sentence explanation]
-
-IMPORTANT:
-- Do NOT calculate valuations or fair values
-- Do NOT make price predictions
-- Focus on qualitative business analysis only
-- Be skeptical and highlight genuine risks
-"""
+        prompt += "\nBased on the above information, provide your analysis."
 
         return prompt
 
@@ -405,25 +438,27 @@ IMPORTANT:
         Returns:
             dict with worth_analysis (bool), moat_hint (1-5), quality_hint (1-5), reason (str)
         """
-        prompt = f"""You are a value investing analyst. Quickly assess this company.
-
-COMPANY: {symbol}
+        user_prompt = f"""COMPANY: {symbol}
 
 {filing_text[:5000]}
 
-Is this company worth deep analysis for a long-term value investor?
-Rate moat strength 1-5, business quality 1-5, one-sentence reason.
-Respond in exactly 3 lines:
-MOAT: <1-5>
-QUALITY: <1-5>
-REASON: <one sentence>"""
+Is this company worth deep analysis for a long-term value investor?"""
 
         try:
             response = self.client.messages.create(
-                model=self.model_light, max_tokens=256, messages=[{"role": "user", "content": prompt}]
+                model=self.model_light,
+                max_tokens=256,
+                system=[
+                    {
+                        "type": "text",
+                        "text": QUICK_SCREEN_SYSTEM_PROMPT,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+                messages=[{"role": "user", "content": user_prompt}],
             )
 
-            text: str = response.content[0].text  # type: ignore[union-attr]
+            text: str = response.content[0].text
             lines = [line.strip() for line in text.strip().split("\n") if line.strip()]
 
             moat_hint = 3
@@ -480,9 +515,7 @@ REASON: <one sentence>"""
         - recommendation: HOLD / REVIEW / SELL
         """
 
-        prompt = f"""You are monitoring a stock position for potential red flags.
-
-STOCK: {symbol}
+        user_prompt = f"""STOCK: {symbol}
 
 ORIGINAL INVESTMENT THESIS:
 {investment_thesis}
@@ -496,24 +529,23 @@ RECENT NEWS:
 Analyze the news and determine:
 1. Are there any events that match the thesis-breaking risks?
 2. Are there any other concerning developments?
-3. What is your recommendation?
-
-Respond in this format:
-RED FLAGS DETECTED: [YES / NO]
-CONCERNING ITEMS:
-- [item 1 if any]
-- [item 2 if any]
-RECOMMENDATION: [HOLD / REVIEW / SELL]
-EXPLANATION: [1-2 sentences]
-"""
+3. What is your recommendation?"""
 
         # Use Haiku for news monitoring - 20x cheaper than Sonnet
         response = self.client.messages.create(
-            model=self.model_light, max_tokens=1024, messages=[{"role": "user", "content": prompt}]
+            model=self.model_light,
+            max_tokens=1024,
+            system=[
+                {
+                    "type": "text",
+                    "text": NEWS_MONITOR_SYSTEM_PROMPT,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+            messages=[{"role": "user", "content": user_prompt}],
         )
 
-        text: str = response.content[0].text  # type: ignore[union-attr]
-
+        text: str = response.content[0].text
         has_flags = "RED FLAGS DETECTED: YES" in text.upper()
 
         # Extract recommendation
@@ -524,6 +556,216 @@ EXPLANATION: [1-2 sentences]
             rec = "REVIEW"
 
         return {"has_red_flags": has_flags, "analysis": text, "recommendation": rec}
+
+    # ─────────────────────────────────────────────────────────────
+    # Batch API methods (50% discount on all requests)
+    # ─────────────────────────────────────────────────────────────
+
+    def _wait_for_batch(self, batch_id: str, timeout_minutes: int = 30) -> object:
+        """Poll batch status until complete or timeout."""
+        deadline = time.time() + timeout_minutes * 60
+        while time.time() < deadline:
+            batch = self.client.messages.batches.retrieve(batch_id)
+            counts = batch.request_counts
+            logger.info(
+                f"Batch {batch_id}: {counts.succeeded} succeeded, "
+                f"{counts.errored} errored, {counts.processing} processing"
+            )
+            if batch.processing_status == "ended":
+                return batch
+            time.sleep(30)
+        raise TimeoutError(f"Batch {batch_id} did not complete within {timeout_minutes} minutes")
+
+    def _parse_quick_screen_result(self, text: str, symbol: str) -> dict:
+        """Parse a quick-screen response into a result dict."""
+        lines = [line.strip() for line in text.strip().split("\n") if line.strip()]
+
+        moat_hint = 3
+        quality_hint = 3
+        reason = "Unable to parse response"
+
+        for line in lines:
+            upper = line.upper()
+            if upper.startswith("MOAT:"):
+                try:
+                    moat_hint = int(line.split(":")[-1].strip()[0])
+                    moat_hint = max(1, min(5, moat_hint))
+                except (ValueError, IndexError):
+                    pass
+            elif upper.startswith("QUALITY:"):
+                try:
+                    quality_hint = int(line.split(":")[-1].strip()[0])
+                    quality_hint = max(1, min(5, quality_hint))
+                except (ValueError, IndexError):
+                    pass
+            elif upper.startswith("REASON:"):
+                reason = line.split(":", 1)[-1].strip()
+
+        worth_analysis = (moat_hint + quality_hint) >= 6
+
+        return {
+            "symbol": symbol,
+            "worth_analysis": worth_analysis,
+            "moat_hint": moat_hint,
+            "quality_hint": quality_hint,
+            "reason": reason,
+        }
+
+    def batch_quick_screen(self, stocks: list[tuple[str, str]]) -> list[dict]:
+        """
+        Batch quick-screen via the Batch API (50% discount).
+
+        Args:
+            stocks: List of (symbol, filing_text) tuples.
+
+        Returns:
+            List of result dicts (same format as quick_screen).
+        """
+        if not stocks:
+            return []
+
+        requests = []
+        for symbol, filing_text in stocks:
+            user_prompt = f"""COMPANY: {symbol}
+
+{filing_text[:5000]}
+
+Is this company worth deep analysis for a long-term value investor?"""
+            requests.append(
+                {
+                    "custom_id": symbol,
+                    "params": {
+                        "model": self.model_light,
+                        "max_tokens": 256,
+                        "system": [
+                            {
+                                "type": "text",
+                                "text": QUICK_SCREEN_SYSTEM_PROMPT,
+                                "cache_control": {"type": "ephemeral"},
+                            }
+                        ],
+                        "messages": [{"role": "user", "content": user_prompt}],
+                    },
+                }
+            )
+
+        logger.info(f"Submitting batch of {len(requests)} quick-screen requests...")
+        batch = self.client.messages.batches.create(requests=requests)
+        logger.info(f"Batch created: {batch.id}")
+
+        self._wait_for_batch(batch.id)
+
+        # Collect results
+        symbol_order = [s for s, _ in stocks]
+        results_map: dict[str, dict] = {}
+
+        for result in self.client.messages.batches.results(batch.id):
+            symbol = result.custom_id
+            if result.result.type == "succeeded":
+                text: str = result.result.message.content[0].text
+                results_map[symbol] = self._parse_quick_screen_result(text, symbol)
+            else:
+                logger.warning(f"Batch quick-screen failed for {symbol}: {result.result.type}")
+                results_map[symbol] = {
+                    "symbol": symbol,
+                    "worth_analysis": True,
+                    "moat_hint": 3,
+                    "quality_hint": 3,
+                    "reason": f"Batch error: {result.result.type}",
+                }
+
+        return [
+            results_map.get(
+                s,
+                {
+                    "symbol": s,
+                    "worth_analysis": True,
+                    "moat_hint": 3,
+                    "quality_hint": 3,
+                    "reason": "Missing from batch",
+                },
+            )
+            for s in symbol_order
+        ]
+
+    def batch_analyze_companies(self, stocks: list[dict]) -> list[QualitativeAnalysis]:
+        """
+        Batch deep analysis via the Batch API (50% discount).
+
+        Args:
+            stocks: List of dicts with keys: symbol, company_name, filing_text,
+                    and optionally earnings_transcript, recent_news.
+
+        Returns:
+            List of QualitativeAnalysis objects.
+        """
+        if not stocks:
+            return []
+
+        # Separate cached from uncached
+        cached_results: dict[str, QualitativeAnalysis] = {}
+        uncached_stocks: list[dict] = []
+
+        for stock in stocks:
+            cached = get_cached_analysis(stock["symbol"])
+            if cached:
+                cached_results[stock["symbol"]] = self._dict_to_analysis(cached)
+            else:
+                uncached_stocks.append(stock)
+
+        if cached_results:
+            logger.info(f"Found {len(cached_results)} cached analyses, {len(uncached_stocks)} need API calls")
+
+        if uncached_stocks:
+            requests = []
+            for stock in uncached_stocks:
+                user_prompt = self._build_analysis_user_prompt(
+                    symbol=stock["symbol"],
+                    company_name=stock.get("company_name", stock["symbol"]),
+                    filing_text=stock["filing_text"],
+                    earnings_transcript=stock.get("earnings_transcript"),
+                    recent_news=stock.get("recent_news"),
+                )
+                requests.append(
+                    {
+                        "custom_id": stock["symbol"],
+                        "params": {
+                            "model": self.model_deep,
+                            "max_tokens": 4096,
+                            "system": [
+                                {
+                                    "type": "text",
+                                    "text": ANALYSIS_SYSTEM_PROMPT,
+                                    "cache_control": {"type": "ephemeral"},
+                                }
+                            ],
+                            "messages": [{"role": "user", "content": user_prompt}],
+                        },
+                    }
+                )
+
+            logger.info(f"Submitting batch of {len(requests)} deep analysis requests...")
+            batch = self.client.messages.batches.create(requests=requests)
+            logger.info(f"Batch created: {batch.id}")
+
+            self._wait_for_batch(batch.id)
+
+            for result in self.client.messages.batches.results(batch.id):
+                symbol = result.custom_id
+                if result.result.type == "succeeded":
+                    text = result.result.message.content[0].text
+                    company_name = next(
+                        (s.get("company_name", s["symbol"]) for s in uncached_stocks if s["symbol"] == symbol),
+                        symbol,
+                    )
+                    analysis = self._parse_analysis(symbol, company_name, text)
+                    save_analysis_to_cache(symbol, analysis.to_dict())
+                    cached_results[symbol] = analysis
+                else:
+                    logger.error(f"Batch analysis failed for {symbol}: {result.result.type}")
+
+        # Return in original order
+        return [cached_results[s["symbol"]] for s in stocks if s["symbol"] in cached_results]
 
 
 if __name__ == "__main__":

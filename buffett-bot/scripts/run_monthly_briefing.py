@@ -260,21 +260,37 @@ def run_monthly_briefing(
     analyzer = CompanyAnalyzer()
     haiku_results = []
 
-    for val in valuations[:haiku_candidates]:
-        try:
+    use_batch = os.getenv("USE_BATCH_API", "true").lower() == "true"
+
+    if use_batch:
+        logger.info("   Using Batch API (50% discount)...")
+        stocks_for_screen = []
+        for val in valuations[:haiku_candidates]:
             filing_text = fetch_company_summary(val.symbol)
-            result = analyzer.quick_screen(val.symbol, filing_text)
+            stocks_for_screen.append((val.symbol, filing_text))
+
+        batch_results = analyzer.batch_quick_screen(stocks_for_screen)
+        for result, val in zip(batch_results, valuations[:haiku_candidates]):
             result["valuation"] = val
             haiku_results.append(result)
             logger.info(
                 f"  {val.symbol}: moat={result['moat_hint']}, quality={result['quality_hint']} - {result['reason'][:60]}"
             )
-        except Exception as e:
-            logger.warning(f"  {val.symbol}: Haiku screen failed: {e}")
-            # Fail open — include it
-            haiku_results.append(
-                {"symbol": val.symbol, "worth_analysis": True, "moat_hint": 3, "quality_hint": 3, "valuation": val}
-            )
+    else:
+        for val in valuations[:haiku_candidates]:
+            try:
+                filing_text = fetch_company_summary(val.symbol)
+                result = analyzer.quick_screen(val.symbol, filing_text)
+                result["valuation"] = val
+                haiku_results.append(result)
+                logger.info(
+                    f"  {val.symbol}: moat={result['moat_hint']}, quality={result['quality_hint']} - {result['reason'][:60]}"
+                )
+            except Exception as e:
+                logger.warning(f"  {val.symbol}: Haiku screen failed: {e}")
+                haiku_results.append(
+                    {"symbol": val.symbol, "worth_analysis": True, "moat_hint": 3, "quality_hint": 3, "valuation": val}
+                )
 
     # Sort by combined moat + quality score, take top max_analyses for Sonnet
     haiku_results.sort(key=lambda r: r["moat_hint"] + r["quality_hint"], reverse=True)
@@ -299,24 +315,23 @@ def run_monthly_briefing(
     briefings = []
     analyzed_symbols = []
 
-    for val in top_for_analysis:
-        try:
-            logger.info(f"Analyzing {val.symbol}...")
-
+    if use_batch:
+        logger.info("   Using Batch API (50% discount)...")
+        stocks_for_analysis = []
+        for val in top_for_analysis:
             filing_text = fetch_company_summary(val.symbol)
+            stocks_for_analysis.append({"symbol": val.symbol, "company_name": val.symbol, "filing_text": filing_text})
 
-            # analyze_company will use cache if available (default)
-            analysis = analyzer.analyze_company(
-                symbol=val.symbol,
-                company_name=val.symbol,
-                filing_text=filing_text,
-                use_cache=use_cache,  # Pass through cache setting
-            )
+        analyses = analyzer.batch_analyze_companies(stocks_for_analysis)
+        analysis_map = {a.symbol: a for a in analyses}
 
-            # Determine recommendation
+        for val in top_for_analysis:
+            analysis = analysis_map.get(val.symbol)
+            if not analysis:
+                logger.error(f"No analysis returned for {val.symbol}")
+                continue
+
             recommendation = determine_recommendation(val, analysis, min_margin_of_safety)
-
-            # Calculate position sizing
             position_size = calculate_position_size(
                 portfolio_value=portfolio_value,
                 conviction=analysis.conviction_level,
@@ -337,13 +352,50 @@ def run_monthly_briefing(
                 recommendation=recommendation,
                 position_size=position_size,
             )
-
             briefings.append(briefing)
             analyzed_symbols.append(val.symbol)
+    else:
+        for val in top_for_analysis:
+            try:
+                logger.info(f"Analyzing {val.symbol}...")
 
-        except Exception as e:
-            logger.error(f"Error analyzing {val.symbol}: {e}")
-            continue
+                filing_text = fetch_company_summary(val.symbol)
+
+                analysis = analyzer.analyze_company(
+                    symbol=val.symbol,
+                    company_name=val.symbol,
+                    filing_text=filing_text,
+                    use_cache=use_cache,
+                )
+
+                recommendation = determine_recommendation(val, analysis, min_margin_of_safety)
+                position_size = calculate_position_size(
+                    portfolio_value=portfolio_value,
+                    conviction=analysis.conviction_level,
+                    current_positions=current_positions,
+                )
+
+                briefing = StockBriefing(
+                    symbol=val.symbol,
+                    company_name=analysis.company_name or val.symbol,
+                    current_price=val.current_price,
+                    market_cap=0,
+                    pe_ratio=None,
+                    debt_equity=None,
+                    roe=None,
+                    revenue_growth=None,
+                    valuation=val,
+                    analysis=analysis,
+                    recommendation=recommendation,
+                    position_size=position_size,
+                )
+
+                briefings.append(briefing)
+                analyzed_symbols.append(val.symbol)
+
+            except Exception as e:
+                logger.error(f"Error analyzing {val.symbol}: {e}")
+                continue
 
     logger.info(f"   ✓ Completed {len(briefings)} analyses")
 
