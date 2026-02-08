@@ -204,7 +204,7 @@ class CompanyAnalyzer:
         )
 
         # Parse the response
-        analysis_text = response.content[0].text
+        analysis_text: str = response.content[0].text  # type: ignore[union-attr]
 
         analysis = self._parse_analysis(symbol, company_name, analysis_text)
 
@@ -423,7 +423,7 @@ REASON: <one sentence>"""
                 model=self.model_light, max_tokens=256, messages=[{"role": "user", "content": prompt}]
             )
 
-            text = response.content[0].text
+            text: str = response.content[0].text  # type: ignore[union-attr]
             lines = [line.strip() for line in text.strip().split("\n") if line.strip()]
 
             moat_hint = 3
@@ -512,7 +512,7 @@ EXPLANATION: [1-2 sentences]
             model=self.model_light, max_tokens=1024, messages=[{"role": "user", "content": prompt}]
         )
 
-        text = response.content[0].text
+        text: str = response.content[0].text  # type: ignore[union-attr]
 
         has_flags = "RED FLAGS DETECTED: YES" in text.upper()
 
