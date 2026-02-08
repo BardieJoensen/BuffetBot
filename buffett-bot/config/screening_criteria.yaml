@@ -4,7 +4,7 @@
 screening:
   # Market cap range (in USD)
   min_market_cap: 300000000    # $300M - avoid micro-caps
-  max_market_cap: 10000000000  # $10B - focus on small/mid-caps
+  max_market_cap: 500000000000  # $500B - include large-caps
 
   # Valuation
   max_pe_ratio: 20             # Avoid overpaying

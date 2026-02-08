@@ -60,7 +60,7 @@ docker exec buffett-bot python -m scripts.run_monthly_briefing  # Manual run
 
 ### Configuration
 Edit `config/screening_criteria.yaml` to tune:
-- Market cap range ($300M-$10B default)
+- Market cap range ($300M-$500B default)
 - P/E threshold (20x default)
 - Debt/equity, ROE, growth minimums
 - Margin of safety for BUY flag (20% default)
@@ -154,6 +154,6 @@ See [src/portfolio.py](src/portfolio.py#L45) for pattern.
 ## Important Constraints
 - **No shorting**: Bubble detector is "stay away", not trading signal
 - **Margin of safety**: Require 20%+ discount to fair value for BUY
-- **Market cap focus**: $300M-$10B range (avoids micro-caps and mega-caps)
+- **Market cap focus**: $300M-$500B range (avoids micro-caps)
 - **US stocks only**: NASDAQ/NYSE for now
 - **Monthly cadence**: Heavy compute/LLM runs once/month; lighter daily news monitoring

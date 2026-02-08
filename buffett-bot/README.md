@@ -43,29 +43,24 @@ buffett-bot/
 ├── src/
 │   ├── __init__.py
 │   ├── universe.py          # Dynamic stock universe (Finviz/Wikipedia/fallback)
-│   ├── screener.py          # Stock screening logic
-│   ├── fundamentals.py      # Fetch financial data
+│   ├── screener.py          # Score-based stock screening
 │   ├── valuation.py         # Aggregate fair value estimates
-│   ├── analyzer.py          # LLM qualitative analysis
-│   ├── monitor.py           # News and thesis monitoring
+│   ├── analyzer.py          # LLM qualitative analysis (Sonnet + Haiku)
 │   ├── briefing.py          # Generate monthly reports
-│   └── database.py          # Watchlist and portfolio storage
+│   ├── portfolio.py         # Portfolio tracking and thesis management
+│   ├── bubble_detector.py   # Market bubble/froth detection
+│   ├── notifications.py     # Email/Telegram/ntfy.sh alerts
+│   └── paper_trader.py      # Alpaca paper trading integration
 ├── config/
-│   ├── config.yaml          # Main configuration
-│   ├── prompts/
-│   │   ├── moat_analysis.txt
-│   │   ├── management_analysis.txt
-│   │   ├── news_monitor.txt
-│   │   └── briefing_summary.txt
 │   └── screening_criteria.yaml
 ├── data/
-│   ├── watchlist.json       # Current watchlist
-│   ├── portfolio.json       # Your positions
-│   └── analyses/            # Stored company analyses
+│   ├── watchlist_cache.json # Cached watchlist
+│   ├── analyses/            # Stored company analyses
+│   ├── briefings/           # Generated briefing reports
+│   └── cache/               # yfinance data cache
 ├── scripts/
-│   ├── run_weekly_screen.py
-│   ├── run_monthly_briefing.py
-│   └── check_news.py
+│   ├── run_monthly_briefing.py  # Manual pipeline
+│   └── scheduler.py             # Automated job scheduling
 ├── docs/
 │   └── SETUP.md
 ├── docker-compose.yml
@@ -145,7 +140,7 @@ Buffett-style value filter:
 
 | Metric | Criteria | Rationale |
 |--------|----------|-----------|
-| Market Cap | $300M - $10B | Small/mid-cap, under-followed |
+| Market Cap | $300M - $500B | Avoids micro-caps |
 | P/E Ratio | < 20 | Not overvalued |
 | Debt/Equity | < 0.5 | Conservative balance sheet |
 | ROE | > 12% | Efficient capital use |

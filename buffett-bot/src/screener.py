@@ -41,7 +41,7 @@ class ScoringRule:
 class ScreeningCriteria:
     """Value investing screening criteria"""
     min_market_cap: float = 300_000_000      # $300M minimum
-    max_market_cap: float = 10_000_000_000   # $10B maximum
+    max_market_cap: float = 500_000_000_000   # $500B maximum
     max_pe_ratio: float = 20.0               # Not overvalued
     max_debt_equity: float = 0.5             # Conservative debt
     min_roe: float = 0.12                    # 12% return on equity
@@ -77,17 +77,18 @@ def load_criteria_from_yaml(config_path: Optional[Path] = None) -> ScreeningCrit
                 max=float(rule_data["max"]) if "max" in rule_data else None,
             )
 
+        defaults = ScreeningCriteria()
         return ScreeningCriteria(
-            min_market_cap=float(screening.get("min_market_cap", 300_000_000)),
-            max_market_cap=float(screening.get("max_market_cap", 10_000_000_000)),
-            max_pe_ratio=float(screening.get("max_pe_ratio", 20.0)),
-            max_debt_equity=float(screening.get("max_debt_equity", 0.5)),
-            min_roe=float(screening.get("min_roe", 0.12)),
-            min_revenue_growth=float(screening.get("min_revenue_growth", 0.05)),
-            min_current_ratio=float(screening.get("min_current_ratio", 1.5)),
-            min_price=float(screening.get("min_price", 5.0)),
+            min_market_cap=float(screening.get("min_market_cap", defaults.min_market_cap)),
+            max_market_cap=float(screening.get("max_market_cap", defaults.max_market_cap)),
+            max_pe_ratio=float(screening.get("max_pe_ratio", defaults.max_pe_ratio)),
+            max_debt_equity=float(screening.get("max_debt_equity", defaults.max_debt_equity)),
+            min_roe=float(screening.get("min_roe", defaults.min_roe)),
+            min_revenue_growth=float(screening.get("min_revenue_growth", defaults.min_revenue_growth)),
+            min_current_ratio=float(screening.get("min_current_ratio", defaults.min_current_ratio)),
+            min_price=float(screening.get("min_price", defaults.min_price)),
             scoring=scoring,
-            top_n=int(screening.get("top_n", 100)),
+            top_n=int(screening.get("top_n", defaults.top_n)),
         )
 
     except FileNotFoundError:
@@ -110,20 +111,13 @@ def score_stock(data: dict, criteria: ScreeningCriteria) -> float:
 
     total_score = 0.0
 
-    metric_keys = {
-        "pe_ratio": "pe_ratio",
-        "debt_equity": "debt_equity",
-        "roe": "roe",
-        "revenue_growth": "revenue_growth",
-        "current_ratio": "current_ratio",
-    }
+    valid_metrics = {"pe_ratio", "debt_equity", "roe", "revenue_growth", "current_ratio"}
 
     for metric_name, rule in criteria.scoring.items():
-        data_key = metric_keys.get(metric_name)
-        if not data_key:
+        if metric_name not in valid_metrics:
             continue
 
-        value = data.get(data_key)
+        value = data.get(metric_name)
         if value is None:
             continue
 
@@ -219,7 +213,6 @@ class StockScreener:
     4. Score remaining stocks and return top N
     """
 
-    BATCH_SIZE = 20  # Process in smaller batches for reliability
     CACHE_HOURS = 24  # Cache stock data for 24 hours
 
     def __init__(self):
@@ -261,14 +254,9 @@ class StockScreener:
 
     def _fetch_stock_data(self, symbol: str) -> Optional[dict]:
         """
-        Fetch stock data from yfinance.
+        Fetch stock data from yfinance (network call, no cache check).
         Returns dict with price, market cap, P/E, sector, etc.
         """
-        # Check cache first
-        cached = self._get_cached_data(symbol)
-        if cached:
-            return cached
-
         try:
             ticker = yf.Ticker(symbol)
             info = ticker.info
@@ -330,10 +318,13 @@ class StockScreener:
             if processed % 20 == 0:
                 logger.info(f"Progress: {processed}/{len(universe)} stocks processed...")
 
-            data = self._fetch_stock_data(symbol)
-
-            # Small delay to be respectful to Yahoo Finance (no official rate limit but be nice)
-            time.sleep(0.1)
+            cached = self._get_cached_data(symbol)
+            if cached:
+                data = cached
+            else:
+                data = self._fetch_stock_data(symbol)
+                # Small delay to be respectful to Yahoo Finance
+                time.sleep(0.1)
 
             if data is None:
                 errors += 1
@@ -409,7 +400,7 @@ class StockScreener:
         Fetch detailed metrics for a single stock.
         Uses yfinance which provides comprehensive data.
         """
-        data = self._fetch_stock_data(symbol)
+        data = self._get_cached_data(symbol) or self._fetch_stock_data(symbol)
         return data or {}
 
     def apply_detailed_filters(
@@ -417,31 +408,8 @@ class StockScreener:
         candidates: list[ScreenedStock],
         criteria: ScreeningCriteria
     ) -> list[ScreenedStock]:
-        """
-        Apply additional filters using detailed metrics.
-
-        With score-based screening, this is a lightweight pass-through
-        since scoring already handles metric quality. Kept for backward
-        compatibility.
-        """
-        # With scoring enabled, skip binary filters — scoring handles ranking
-        if criteria.scoring:
-            logger.info(f"Score-based screening active, skipping binary filters ({len(candidates)} stocks)")
-            return candidates
-
-        # Fallback: binary filters when no scoring config
-        filtered = []
-        for stock in candidates:
-            if stock.roe is not None and stock.roe < criteria.min_roe:
-                logger.debug(f"{stock.symbol}: ROE {stock.roe:.2%} below threshold")
-                continue
-            if stock.debt_equity is not None and stock.debt_equity > criteria.max_debt_equity:
-                logger.debug(f"{stock.symbol}: D/E {stock.debt_equity:.2f} above threshold")
-                continue
-            filtered.append(stock)
-
-        logger.info(f"After detailed filtering: {len(filtered)} stocks")
-        return filtered
+        """Kept for backward compatibility. Scoring in screen() handles ranking."""
+        return candidates
 
 
 def run_screen(apply_detailed: bool = False) -> list[ScreenedStock]:

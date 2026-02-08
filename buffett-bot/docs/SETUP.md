@@ -112,17 +112,16 @@ VALUATION ESTIMATES:
 
 ## Customizing Screening Criteria
 
-Edit the criteria in `src/screener.py`:
+Edit `config/screening_criteria.yaml`:
 
-```python
-@dataclass
-class ScreeningCriteria:
-    min_market_cap: float = 300_000_000      # $300M minimum
-    max_market_cap: float = 10_000_000_000   # $10B maximum
-    max_pe_ratio: float = 20.0               # Not overvalued
-    max_debt_equity: float = 0.5             # Conservative debt
-    min_roe: float = 0.12                    # 12% return on equity
-    min_revenue_growth: float = 0.05         # 5% growth
+```yaml
+screening:
+  min_market_cap: 300000000    # $300M - avoid micro-caps
+  max_market_cap: 500000000000 # $500B - include large-caps
+  max_pe_ratio: 20             # Avoid overpaying
+  max_debt_equity: 0.5         # Conservative balance sheet
+  min_roe: 0.12                # 12% return on equity
+  min_revenue_growth: 0.05     # 5% year-over-year growth
 ```
 
 Adjust these based on your risk tolerance and market conditions.
