@@ -8,16 +8,18 @@ NOTE: Uses yfinance (completely free, no API key) for all stock data.
 """
 
 import json
+import logging
 import time
-import yaml
 from dataclasses import dataclass, field
-from typing import Optional
 from datetime import datetime, timedelta
 from pathlib import Path
-import logging
+from typing import Optional
+
+import yaml
 import yfinance as yf
 
-from src.universe import get_stock_universe, set_cache_dir as set_universe_cache_dir
+from src.universe import get_stock_universe
+from src.universe import set_cache_dir as set_universe_cache_dir
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,7 @@ DEFAULT_CONFIG_PATH = Path(__file__).parent.parent / "config" / "screening_crite
 @dataclass
 class ScoringRule:
     """A single scored metric rule"""
+
     ideal: float
     weight: float = 1.0
     min: Optional[float] = None  # Zero score below this (for "higher is better" metrics)
@@ -40,16 +43,17 @@ class ScoringRule:
 @dataclass
 class ScreeningCriteria:
     """Value investing screening criteria"""
-    min_market_cap: float = 300_000_000      # $300M minimum
-    max_market_cap: float = 500_000_000_000   # $500B maximum
-    max_pe_ratio: float = 20.0               # Not overvalued
-    max_debt_equity: float = 0.5             # Conservative debt
-    min_roe: float = 0.12                    # 12% return on equity
-    min_revenue_growth: float = 0.05         # 5% growth
-    min_current_ratio: float = 1.5           # Can pay short-term debts
-    min_price: float = 5.0                   # Minimum stock price
+
+    min_market_cap: float = 300_000_000  # $300M minimum
+    max_market_cap: float = 500_000_000_000  # $500B maximum
+    max_pe_ratio: float = 20.0  # Not overvalued
+    max_debt_equity: float = 0.5  # Conservative debt
+    min_roe: float = 0.12  # 12% return on equity
+    min_revenue_growth: float = 0.05  # 5% growth
+    min_current_ratio: float = 1.5  # Can pay short-term debts
+    min_price: float = 5.0  # Minimum stock price
     scoring: dict[str, ScoringRule] = field(default_factory=dict)
-    top_n: int = 100                         # How many top-scoring stocks to keep
+    top_n: int = 100  # How many top-scoring stocks to keep
 
 
 def load_criteria_from_yaml(config_path: Optional[Path] = None) -> ScreeningCriteria:
@@ -172,6 +176,7 @@ def _compute_metric_score(value: float, rule: ScoringRule) -> float:
 @dataclass
 class ScreenedStock:
     """A stock that passed screening criteria"""
+
     symbol: str
     name: str
     market_cap: float
@@ -198,7 +203,7 @@ class ScreenedStock:
             "industry": self.industry,
             "screened_at": self.screened_at.isoformat(),
             "price": self.price,
-            "score": self.score
+            "score": self.score,
         }
 
 
@@ -304,7 +309,9 @@ class StockScreener:
 
         universe = get_stock_universe()
 
-        logger.info(f"Running screen with criteria: market_cap={criteria.min_market_cap:,.0f}-{criteria.max_market_cap:,.0f}")
+        logger.info(
+            f"Running screen with criteria: market_cap={criteria.min_market_cap:,.0f}-{criteria.max_market_cap:,.0f}"
+        )
         logger.info(f"Stock universe: {len(universe)} stocks")
         logger.info("Fetching data from yfinance (free, no API key)...")
 
@@ -319,6 +326,7 @@ class StockScreener:
                 logger.info(f"Progress: {processed}/{len(universe)} stocks processed...")
 
             cached = self._get_cached_data(symbol)
+            data: Optional[dict] = None
             if cached:
                 data = cached
             else:
@@ -339,10 +347,15 @@ class StockScreener:
 
             # Skip closed-end funds and asset management vehicles
             industry = (data.get("industry") or "").lower()
-            if any(term in industry for term in [
-                "closed-end fund", "asset management", "shell companies",
-                "exchange traded fund",
-            ]):
+            if any(
+                term in industry
+                for term in [
+                    "closed-end fund",
+                    "asset management",
+                    "shell companies",
+                    "exchange traded fund",
+                ]
+            ):
                 continue
 
             # Market cap filter
@@ -365,20 +378,22 @@ class StockScreener:
 
             de = data.get("debt_equity")
 
-            candidates.append(ScreenedStock(
-                symbol=symbol,
-                name=data.get("name", symbol),
-                market_cap=market_cap,
-                pe_ratio=pe,
-                debt_equity=de / 100 if de else None,  # Convert to ratio
-                roe=data.get("roe"),
-                revenue_growth=data.get("revenue_growth"),
-                sector=data.get("sector", "Unknown"),
-                industry=data.get("industry", "Unknown"),
-                screened_at=datetime.now(),
-                price=price,
-                score=stock_score
-            ))
+            candidates.append(
+                ScreenedStock(
+                    symbol=symbol,
+                    name=data.get("name", symbol),
+                    market_cap=market_cap,
+                    pe_ratio=pe,
+                    debt_equity=de / 100 if de else None,  # Convert to ratio
+                    roe=data.get("roe"),
+                    revenue_growth=data.get("revenue_growth"),
+                    sector=data.get("sector", "Unknown"),
+                    industry=data.get("industry", "Unknown"),
+                    screened_at=datetime.now(),
+                    price=price,
+                    score=stock_score,
+                )
+            )
 
         logger.info(f"Processed {processed} stocks, {errors} errors")
         logger.info(f"After hard filters: {len(candidates)} candidates")
@@ -404,9 +419,7 @@ class StockScreener:
         return data or {}
 
     def apply_detailed_filters(
-        self,
-        candidates: list[ScreenedStock],
-        criteria: ScreeningCriteria
+        self, candidates: list[ScreenedStock], criteria: ScreeningCriteria
     ) -> list[ScreenedStock]:
         """Kept for backward compatibility. Scoring in screen() handles ranking."""
         return candidates

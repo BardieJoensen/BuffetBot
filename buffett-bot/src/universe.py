@@ -11,10 +11,11 @@ Results are cached for 7 days to avoid hammering external sources.
 
 import json
 import logging
-import pandas as pd
-from pathlib import Path
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Optional
+
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
@@ -92,11 +93,11 @@ def _fetch_finviz_universe() -> Optional[list[str]]:
 
         # Loose pre-filters (server-side)
         filters_dict = {
-            'Market Cap.': '+Small (over $300mln)',  # $300M+
-            'Price': 'Over $5',                       # No penny stocks
-            'Average Volume': 'Over 100K',            # Liquid
-            'P/E': 'Under 30',                        # Loose - strict locally
-            'Country': 'USA',                         # US stocks only
+            "Market Cap.": "+Small (over $300mln)",  # $300M+
+            "Price": "Over $5",  # No penny stocks
+            "Average Volume": "Over 100K",  # Liquid
+            "P/E": "Under 30",  # Loose - strict locally
+            "Country": "USA",  # US stocks only
         }
 
         foverview.set_filter(filters_dict=filters_dict)
@@ -107,10 +108,10 @@ def _fetch_finviz_universe() -> Optional[list[str]]:
             return None
 
         # Extract tickers
-        tickers = df['Ticker'].tolist()
+        tickers = df["Ticker"].tolist()
 
         # Apply sector caps to ensure diversification
-        if 'Sector' in df.columns:
+        if "Sector" in df.columns:
             tickers = _apply_sector_caps(df)
 
         logger.info(f"Finviz returned {len(tickers)} stocks after sector caps")
@@ -140,7 +141,7 @@ def _fetch_sp600_from_wikipedia() -> Optional[list[str]]:
 
         # Find the ticker column
         ticker_col = None
-        for col in ['Symbol', 'Ticker', 'Ticker symbol']:
+        for col in ["Symbol", "Ticker", "Ticker symbol"]:
             if col in df.columns:
                 ticker_col = col
                 break
@@ -169,11 +170,11 @@ def _apply_sector_caps(df: pd.DataFrame) -> list[str]:
     Without this, you might get 200 regional banks and 5 tech stocks.
     """
     capped_tickers = []
-    sector_counts = {}
+    sector_counts: dict[str, int] = {}
 
     for _, row in df.iterrows():
-        sector = row.get('Sector', 'Unknown')
-        ticker = row['Ticker']
+        sector = row.get("Sector", "Unknown")
+        ticker = row["Ticker"]
 
         current_count = sector_counts.get(sector, 0)
 
@@ -192,44 +193,201 @@ def _get_curated_fallback() -> list[str]:
     """
     return [
         # Technology - Semiconductors
-        "LSCC", "DIOD", "SLAB", "POWI", "AOSL", "AMBA", "SITM", "CRUS", "FORM", "MTSI",
-        "SMCI", "CRDO", "AEHR", "RMBS", "HIMX", "PLAB", "ICHR", "ACLS", "COHU", "KLIC",
-
+        "LSCC",
+        "DIOD",
+        "SLAB",
+        "POWI",
+        "AOSL",
+        "AMBA",
+        "SITM",
+        "CRUS",
+        "FORM",
+        "MTSI",
+        "SMCI",
+        "CRDO",
+        "AEHR",
+        "RMBS",
+        "HIMX",
+        "PLAB",
+        "ICHR",
+        "ACLS",
+        "COHU",
+        "KLIC",
         # Technology - Software
-        "ALRM", "APPF", "BAND", "BRZE", "DOCN", "ESTC", "FSLY", "GTLB", "JAMF", "QLYS",
-        "SMAR", "TENB", "NCNO", "EVBG",
-
+        "ALRM",
+        "APPF",
+        "BAND",
+        "BRZE",
+        "DOCN",
+        "ESTC",
+        "FSLY",
+        "GTLB",
+        "JAMF",
+        "QLYS",
+        "SMAR",
+        "TENB",
+        "NCNO",
+        "EVBG",
         # Healthcare - Biotech/Medical Devices
-        "ABCL", "ACAD", "ALKS", "ARVN", "AXSM", "BCRX", "BMRN", "EXAS", "GMED", "HOLX",
-        "INCY", "INSM", "IONS", "JAZZ", "LGND", "MASI", "NVCR", "RARE", "SRPT", "UTHR",
-        "VCYT", "XENE", "MEDP", "ITCI", "CORT", "HALO", "RVMD", "NBIX",
-
+        "ABCL",
+        "ACAD",
+        "ALKS",
+        "ARVN",
+        "AXSM",
+        "BCRX",
+        "BMRN",
+        "EXAS",
+        "GMED",
+        "HOLX",
+        "INCY",
+        "INSM",
+        "IONS",
+        "JAZZ",
+        "LGND",
+        "MASI",
+        "NVCR",
+        "RARE",
+        "SRPT",
+        "UTHR",
+        "VCYT",
+        "XENE",
+        "MEDP",
+        "ITCI",
+        "CORT",
+        "HALO",
+        "RVMD",
+        "NBIX",
         # Industrials
-        "AEIS", "AGCO", "ALG", "ASTE", "BWXT", "CMC", "ENS", "GGG", "GVA", "HUBB",
-        "KBR", "LDOS", "MLI", "NVT", "PRIM", "RBC", "TRN", "VMI", "WCC", "WSC",
-        "POWL", "ROAD", "STRL", "DY", "MTZ", "BLDR", "UFPI", "TREX", "ATKR", "GNRC",
-        "AAON", "LECO", "MIDD",
-
+        "AEIS",
+        "AGCO",
+        "ALG",
+        "ASTE",
+        "BWXT",
+        "CMC",
+        "ENS",
+        "GGG",
+        "GVA",
+        "HUBB",
+        "KBR",
+        "LDOS",
+        "MLI",
+        "NVT",
+        "PRIM",
+        "RBC",
+        "TRN",
+        "VMI",
+        "WCC",
+        "WSC",
+        "POWL",
+        "ROAD",
+        "STRL",
+        "DY",
+        "MTZ",
+        "BLDR",
+        "UFPI",
+        "TREX",
+        "ATKR",
+        "GNRC",
+        "AAON",
+        "LECO",
+        "MIDD",
         # Consumer - Retail/Restaurants
-        "BJRI", "BOOT", "CAKE", "DIN", "EAT", "FIZZ", "HIBB", "PLAY", "PLNT", "SHAK",
-        "TXRH", "WING", "LULU", "DECK", "CROX", "SKX", "DKS",
-
+        "BJRI",
+        "BOOT",
+        "CAKE",
+        "DIN",
+        "EAT",
+        "FIZZ",
+        "HIBB",
+        "PLAY",
+        "PLNT",
+        "SHAK",
+        "TXRH",
+        "WING",
+        "LULU",
+        "DECK",
+        "CROX",
+        "SKX",
+        "DKS",
         # Financials
-        "ALLY", "AX", "CADE", "EWBC", "FHN", "GBCI", "HBAN", "IBOC", "NWBI", "ONB",
-        "PNFP", "SBCF", "SFBS", "SNV", "TFIN", "UBSI", "VLY", "WAL", "LPLA", "PIPR",
-        "IBKR", "MKTX", "VIRT", "CACC", "SLM", "ENVA", "OMF", "LC", "UPST", "SOFI",
-
+        "ALLY",
+        "AX",
+        "CADE",
+        "EWBC",
+        "FHN",
+        "GBCI",
+        "HBAN",
+        "IBOC",
+        "NWBI",
+        "ONB",
+        "PNFP",
+        "SBCF",
+        "SFBS",
+        "SNV",
+        "TFIN",
+        "UBSI",
+        "VLY",
+        "WAL",
+        "LPLA",
+        "PIPR",
+        "IBKR",
+        "MKTX",
+        "VIRT",
+        "CACC",
+        "SLM",
+        "ENVA",
+        "OMF",
+        "LC",
+        "UPST",
+        "SOFI",
         # Energy & Materials
-        "AROC", "BCPC", "CEIX", "CNX", "CTRA", "FANG", "HLX", "HP", "KOS", "MTDR",
-        "OVV", "PARR", "RRC", "SM", "SWN", "CLF", "STLD", "NUE", "RS", "ATI", "AA",
-
+        "AROC",
+        "BCPC",
+        "CEIX",
+        "CNX",
+        "CTRA",
+        "FANG",
+        "HLX",
+        "HP",
+        "KOS",
+        "MTDR",
+        "OVV",
+        "PARR",
+        "RRC",
+        "SM",
+        "SWN",
+        "CLF",
+        "STLD",
+        "NUE",
+        "RS",
+        "ATI",
+        "AA",
         # REITs
-        "AIRC", "BRX", "COLD", "CPT", "CUZ", "DEI", "EGP", "FR", "GTY", "HIW",
-        "IIPR", "KRC", "LSI", "NNN", "OHI", "ROIC", "STAG", "SBRA", "VTR", "LTC",
+        "AIRC",
+        "BRX",
+        "COLD",
+        "CPT",
+        "CUZ",
+        "DEI",
+        "EGP",
+        "FR",
+        "GTY",
+        "HIW",
+        "IIPR",
+        "KRC",
+        "LSI",
+        "NNN",
+        "OHI",
+        "ROIC",
+        "STAG",
+        "SBRA",
+        "VTR",
+        "LTC",
     ]
 
 
 # === Cache Management ===
+
 
 def _load_cached_universe() -> Optional[list[str]]:
     """Load universe from cache if fresh enough"""
@@ -241,14 +399,14 @@ def _load_cached_universe() -> Optional[list[str]]:
     try:
         data = json.loads(cache_file.read_text())
 
-        cached_at = datetime.fromisoformat(data.get('cached_at', '2000-01-01'))
+        cached_at = datetime.fromisoformat(data.get("cached_at", "2000-01-01"))
         age = datetime.now() - cached_at
 
         if age > timedelta(days=UNIVERSE_CACHE_DAYS):
             logger.info(f"Universe cache expired ({age.days} days old)")
             return None
 
-        return data.get('tickers', [])
+        return data.get("tickers", [])
 
     except Exception as e:
         logger.warning(f"Failed to load universe cache: {e}")
@@ -260,12 +418,7 @@ def _save_universe_cache(tickers: list[str], source: str):
     try:
         _cache_dir.mkdir(parents=True, exist_ok=True)
 
-        data = {
-            'tickers': tickers,
-            'source': source,
-            'cached_at': datetime.now().isoformat(),
-            'count': len(tickers)
-        }
+        data = {"tickers": tickers, "source": source, "cached_at": datetime.now().isoformat(), "count": len(tickers)}
 
         _universe_cache_file().write_text(json.dumps(data, indent=2))
         logger.info(f"Cached {len(tickers)} tickers from {source}")
@@ -279,14 +432,14 @@ def _cache_age_days() -> float:
     cache_file = _universe_cache_file()
 
     if not cache_file.exists():
-        return float('inf')
+        return float("inf")
 
     try:
         data = json.loads(cache_file.read_text())
-        cached_at = datetime.fromisoformat(data.get('cached_at', '2000-01-01'))
+        cached_at = datetime.fromisoformat(data.get("cached_at", "2000-01-01"))
         return (datetime.now() - cached_at).total_seconds() / 86400
     except Exception:
-        return float('inf')
+        return float("inf")
 
 
 def refresh_universe():

@@ -14,12 +14,13 @@ Signals:
 NOTE: Uses yfinance (free) and Finnhub (free tier).
 """
 
+import logging
 import os
-import requests
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
-import logging
+
+import requests
 import yfinance as yf
 
 logger = logging.getLogger(__name__)
@@ -27,15 +28,37 @@ logger = logging.getLogger(__name__)
 
 # Popular/trending stocks to check for bubbles
 TRENDING_STOCKS = [
-    "TSLA", "NVDA", "PLTR", "AMD", "COIN", "HOOD", "MSTR", "RIOT",
-    "SQ", "SHOP", "SNOW", "CRWD", "NET", "DDOG", "ZS", "OKTA",
-    "RBLX", "U", "ABNB", "DASH", "UBER", "LYFT", "RIVN", "LCID"
+    "TSLA",
+    "NVDA",
+    "PLTR",
+    "AMD",
+    "COIN",
+    "HOOD",
+    "MSTR",
+    "RIOT",
+    "SQ",
+    "SHOP",
+    "SNOW",
+    "CRWD",
+    "NET",
+    "DDOG",
+    "ZS",
+    "OKTA",
+    "RBLX",
+    "U",
+    "ABNB",
+    "DASH",
+    "UBER",
+    "LYFT",
+    "RIVN",
+    "LCID",
 ]
 
 
 @dataclass
 class BubbleWarning:
     """A stock flagged as potentially overvalued"""
+
     symbol: str
     company_name: str
     current_price: float
@@ -68,9 +91,9 @@ class BubbleWarning:
                 "pe_ratio": self.pe_ratio,
                 "revenue_growth": self.revenue_growth,
                 "insider_selling": self.insider_selling,
-                "debt_change": self.debt_change
+                "debt_change": self.debt_change,
             },
-            "summary": self.summary
+            "summary": self.summary,
         }
 
 
@@ -150,7 +173,7 @@ class BubbleDetector:
         # Signal 2: Negative earnings but high market cap
         if pe and pe < 0:
             if market_cap > 10_000_000_000:  # >$10B
-                signals.append(f"No earnings (negative P/E) with ${market_cap/1e9:.0f}B market cap")
+                signals.append(f"No earnings (negative P/E) with ${market_cap / 1e9:.0f}B market cap")
 
         # Signal 3: P/E > 100 (extreme speculation)
         if pe and pe > 100:
@@ -175,7 +198,7 @@ class BubbleDetector:
         # Signal 6: Debt spiking
         if debt_equity and debt_equity > 200:  # yfinance returns as percentage
             debt_change = debt_equity / 100
-            signals.append(f"High debt/equity of {debt_equity/100:.1f}")
+            signals.append(f"High debt/equity of {debt_equity / 100:.1f}")
 
         # Signal 7: Price-to-Sales extreme
         if ps_ratio and ps_ratio > 20:
@@ -185,7 +208,9 @@ class BubbleDetector:
         target_price = info.get("targetMeanPrice")
         if target_price and price > 0:
             if price > target_price * 1.3:  # 30% above target
-                signals.append(f"Price ${price:.0f} is {((price/target_price)-1)*100:.0f}% above analyst target ${target_price:.0f}")
+                signals.append(
+                    f"Price ${price:.0f} is {((price / target_price) - 1) * 100:.0f}% above analyst target ${target_price:.0f}"
+                )
 
         if not signals:
             return None
@@ -211,7 +236,7 @@ class BubbleDetector:
             insider_selling=insider_selling,
             debt_change=debt_change,
             risk_level=risk_level,
-            summary=summary
+            summary=summary,
         )
 
     def _get_insider_activity(self, symbol: str) -> Optional[dict]:
@@ -224,7 +249,7 @@ class BubbleDetector:
             response = requests.get(
                 "https://finnhub.io/api/v1/stock/insider-transactions",
                 params={"symbol": symbol, "token": self.finnhub_key},
-                timeout=10
+                timeout=10,
             )
 
             if response.status_code == 200:
@@ -239,7 +264,7 @@ class BubbleDetector:
                         "net_transactions": buys - sells,
                         "buys": buys,
                         "sells": sells,
-                        "summary": f"{sells} sells, {buys} buys recently"
+                        "summary": f"{sells} sells, {buys} buys recently",
                     }
         except Exception as e:
             logger.debug(f"Finnhub insider error for {symbol}: {e}")
@@ -263,7 +288,7 @@ def get_market_temperature() -> dict:
         info = spy.info
 
         # SPY doesn't have direct P/E, estimate from price/earnings
-        price = info.get("regularMarketPrice") or info.get("previousClose") or 0
+        info.get("regularMarketPrice") or info.get("previousClose") or 0
 
         # Get VOO (Vanguard S&P 500) which sometimes has better data
         voo = yf.Ticker("VOO")
@@ -279,7 +304,6 @@ def get_market_temperature() -> dict:
     except Exception as e:
         logger.debug(f"Error fetching market data: {e}")
         pe_ratio = None
-        price = 0
 
     # Historical S&P 500 P/E averages:
     # <15: Cheap
@@ -307,12 +331,13 @@ def get_market_temperature() -> dict:
         "temperature": temperature,
         "market_pe": pe_ratio,
         "interpretation": interpretation,
-        "checked_at": datetime.now().isoformat()
+        "checked_at": datetime.now().isoformat(),
     }
 
 
 if __name__ == "__main__":
     from dotenv import load_dotenv
+
     load_dotenv()
 
     logging.basicConfig(level=logging.INFO)

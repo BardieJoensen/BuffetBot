@@ -13,9 +13,9 @@ Safety features:
 - Trade notifications sent via configured channels
 """
 
-import os
 import json
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -67,6 +67,7 @@ class PaperTrader:
 
         try:
             from alpaca.trading.client import TradingClient
+
             self._trading_client = TradingClient(api_key, secret_key, paper=True)
             self._enabled = True
             logger.info("Alpaca paper trading initialized")
@@ -135,8 +136,8 @@ class PaperTrader:
             return []
 
         try:
-            from alpaca.trading.requests import GetOrdersRequest
             from alpaca.trading.enums import QueryOrderStatus
+            from alpaca.trading.requests import GetOrdersRequest
 
             request = GetOrdersRequest(status=QueryOrderStatus.OPEN)
             orders = self._trading_client.get_orders(filter=request)
@@ -196,8 +197,8 @@ class PaperTrader:
                 logger.warning(f"Invalid buy amount ${dollar_amount} for {symbol}")
                 return None
 
-            from alpaca.trading.requests import MarketOrderRequest
             from alpaca.trading.enums import OrderSide, TimeInForce
+            from alpaca.trading.requests import MarketOrderRequest
 
             order_request = MarketOrderRequest(
                 symbol=symbol,
@@ -245,8 +246,8 @@ class PaperTrader:
                 logger.warning(f"No position in {symbol} to sell")
                 return None
 
-            from alpaca.trading.requests import MarketOrderRequest
             from alpaca.trading.enums import OrderSide, TimeInForce
+            from alpaca.trading.requests import MarketOrderRequest
 
             qty = held[0]["qty"]
             order_request = MarketOrderRequest(

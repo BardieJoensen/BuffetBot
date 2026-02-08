@@ -18,15 +18,16 @@ COST OPTIMIZATION:
 - Reduced input truncation limits
 """
 
-import os
 import json
-from anthropic import Anthropic
-from dataclasses import dataclass
-from typing import Optional
-from enum import Enum
-from datetime import datetime
-from pathlib import Path
 import logging
+import os
+from dataclasses import dataclass
+from datetime import datetime
+from enum import Enum
+from pathlib import Path
+from typing import Optional
+
+from anthropic import Anthropic
 
 logger = logging.getLogger(__name__)
 
@@ -45,45 +46,46 @@ def set_cache_dir(path: Path):
 
 
 class MoatRating(Enum):
-    WIDE = "wide"        # Strong, durable competitive advantage
-    NARROW = "narrow"    # Some advantage, but less durable
-    NONE = "none"        # No meaningful competitive advantage
+    WIDE = "wide"  # Strong, durable competitive advantage
+    NARROW = "narrow"  # Some advantage, but less durable
+    NONE = "none"  # No meaningful competitive advantage
 
 
 class ManagementRating(Enum):
     EXCELLENT = "excellent"  # Aligned, competent, honest
-    ADEQUATE = "adequate"    # Acceptable
-    POOR = "poor"           # Red flags present
+    ADEQUATE = "adequate"  # Acceptable
+    POOR = "poor"  # Red flags present
 
 
 @dataclass
 class QualitativeAnalysis:
     """LLM-generated qualitative assessment of a company"""
+
     symbol: str
     company_name: str
-    
+
     # Moat Assessment
     moat_rating: MoatRating
-    moat_sources: list[str]      # e.g., ["switching costs", "network effects"]
+    moat_sources: list[str]  # e.g., ["switching costs", "network effects"]
     moat_explanation: str
-    
-    # Management Assessment  
+
+    # Management Assessment
     management_rating: ManagementRating
     management_notes: str
     insider_ownership: Optional[str]
-    
+
     # Business Quality
     business_summary: str
     competitive_position: str
-    
+
     # Risks
     key_risks: list[str]
-    thesis_risks: list[str]      # What would break the investment thesis
-    
+    thesis_risks: list[str]  # What would break the investment thesis
+
     # Overall
     investment_thesis: str
-    conviction_level: str        # HIGH, MEDIUM, LOW
-    
+    conviction_level: str  # HIGH, MEDIUM, LOW
+
     def to_dict(self) -> dict:
         return {
             "symbol": self.symbol,
@@ -91,21 +93,18 @@ class QualitativeAnalysis:
             "moat": {
                 "rating": self.moat_rating.value,
                 "sources": self.moat_sources,
-                "explanation": self.moat_explanation
+                "explanation": self.moat_explanation,
             },
             "management": {
                 "rating": self.management_rating.value,
                 "notes": self.management_notes,
-                "insider_ownership": self.insider_ownership
+                "insider_ownership": self.insider_ownership,
             },
             "business_summary": self.business_summary,
             "competitive_position": self.competitive_position,
-            "risks": {
-                "key_risks": self.key_risks,
-                "thesis_risks": self.thesis_risks
-            },
+            "risks": {"key_risks": self.key_risks, "thesis_risks": self.thesis_risks},
             "investment_thesis": self.investment_thesis,
-            "conviction_level": self.conviction_level
+            "conviction_level": self.conviction_level,
         }
 
 
@@ -115,7 +114,7 @@ def get_cached_analysis(symbol: str, max_age_days: int = 30) -> Optional[dict]:
     if cache_file.exists():
         try:
             data = json.loads(cache_file.read_text())
-            analyzed_date = datetime.fromisoformat(data.get('analyzed_at', '2000-01-01'))
+            analyzed_date = datetime.fromisoformat(data.get("analyzed_at", "2000-01-01"))
             if (datetime.now() - analyzed_date).days < max_age_days:
                 logger.info(f"Using cached analysis for {symbol} ({(datetime.now() - analyzed_date).days} days old)")
                 return data
@@ -128,7 +127,7 @@ def save_analysis_to_cache(symbol: str, analysis: dict):
     """Cache analysis result"""
     try:
         _cache_dir.mkdir(parents=True, exist_ok=True)
-        analysis['analyzed_at'] = datetime.now().isoformat()
+        analysis["analyzed_at"] = datetime.now().isoformat()
         (_cache_dir / f"{symbol}.json").write_text(json.dumps(analysis, indent=2))
         logger.info(f"Cached analysis for {symbol}")
     except Exception as e:
@@ -160,18 +159,18 @@ class CompanyAnalyzer:
         self.client = Anthropic(api_key=self.api_key)
 
         # Two models: expensive for deep analysis, cheap for simple tasks
-        self.model_deep = "claude-sonnet-4-20250514"    # For 10-K analysis
+        self.model_deep = "claude-sonnet-4-20250514"  # For 10-K analysis
         self.model_light = "claude-haiku-4-5-20251001"  # For news monitoring (20x cheaper)
-    
+
     def analyze_company(
         self,
         symbol: str,
         company_name: str,
-        filing_text: str,           # 10-K summary or full text
+        filing_text: str,  # 10-K summary or full text
         earnings_transcript: Optional[str] = None,
         recent_news: Optional[str] = None,
         use_cache: bool = True,
-        cache_max_age_days: int = 30
+        cache_max_age_days: int = 30,
     ) -> QualitativeAnalysis:
         """
         Perform deep qualitative analysis of a company.
@@ -194,18 +193,14 @@ class CompanyAnalyzer:
             if cached:
                 return self._dict_to_analysis(cached)
 
-        prompt = self._build_analysis_prompt(
-            symbol, company_name, filing_text, earnings_transcript, recent_news
-        )
+        prompt = self._build_analysis_prompt(symbol, company_name, filing_text, earnings_transcript, recent_news)
 
         logger.info(f"Analyzing {symbol} with Claude (Sonnet)...")
 
         response = self.client.messages.create(
             model=self.model_deep,  # Use Sonnet for deep analysis
             max_tokens=4096,
-            messages=[
-                {"role": "user", "content": prompt}
-            ]
+            messages=[{"role": "user", "content": prompt}],
         )
 
         # Parse the response
@@ -238,16 +233,16 @@ class CompanyAnalyzer:
             key_risks=risks_data.get("key_risks", []),
             thesis_risks=risks_data.get("thesis_risks", []),
             investment_thesis=data.get("investment_thesis", ""),
-            conviction_level=data.get("conviction_level", "LOW")
+            conviction_level=data.get("conviction_level", "LOW"),
         )
-    
+
     def _build_analysis_prompt(
         self,
         symbol: str,
         company_name: str,
         filing_text: str,
         earnings_transcript: Optional[str],
-        recent_news: Optional[str]
+        recent_news: Optional[str],
     ) -> str:
         """Build the analysis prompt for Claude"""
 
@@ -257,24 +252,24 @@ Analyze the following company for potential long-term investment.
 COMPANY: {company_name} ({symbol})
 
 === ANNUAL REPORT (10-K) ===
-{filing_text[:self.MAX_FILING_CHARS]}
+{filing_text[: self.MAX_FILING_CHARS]}
 
 """
 
         if earnings_transcript:
             prompt += f"""
 === RECENT EARNINGS CALL ===
-{earnings_transcript[:self.MAX_TRANSCRIPT_CHARS]}
+{earnings_transcript[: self.MAX_TRANSCRIPT_CHARS]}
 
 """
 
         if recent_news:
             prompt += f"""
 === RECENT NEWS ===
-{recent_news[:self.MAX_NEWS_CHARS]}
+{recent_news[: self.MAX_NEWS_CHARS]}
 
 """
-        
+
         prompt += """
 Based on the above information, provide your analysis in the following format:
 
@@ -311,42 +306,37 @@ Insider Ownership: [If mentioned in documents]
 ## CONVICTION LEVEL
 [HIGH / MEDIUM / LOW] - [One sentence explanation]
 
-IMPORTANT: 
+IMPORTANT:
 - Do NOT calculate valuations or fair values
 - Do NOT make price predictions
 - Focus on qualitative business analysis only
 - Be skeptical and highlight genuine risks
 """
-        
+
         return prompt
-    
-    def _parse_analysis(
-        self, 
-        symbol: str, 
-        company_name: str, 
-        analysis_text: str
-    ) -> QualitativeAnalysis:
+
+    def _parse_analysis(self, symbol: str, company_name: str, analysis_text: str) -> QualitativeAnalysis:
         """Parse Claude's response into structured data"""
-        
+
         # Simple parsing - in production you'd want more robust parsing
         # or ask Claude to return JSON
-        
-        def extract_section(text: str, header: str, next_header: str = None) -> str:
+
+        def extract_section(text: str, header: str, next_header: Optional[str] = None) -> str:
             """Extract text between headers"""
             start = text.find(header)
             if start == -1:
                 return ""
             start += len(header)
-            
+
             if next_header:
                 end = text.find(next_header, start)
                 if end == -1:
                     end = len(text)
             else:
                 end = len(text)
-            
+
             return text[start:end].strip()
-        
+
         def extract_rating(text: str, options: list) -> str:
             """Find which rating option appears in text"""
             text_upper = text.upper()
@@ -354,7 +344,7 @@ IMPORTANT:
                 if option.upper() in text_upper:
                     return option
             return options[-1]  # Default to last (usually worst)
-        
+
         def extract_list(text: str) -> list:
             """Extract bulleted/numbered list items"""
             items = []
@@ -366,7 +356,7 @@ IMPORTANT:
                     if cleaned:
                         items.append(cleaned)
             return items
-        
+
         # Extract each section
         moat_section = extract_section(analysis_text, "## MOAT ASSESSMENT", "## MANAGEMENT")
         mgmt_section = extract_section(analysis_text, "## MANAGEMENT ASSESSMENT", "## BUSINESS")
@@ -376,22 +366,24 @@ IMPORTANT:
         thesis_risks_section = extract_section(analysis_text, "## THESIS-BREAKING", "## INVESTMENT THESIS")
         thesis_section = extract_section(analysis_text, "## INVESTMENT THESIS", "## CONVICTION")
         conviction_section = extract_section(analysis_text, "## CONVICTION LEVEL", None)
-        
+
         # Parse ratings
         moat_rating_str = extract_rating(moat_section, ["WIDE", "NARROW", "NONE"])
         moat_rating = MoatRating(moat_rating_str.lower())
-        
+
         mgmt_rating_str = extract_rating(mgmt_section, ["EXCELLENT", "ADEQUATE", "POOR"])
         mgmt_rating = ManagementRating(mgmt_rating_str.lower())
-        
+
         conviction = extract_rating(conviction_section, ["HIGH", "MEDIUM", "LOW"])
-        
+
         return QualitativeAnalysis(
             symbol=symbol,
             company_name=company_name,
             moat_rating=moat_rating,
             moat_sources=extract_list(moat_section),
-            moat_explanation=moat_section.split("Explanation:")[-1].strip() if "Explanation:" in moat_section else moat_section,
+            moat_explanation=moat_section.split("Explanation:")[-1].strip()
+            if "Explanation:" in moat_section
+            else moat_section,
             management_rating=mgmt_rating,
             management_notes=mgmt_section,
             insider_ownership=None,  # Would need specific extraction
@@ -400,9 +392,9 @@ IMPORTANT:
             key_risks=extract_list(risks_section),
             thesis_risks=extract_list(thesis_risks_section),
             investment_thesis=thesis_section,
-            conviction_level=conviction
+            conviction_level=conviction,
         )
-    
+
     def quick_screen(self, symbol: str, filing_text: str) -> dict:
         """
         Haiku-powered quick screen to decide if a stock is worth deep analysis.
@@ -428,13 +420,11 @@ REASON: <one sentence>"""
 
         try:
             response = self.client.messages.create(
-                model=self.model_light,
-                max_tokens=256,
-                messages=[{"role": "user", "content": prompt}]
+                model=self.model_light, max_tokens=256, messages=[{"role": "user", "content": prompt}]
             )
 
             text = response.content[0].text
-            lines = [l.strip() for l in text.strip().split("\n") if l.strip()]
+            lines = [line.strip() for line in text.strip().split("\n") if line.strip()]
 
             moat_hint = 3
             quality_hint = 3
@@ -479,21 +469,17 @@ REASON: <one sentence>"""
             }
 
     def check_news_for_red_flags(
-        self, 
-        symbol: str, 
-        investment_thesis: str,
-        thesis_risks: list[str],
-        recent_news: str
+        self, symbol: str, investment_thesis: str, thesis_risks: list[str], recent_news: str
     ) -> dict:
         """
         Check if recent news contains thesis-breaking events.
-        
+
         Returns dict with:
         - has_red_flags: bool
         - flags: list of concerning items
         - recommendation: HOLD / REVIEW / SELL
         """
-        
+
         prompt = f"""You are monitoring a stock position for potential red flags.
 
 STOCK: {symbol}
@@ -505,7 +491,7 @@ THESIS-BREAKING RISKS (events that would signal sell):
 {chr(10).join(f"- {risk}" for risk in thesis_risks)}
 
 RECENT NEWS:
-{recent_news[:self.MAX_NEWS_CHARS]}
+{recent_news[: self.MAX_NEWS_CHARS]}
 
 Analyze the news and determine:
 1. Are there any events that match the thesis-breaking risks?
@@ -523,58 +509,49 @@ EXPLANATION: [1-2 sentences]
 
         # Use Haiku for news monitoring - 20x cheaper than Sonnet
         response = self.client.messages.create(
-            model=self.model_light,
-            max_tokens=1024,
-            messages=[{"role": "user", "content": prompt}]
+            model=self.model_light, max_tokens=1024, messages=[{"role": "user", "content": prompt}]
         )
-        
+
         text = response.content[0].text
-        
+
         has_flags = "RED FLAGS DETECTED: YES" in text.upper()
-        
+
         # Extract recommendation
         rec = "HOLD"
         if "RECOMMENDATION: SELL" in text.upper():
             rec = "SELL"
         elif "RECOMMENDATION: REVIEW" in text.upper():
             rec = "REVIEW"
-        
-        return {
-            "has_red_flags": has_flags,
-            "analysis": text,
-            "recommendation": rec
-        }
+
+        return {"has_red_flags": has_flags, "analysis": text, "recommendation": rec}
 
 
 if __name__ == "__main__":
     from dotenv import load_dotenv
+
     load_dotenv()
-    
+
     logging.basicConfig(level=logging.INFO)
-    
+
     # Test with sample text
     analyzer = CompanyAnalyzer()
-    
+
     sample_filing = """
-    Apple Inc. designs, manufactures, and markets smartphones, personal computers, 
-    tablets, wearables, and accessories worldwide. The company offers iPhone, Mac, 
-    iPad, and wearables including AirPods and Apple Watch. Services include the 
+    Apple Inc. designs, manufactures, and markets smartphones, personal computers,
+    tablets, wearables, and accessories worldwide. The company offers iPhone, Mac,
+    iPad, and wearables including AirPods and Apple Watch. Services include the
     App Store, Apple Music, Apple TV+, and iCloud.
-    
-    Revenue for fiscal year 2024 was $383 billion. iPhone remains the largest 
+
+    Revenue for fiscal year 2024 was $383 billion. iPhone remains the largest
     segment at 52% of revenue. Services grew 14% year-over-year to $85 billion.
     The company returned $90 billion to shareholders through dividends and buybacks.
-    
+
     Tim Cook has been CEO since 2011. The company maintains $162 billion in cash
     and marketable securities against $111 billion in debt.
     """
-    
-    analysis = analyzer.analyze_company(
-        symbol="AAPL",
-        company_name="Apple Inc.",
-        filing_text=sample_filing
-    )
-    
+
+    analysis = analyzer.analyze_company(symbol="AAPL", company_name="Apple Inc.", filing_text=sample_filing)
+
     print("\n=== Analysis Results ===\n")
     print(f"Moat: {analysis.moat_rating.value}")
     print(f"Management: {analysis.management_rating.value}")

@@ -8,12 +8,13 @@ Instead, fetches estimates from services that specialize in valuation.
 NOTE: Uses yfinance (free) and Finnhub (free tier).
 """
 
-import os
-import requests
-from dataclasses import dataclass, field
-from typing import Optional
-from datetime import datetime
 import logging
+import os
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Optional
+
+import requests
 import yfinance as yf
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ValuationEstimate:
     """A single fair value estimate from one source"""
+
     source: str
     fair_value: float
     methodology: str  # DCF, relative, etc.
@@ -32,6 +34,7 @@ class ValuationEstimate:
 @dataclass
 class AggregatedValuation:
     """Combined valuation assessment for a stock"""
+
     symbol: str
     current_price: float
     estimates: list[ValuationEstimate] = field(default_factory=list)
@@ -71,13 +74,8 @@ class AggregatedValuation:
             "margin_of_safety": self.margin_of_safety,
             "upside_potential": self.upside_potential,
             "estimates": [
-                {
-                    "source": e.source,
-                    "fair_value": e.fair_value,
-                    "methodology": e.methodology
-                }
-                for e in self.estimates
-            ]
+                {"source": e.source, "fair_value": e.fair_value, "methodology": e.methodology} for e in self.estimates
+            ],
         }
 
 
@@ -104,11 +102,7 @@ class ValuationAggregator:
 
         current_price = info.get("regularMarketPrice") or info.get("currentPrice") or 0
 
-        valuation = AggregatedValuation(
-            symbol=symbol,
-            current_price=current_price,
-            estimates=[]
-        )
+        valuation = AggregatedValuation(symbol=symbol, current_price=current_price, estimates=[])
 
         # Fetch from each source
         estimates = []
@@ -158,7 +152,7 @@ class ValuationAggregator:
                 fair_value=target,
                 methodology="Analyst Price Targets",
                 date=datetime.now(),
-                confidence="medium"
+                confidence="medium",
             )
 
         return None
@@ -172,7 +166,7 @@ class ValuationAggregator:
             response = requests.get(
                 "https://finnhub.io/api/v1/stock/price-target",
                 params={"symbol": symbol, "token": self.finnhub_key},
-                timeout=10
+                timeout=10,
             )
 
             if response.status_code == 200:
@@ -184,7 +178,7 @@ class ValuationAggregator:
                         fair_value=target,
                         methodology="Analyst Price Targets",
                         date=datetime.now(),
-                        confidence="medium"
+                        confidence="medium",
                     )
         except Exception as e:
             logger.debug(f"Finnhub error for {symbol}: {e}")
@@ -212,7 +206,7 @@ class ValuationAggregator:
                 fair_value=fair_value,
                 methodology=f"EPS (${eps:.2f}) × Fair P/E (15)",
                 date=datetime.now(),
-                confidence="low"
+                confidence="low",
             )
 
         return None
@@ -232,15 +226,16 @@ class ValuationAggregator:
             return None
 
         import math
+
         graham_number = math.sqrt(22.5 * eps * book_value)
 
         if graham_number > 0:
             return ValuationEstimate(
                 source="Graham Number",
                 fair_value=graham_number,
-                methodology=f"√(22.5 × EPS × Book Value)",
+                methodology="√(22.5 × EPS × Book Value)",
                 date=datetime.now(),
-                confidence="medium"  # Time-tested conservative formula
+                confidence="medium",  # Time-tested conservative formula
             )
 
         return None
@@ -252,10 +247,7 @@ def get_valuation(symbol: str) -> AggregatedValuation:
     return aggregator.get_valuation(symbol)
 
 
-def screen_for_undervalued(
-    symbols: list[str],
-    min_margin_of_safety: float = 0.20
-) -> list[AggregatedValuation]:
+def screen_for_undervalued(symbols: list[str], min_margin_of_safety: float = 0.20) -> list[AggregatedValuation]:
     """
     Screen a list of symbols for undervalued stocks.
 
@@ -288,6 +280,7 @@ def screen_for_undervalued(
 
 if __name__ == "__main__":
     from dotenv import load_dotenv
+
     load_dotenv()
 
     logging.basicConfig(level=logging.INFO)

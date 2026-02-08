@@ -19,21 +19,19 @@ Set MONTHLY_BRIEFING_ENABLED=false to disable auto-briefing
 (you can still run manually: docker compose run --rm buffett-bot).
 """
 
+import logging
 import os
 import sys
 import time
-import logging
 from datetime import datetime
 from pathlib import Path
-from dotenv import load_dotenv
+
 import schedule
+from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -49,9 +47,10 @@ def weekly_screen():
     logger.info("=" * 50)
 
     try:
+        import json
+
         from src.screener import StockScreener, load_criteria_from_yaml
         from src.valuation import screen_for_undervalued
-        import json
 
         screener = StockScreener()
         criteria = load_criteria_from_yaml()
@@ -71,10 +70,7 @@ def weekly_screen():
             data_dir = Path("/tmp/buffett-bot-data")
             data_dir.mkdir(exist_ok=True)
 
-        watchlist = {
-            "updated_at": datetime.now().isoformat(),
-            "stocks": [v.to_dict() for v in valuations]
-        }
+        watchlist = {"updated_at": datetime.now().isoformat(), "stocks": [v.to_dict() for v in valuations]}
 
         watchlist_file = data_dir / "watchlist.json"
         watchlist_file.write_text(json.dumps(watchlist, indent=2))
@@ -111,6 +107,7 @@ def daily_watchlist_check():
 
     try:
         import json
+
         import yfinance as yf
 
         watchlist = json.loads(watchlist_path.read_text())
@@ -184,8 +181,9 @@ def weekly_auto_trade():
             return
 
         import json
-        from src.valuation import screen_for_undervalued, ValuationAggregator
+
         from src.analyzer import CompanyAnalyzer
+        from src.valuation import ValuationAggregator, screen_for_undervalued
 
         # Load watchlist from weekly_screen
         watchlist_path = Path("./data/watchlist.json")
@@ -266,7 +264,7 @@ def weekly_auto_trade():
                         trader.sell(
                             symbol,
                             reason=f"Take profit: margin of safety {val.margin_of_safety:.1%} "
-                                   f"(stock near fair value ${val.fair_value:.2f})"
+                            f"(stock near fair value ${val.fair_value:.2f})",
                         )
                 except Exception as e:
                     logger.warning(f"Error checking {symbol}: {e}")
@@ -313,6 +311,7 @@ def monthly_briefing():
         # Try to notify about the failure
         try:
             from src.notifications import NotificationManager
+
             notifier = NotificationManager()
             notifier.send_alert("SYSTEM", f"Monthly briefing failed: {e}")
         except Exception:
