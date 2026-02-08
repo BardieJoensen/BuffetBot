@@ -28,9 +28,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional, cast
 
 from anthropic import Anthropic
+from anthropic.types import TextBlock
 
 logger = logging.getLogger(__name__)
 
@@ -285,7 +286,9 @@ class CompanyAnalyzer:
         )
 
         # Parse the response
-        analysis_text: str = response.content[0].text
+        block = response.content[0]
+        assert isinstance(block, TextBlock)
+        analysis_text: str = block.text
         analysis = self._parse_analysis(symbol, company_name, analysis_text)
 
         # Cache the result
@@ -458,7 +461,9 @@ Is this company worth deep analysis for a long-term value investor?"""
                 messages=[{"role": "user", "content": user_prompt}],
             )
 
-            text: str = response.content[0].text
+            block = response.content[0]
+            assert isinstance(block, TextBlock)
+            text: str = block.text
             lines = [line.strip() for line in text.strip().split("\n") if line.strip()]
 
             moat_hint = 3
@@ -545,7 +550,9 @@ Analyze the news and determine:
             messages=[{"role": "user", "content": user_prompt}],
         )
 
-        text: str = response.content[0].text
+        block = response.content[0]
+        assert isinstance(block, TextBlock)
+        text: str = block.text
         has_flags = "RED FLAGS DETECTED: YES" in text.upper()
 
         # Extract recommendation
@@ -650,7 +657,7 @@ Is this company worth deep analysis for a long-term value investor?"""
             )
 
         logger.info(f"Submitting batch of {len(requests)} quick-screen requests...")
-        batch = self.client.messages.batches.create(requests=requests)
+        batch = self.client.messages.batches.create(requests=cast(Any, requests))
         logger.info(f"Batch created: {batch.id}")
 
         self._wait_for_batch(batch.id)
@@ -662,7 +669,9 @@ Is this company worth deep analysis for a long-term value investor?"""
         for result in self.client.messages.batches.results(batch.id):
             symbol = result.custom_id
             if result.result.type == "succeeded":
-                text: str = result.result.message.content[0].text
+                blk = result.result.message.content[0]
+                assert isinstance(blk, TextBlock)
+                text: str = blk.text
                 results_map[symbol] = self._parse_quick_screen_result(text, symbol)
             else:
                 logger.warning(f"Batch quick-screen failed for {symbol}: {result.result.type}")
@@ -745,7 +754,7 @@ Is this company worth deep analysis for a long-term value investor?"""
                 )
 
             logger.info(f"Submitting batch of {len(requests)} deep analysis requests...")
-            batch = self.client.messages.batches.create(requests=requests)
+            batch = self.client.messages.batches.create(requests=cast(Any, requests))
             logger.info(f"Batch created: {batch.id}")
 
             self._wait_for_batch(batch.id)
@@ -753,7 +762,9 @@ Is this company worth deep analysis for a long-term value investor?"""
             for result in self.client.messages.batches.results(batch.id):
                 symbol = result.custom_id
                 if result.result.type == "succeeded":
-                    text = result.result.message.content[0].text
+                    blk = result.result.message.content[0]
+                    assert isinstance(blk, TextBlock)
+                    text = blk.text
                     company_name = next(
                         (s.get("company_name", s["symbol"]) for s in uncached_stocks if s["symbol"] == symbol),
                         symbol,
