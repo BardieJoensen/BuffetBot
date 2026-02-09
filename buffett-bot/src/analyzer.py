@@ -98,6 +98,41 @@ MOAT: <1-5>
 QUALITY: <1-5>
 REASON: <one sentence>"""
 
+OPUS_SECOND_OPINION_PROMPT = """\
+You are a contrarian investment analyst providing a "second opinion" review.
+You have been given a prior analyst's assessment of a company. Your job is to:
+
+1. Challenge the thesis — play devil's advocate
+2. Identify what the prior analyst might have missed or underweighted
+3. Assess whether the conviction level is justified
+4. Highlight risks that were downplayed or overlooked
+5. Consider macro/secular headwinds the prior analyst may have ignored
+
+Respond in this exact format:
+
+## AGREEMENT
+[AGREE / PARTIALLY_AGREE / DISAGREE] with the prior analyst's thesis
+
+## OPUS CONVICTION
+[HIGH / MEDIUM / LOW] — your independent conviction level
+
+## CONTRARIAN RISKS
+1. [Risk or concern the prior analyst missed or underweighted]
+2. [Another risk]
+3. [Another risk]
+
+## ADDITIONAL INSIGHTS
+[2-3 sentences with observations the prior analyst missed — could be positive or negative]
+
+## SUMMARY
+[2-3 sentence overall second opinion. Be direct and honest.]
+
+IMPORTANT:
+- Be genuinely critical, not just agreeable
+- If the prior analyst is wrong, say so clearly
+- Focus on what was MISSED, not what was already covered
+- Consider the current macro environment"""
+
 NEWS_MONITOR_SYSTEM_PROMPT = """\
 You are monitoring stock positions for potential red flags.
 Analyze news and determine if there are thesis-breaking events.
@@ -231,7 +266,8 @@ class CompanyAnalyzer:
 
         self.client = Anthropic(api_key=self.api_key)
 
-        # Two models: expensive for deep analysis, cheap for simple tasks
+        # Three models: Opus for second opinion, Sonnet for deep analysis, Haiku for simple tasks
+        self.model_opus = "claude-opus-4-6"  # For contrarian second opinion (~$0.30/stock)
         self.model_deep = "claude-sonnet-4-5-20250929"  # For 10-K analysis
         self.model_light = "claude-haiku-4-5-20251001"  # For news monitoring (20x cheaper)
 
@@ -295,6 +331,149 @@ class CompanyAnalyzer:
         save_analysis_to_cache(symbol, analysis.to_dict())
 
         return analysis
+
+    def opus_second_opinion(
+        self,
+        symbol: str,
+        company_name: str,
+        filing_text: str,
+        sonnet_analysis: QualitativeAnalysis,
+        use_cache: bool = True,
+    ) -> dict:
+        """
+        Run Opus as a contrarian reviewer of Sonnet's analysis.
+
+        Cost: ~$0.30 per stock (only run on top 3-5 BUY picks).
+
+        Args:
+            symbol: Stock ticker
+            company_name: Full company name
+            filing_text: 10-K annual report text (or summary)
+            sonnet_analysis: The prior Sonnet analysis to critique
+            use_cache: If True, return cached result if available
+
+        Returns:
+            dict with agreement, opus_conviction, contrarian_risks,
+            additional_insights, and summary
+        """
+        # Check cache
+        if use_cache:
+            cache_file = _cache_dir / f"{symbol}_opus.json"
+            if cache_file.exists():
+                try:
+                    data = json.loads(cache_file.read_text())
+                    analyzed_date = datetime.fromisoformat(data.get("analyzed_at", "2000-01-01"))
+                    if (datetime.now() - analyzed_date).days < 30:
+                        logger.info(f"Using cached Opus opinion for {symbol}")
+                        return data
+                except Exception as e:
+                    logger.warning(f"Error reading Opus cache for {symbol}: {e}")
+
+        # Build user prompt with Sonnet's analysis as context
+        sonnet_summary = (
+            f"PRIOR ANALYST ASSESSMENT FOR {company_name} ({symbol}):\n"
+            f"- Moat: {sonnet_analysis.moat_rating.value.upper()} "
+            f"({', '.join(sonnet_analysis.moat_sources[:3])})\n"
+            f"- Management: {sonnet_analysis.management_rating.value.upper()}\n"
+            f"- Conviction: {sonnet_analysis.conviction_level}\n"
+            f"- Thesis: {sonnet_analysis.investment_thesis}\n"
+            f"- Key Risks: {'; '.join(sonnet_analysis.key_risks[:3])}\n"
+            f"- Business: {sonnet_analysis.business_summary[:300]}"
+        )
+
+        user_prompt = f"""{sonnet_summary}
+
+=== COMPANY FILING DATA ===
+{filing_text[:self.MAX_FILING_CHARS]}
+
+Based on the filing data and the prior analyst's assessment above, provide your contrarian second opinion."""
+
+        logger.info(f"Running Opus second opinion on {symbol}...")
+
+        response = self.client.messages.create(
+            model=self.model_opus,
+            max_tokens=2048,
+            system=[
+                {
+                    "type": "text",
+                    "text": OPUS_SECOND_OPINION_PROMPT,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+
+        block = response.content[0]
+        assert isinstance(block, TextBlock)
+        text: str = block.text
+
+        # Parse the response
+        result = self._parse_opus_opinion(text, symbol)
+
+        # Cache result
+        try:
+            _cache_dir.mkdir(parents=True, exist_ok=True)
+            result["analyzed_at"] = datetime.now().isoformat()
+            (_cache_dir / f"{symbol}_opus.json").write_text(json.dumps(result, indent=2))
+            logger.info(f"Cached Opus opinion for {symbol}")
+        except Exception as e:
+            logger.warning(f"Failed to cache Opus opinion for {symbol}: {e}")
+
+        return result
+
+    def _parse_opus_opinion(self, text: str, symbol: str) -> dict:
+        """Parse Opus second opinion response into structured dict."""
+
+        def extract_section(full_text: str, header: str, next_header: Optional[str] = None) -> str:
+            start = full_text.find(header)
+            if start == -1:
+                return ""
+            start += len(header)
+            if next_header:
+                end = full_text.find(next_header, start)
+                if end == -1:
+                    end = len(full_text)
+            else:
+                end = len(full_text)
+            return full_text[start:end].strip()
+
+        agreement_section = extract_section(text, "## AGREEMENT", "## OPUS CONVICTION")
+        conviction_section = extract_section(text, "## OPUS CONVICTION", "## CONTRARIAN RISKS")
+        risks_section = extract_section(text, "## CONTRARIAN RISKS", "## ADDITIONAL INSIGHTS")
+        insights_section = extract_section(text, "## ADDITIONAL INSIGHTS", "## SUMMARY")
+        summary_section = extract_section(text, "## SUMMARY", None)
+
+        # Parse agreement
+        agreement = "PARTIALLY_AGREE"
+        for option in ["DISAGREE", "PARTIALLY_AGREE", "AGREE"]:
+            if option in agreement_section.upper():
+                agreement = option
+                break
+
+        # Parse conviction
+        opus_conviction = "MEDIUM"
+        for level in ["HIGH", "MEDIUM", "LOW"]:
+            if level in conviction_section.upper():
+                opus_conviction = level
+                break
+
+        # Parse risks as list
+        contrarian_risks = []
+        for line in risks_section.split("\n"):
+            line = line.strip()
+            if line and (line[0].isdigit() or line.startswith(("-", "•", "*"))):
+                cleaned = line.lstrip("-•*0123456789.) ")
+                if cleaned:
+                    contrarian_risks.append(cleaned)
+
+        return {
+            "symbol": symbol,
+            "agreement": agreement,
+            "opus_conviction": opus_conviction,
+            "contrarian_risks": contrarian_risks,
+            "additional_insights": insights_section,
+            "summary": summary_section,
+        }
 
     def _dict_to_analysis(self, data: dict) -> QualitativeAnalysis:
         """Convert cached dict back to QualitativeAnalysis"""

@@ -55,6 +55,9 @@ class StockBriefing:
     # Position sizing
     position_size: Optional[dict] = None
 
+    # Opus second opinion (contrarian review)
+    opus_opinion: Optional[dict] = None
+
     generated_at: datetime = field(default_factory=datetime.now)
 
 
@@ -75,6 +78,7 @@ class BriefingGenerator:
         bubble_warnings: Optional[list] = None,
         radar_stocks: Optional[list[str]] = None,
         performance_metrics: Optional[dict] = None,
+        benchmark_data: Optional[dict] = None,
     ) -> str:
         """
         Generate a complete monthly briefing document.
@@ -190,6 +194,41 @@ class BriefingGenerator:
             output.append("")
 
         # ─────────────────────────────────────────────────────────────
+        # BENCHMARK COMPARISON
+        # ─────────────────────────────────────────────────────────────
+        if benchmark_data and buy_candidates:
+            output.append("─" * 70)
+            output.append("## BENCHMARK COMPARISON")
+            output.append("")
+            bm_name = benchmark_data.get("name", benchmark_data.get("symbol", "SPY"))
+            bm_pe = benchmark_data.get("pe_ratio")
+            bm_ytd = benchmark_data.get("ytd_return")
+            bm_1y = benchmark_data.get("one_year_return")
+            bm_div = benchmark_data.get("dividend_yield")
+            output.append(f"Benchmark: {bm_name}")
+            if bm_pe:
+                output.append(f"  P/E Ratio:      {bm_pe:.1f}")
+            if bm_ytd is not None:
+                output.append(f"  YTD Return:     {bm_ytd:+.1%}")
+            if bm_1y is not None:
+                output.append(f"  1Y Return:      {bm_1y:+.1%}")
+            if bm_div is not None:
+                output.append(f"  Dividend Yield: {bm_div:.2%}")
+            output.append("")
+            output.append(f"{'Stock':<8} {'P/E':>8} {'Upside':>10} {'MoS':>8}  {'vs Benchmark'}")
+            output.append(f"{'─'*8} {'─'*8} {'─'*10} {'─'*8}  {'─'*20}")
+            for b in sorted(buy_candidates, key=lambda x: x.valuation.margin_of_safety or 0, reverse=True):
+                pe_str = f"{b.pe_ratio:.1f}" if b.pe_ratio else "N/A"
+                upside = b.valuation.upside_potential or 0
+                mos = b.valuation.margin_of_safety or 0
+                pe_vs = ""
+                if b.pe_ratio and bm_pe:
+                    pe_diff = b.pe_ratio - bm_pe
+                    pe_vs = f"P/E {pe_diff:+.1f}"
+                output.append(f"{b.symbol:<8} {pe_str:>8} {upside:>+9.1%} {mos:>7.1%}  {pe_vs}")
+            output.append("")
+
+        # ─────────────────────────────────────────────────────────────
         # TOP PICKS (Full Analysis)
         # ─────────────────────────────────────────────────────────────
         if buy_candidates:
@@ -199,6 +238,31 @@ class BriefingGenerator:
 
             for briefing in sorted(buy_candidates, key=lambda x: x.valuation.margin_of_safety or 0, reverse=True):
                 output.append(self._format_stock_briefing(briefing, include_sizing=True))
+                output.append("")
+
+        # ─────────────────────────────────────────────────────────────
+        # SECOND OPINION (Opus contrarian review)
+        # ─────────────────────────────────────────────────────────────
+        opus_picks = [b for b in buy_candidates if b.opus_opinion]
+        if opus_picks:
+            output.append("─" * 70)
+            output.append("## SECOND OPINION (Opus Contrarian Review)")
+            output.append("")
+            for b in opus_picks:
+                op = b.opus_opinion
+                agreement = op.get("agreement", "N/A")
+                opus_conv = op.get("opus_conviction", "N/A")
+                agreement_icon = {"AGREE": "✅", "PARTIALLY_AGREE": "⚠️", "DISAGREE": "❌"}.get(agreement, "❓")
+                output.append(f"### {b.symbol}: {b.company_name}")
+                output.append(f"   {agreement_icon} Agreement: {agreement} | Opus Conviction: {opus_conv}")
+                risks = op.get("contrarian_risks", [])
+                if risks:
+                    output.append("   Contrarian Risks:")
+                    for risk in risks[:3]:
+                        output.append(f"     • {risk[:80]}")
+                summary = op.get("summary", "")
+                if summary:
+                    output.append(f"   Summary: {summary[:200]}")
                 output.append("")
 
         # ─────────────────────────────────────────────────────────────
@@ -292,14 +356,16 @@ class BriefingGenerator:
 
         # Also save as JSON for programmatic access
         json_data = self._build_json_output(
-            briefings, portfolio_summary, market_temp, bubble_warnings, radar_stocks, performance_metrics
+            briefings, portfolio_summary, market_temp, bubble_warnings, radar_stocks, performance_metrics,
+            benchmark_data,
         )
         json_path = self.output_dir / f"briefing_{now.strftime('%Y_%m')}.json"
         json_path.write_text(json.dumps(json_data, indent=2, default=str))
 
         # Generate HTML report
         html_content = self._generate_html(
-            briefings, portfolio_summary, market_temp, bubble_warnings, radar_stocks, performance_metrics
+            briefings, portfolio_summary, market_temp, bubble_warnings, radar_stocks, performance_metrics,
+            benchmark_data,
         )
         html_filename = f"briefing_{now.strftime('%Y_%m')}.html"
         self.html_path = self.output_dir / html_filename
@@ -316,6 +382,7 @@ class BriefingGenerator:
         bubble_warnings: Optional[list],
         radar_stocks: Optional[list[str]],
         performance_metrics: Optional[dict],
+        benchmark_data: Optional[dict] = None,
     ) -> str:
         """Generate a self-contained HTML briefing report."""
         now = datetime.now()
@@ -450,7 +517,44 @@ footer{{text-align:center;padding:16px;font-size:.8rem;color:#999}}
         parts.append(
             f'<div class="summary-card"><div class="num">{len(radar_stocks) if radar_stocks else 0}</div><div class="label">Radar</div></div>'
         )
-        parts.append("</div></section>")
+        parts.append("</div>")
+
+        # Benchmark comparison in executive summary
+        if benchmark_data and buy_candidates:
+            bm_name = html_module.escape(benchmark_data.get("name", benchmark_data.get("symbol", "SPY")))
+            bm_pe = benchmark_data.get("pe_ratio")
+            bm_ytd = benchmark_data.get("ytd_return")
+            bm_1y = benchmark_data.get("one_year_return")
+            parts.append(f'<h3 style="font-size:1rem;margin:16px 0 8px">Benchmark: {bm_name}</h3>')
+            parts.append('<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px;font-size:.9rem">')
+            if bm_pe:
+                parts.append(f'<span>P/E: <strong>{bm_pe:.1f}</strong></span>')
+            if bm_ytd is not None:
+                parts.append(f'<span>YTD: <strong>{bm_ytd:+.1%}</strong></span>')
+            if bm_1y is not None:
+                parts.append(f'<span>1Y: <strong>{bm_1y:+.1%}</strong></span>')
+            parts.append("</div>")
+            parts.append("<table><tr><th>Stock</th><th>P/E</th><th>Upside</th><th>MoS</th><th>vs Benchmark P/E</th></tr>")
+            for b in buy_candidates:
+                pe_str = f"{b.pe_ratio:.1f}" if b.pe_ratio else "N/A"
+                upside = b.valuation.upside_potential or 0
+                mos = b.valuation.margin_of_safety or 0
+                pe_vs = ""
+                pe_color = ""
+                if b.pe_ratio and bm_pe:
+                    pe_diff = b.pe_ratio - bm_pe
+                    pe_vs = f"{pe_diff:+.1f}"
+                    pe_color = ' style="color:#4CAF50"' if pe_diff < 0 else ' style="color:#F44336"'
+                parts.append(
+                    f"<tr><td><strong>{e(b.symbol)}</strong></td>"
+                    f"<td>{pe_str}</td>"
+                    f"<td>{upside:+.1%}</td>"
+                    f"<td>{mos:.1%}</td>"
+                    f"<td{pe_color}>{pe_vs}</td></tr>"
+                )
+            parts.append("</table>")
+
+        parts.append("</section>")
 
         # Portfolio Status
         if portfolio_summary:
@@ -493,6 +597,47 @@ footer{{text-align:center;padding:16px;font-size:.8rem;color:#999}}
             parts.append("<section><h2>Top Picks</h2>")
             for b in buy_candidates:
                 parts.append(self._html_stock_card(b, "buy"))
+            parts.append("</section>")
+
+        # Second Opinion (Opus)
+        opus_picks = [b for b in buy_candidates if b.opus_opinion]
+        if opus_picks:
+            parts.append("<section><h2>Second Opinion (Opus Contrarian Review)</h2>")
+            for b in opus_picks:
+                op = b.opus_opinion
+                agreement = op.get("agreement", "N/A")
+                opus_conv = op.get("opus_conviction", "N/A")
+                badge_colors = {
+                    "AGREE": "#4CAF50",
+                    "PARTIALLY_AGREE": "#FF9800",
+                    "DISAGREE": "#F44336",
+                }
+                badge_color = badge_colors.get(agreement, "#9E9E9E")
+                parts.append(f'<div class="stock-card" style="border-left-color:{badge_color}">')
+                parts.append(f"<h3>{e(b.symbol)}: {e(b.company_name)}</h3>")
+                parts.append(
+                    f'<span class="rec" style="background:{badge_color}">{e(agreement)}</span> '
+                    f'<span style="font-size:.85rem;color:#555">Opus Conviction: {e(opus_conv)}</span>'
+                )
+                risks = op.get("contrarian_risks", [])
+                if risks:
+                    parts.append(
+                        "<details open><summary>Contrarian Risks</summary>"
+                        "<ul style='font-size:.9rem;margin:8px 0 0 20px'>"
+                    )
+                    for risk in risks[:3]:
+                        parts.append(f"<li>{e(risk)}</li>")
+                    parts.append("</ul></details>")
+                insights = op.get("additional_insights", "")
+                if insights:
+                    parts.append(
+                        f"<details><summary>Additional Insights</summary>"
+                        f"<p style='font-size:.9rem;margin-top:8px'>{e(insights[:400])}</p></details>"
+                    )
+                summary = op.get("summary", "")
+                if summary:
+                    parts.append(f'<p style="font-size:.9rem;margin-top:8px"><em>{e(summary[:300])}</em></p>')
+                parts.append("</div>")
             parts.append("</section>")
 
         # Watchlist
@@ -830,6 +975,7 @@ You make the final investment decision. Past performance does not guarantee futu
         bubble_warnings: Optional[list],
         radar_stocks: Optional[list[str]],
         performance_metrics: Optional[dict],
+        benchmark_data: Optional[dict] = None,
     ) -> dict:
         """Build JSON structure for programmatic access"""
 
@@ -839,6 +985,7 @@ You make the final investment decision. Past performance does not guarantee futu
         return {
             "generated_at": datetime.now().isoformat(),
             "market_temperature": market_temp,
+            "benchmark": benchmark_data,
             "summary": {
                 "total_analyzed": len(briefings),
                 "buy_candidates": len(buy_candidates),
@@ -871,6 +1018,7 @@ You make the final investment decision. Past performance does not guarantee futu
             "valuation": briefing.valuation.to_dict(),
             "qualitative": briefing.analysis.to_dict(),
             "position_size": briefing.position_size,
+            "opus_opinion": briefing.opus_opinion,
             "generated_at": briefing.generated_at.isoformat() if briefing.generated_at else None,
         }
 

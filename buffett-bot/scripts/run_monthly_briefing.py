@@ -36,6 +36,7 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.analyzer import CompanyAnalyzer, set_cache_dir
+from src.benchmark import fetch_benchmark_data, set_benchmark_cache_dir
 from src.briefing import BriefingGenerator, StockBriefing, determine_recommendation
 from src.bubble_detector import BubbleDetector, get_market_temperature
 from src.notifications import NotificationManager
@@ -164,6 +165,7 @@ def run_monthly_briefing(
         logger.warning(f"Using fallback data dir: {data_dir}")
 
     set_cache_dir(data_dir / "analyses")
+    set_benchmark_cache_dir(data_dir / "benchmark")
     watchlist_cache = data_dir / "watchlist_cache.json"
 
     # ─────────────────────────────────────────────────────────────
@@ -173,6 +175,14 @@ def run_monthly_briefing(
 
     market_temp = get_market_temperature()
     logger.info(f"Market: {market_temp.get('temperature')} - {market_temp.get('interpretation', '')[:50]}...")
+
+    # Fetch benchmark data (cheap yfinance call)
+    benchmark_symbol = os.getenv("BENCHMARK_SYMBOL", "SPY")
+    logger.info(f"Fetching benchmark data for {benchmark_symbol}...")
+    benchmark_data = fetch_benchmark_data(benchmark_symbol)
+    bm_pe = benchmark_data.get("pe_ratio")
+    bm_ytd = benchmark_data.get("ytd_return")
+    logger.info(f"Benchmark {benchmark_symbol}: P/E={bm_pe}, YTD={f'{bm_ytd:+.1%}' if bm_ytd is not None else 'N/A'}")
 
     # ─────────────────────────────────────────────────────────────
     # Step 2: Screen Stocks
@@ -421,6 +431,43 @@ def run_monthly_briefing(
         logger.info("\n[6.5/9] PAPER TRADING SKIPPED (Alpaca not configured)")
 
     # ─────────────────────────────────────────────────────────────
+    # Step 6.25: Opus Second Opinion (contrarian review of top BUYs)
+    # ─────────────────────────────────────────────────────────────
+    use_opus = os.getenv("USE_OPUS_SECOND_OPINION", "false").lower() == "true"
+    if use_opus:
+        opus_candidates = sorted(
+            [b for b in briefings if b.recommendation == "BUY"],
+            key=lambda x: x.valuation.margin_of_safety or 0,
+            reverse=True,
+        )[:5]
+
+        if opus_candidates:
+            logger.info(f"\n[6.25/9] OPUS SECOND OPINION ON TOP {len(opus_candidates)} BUY PICKS...")
+            logger.info(f"   💡 Cost: ~${len(opus_candidates) * 0.30:.2f} (Opus)")
+
+            for briefing in opus_candidates:
+                try:
+                    filing_text = fetch_company_summary(briefing.symbol)
+                    opus_result = analyzer.opus_second_opinion(
+                        symbol=briefing.symbol,
+                        company_name=briefing.company_name,
+                        filing_text=filing_text,
+                        sonnet_analysis=briefing.analysis,
+                        use_cache=use_cache,
+                    )
+                    briefing.opus_opinion = opus_result
+                    logger.info(
+                        f"  {briefing.symbol}: {opus_result.get('agreement')} "
+                        f"(Opus conviction: {opus_result.get('opus_conviction')})"
+                    )
+                except Exception as e:
+                    logger.error(f"  Opus second opinion failed for {briefing.symbol}: {e}")
+        else:
+            logger.info("\n[6.25/9] OPUS SECOND OPINION SKIPPED (no BUY candidates)")
+    else:
+        logger.info("\n[6.25/9] OPUS SECOND OPINION SKIPPED (USE_OPUS_SECOND_OPINION != true)")
+
+    # ─────────────────────────────────────────────────────────────
     # Step 7: Generate Briefing
     # ─────────────────────────────────────────────────────────────
     logger.info("\n[7/9] GENERATING BRIEFING DOCUMENT...")
@@ -445,6 +492,7 @@ def run_monthly_briefing(
         bubble_warnings=bubble_warnings,
         radar_stocks=radar_stocks,
         performance_metrics=performance_metrics,
+        benchmark_data=benchmark_data,
     )
 
     # Read the generated HTML for email delivery
