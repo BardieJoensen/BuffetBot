@@ -216,7 +216,7 @@ class BriefingGenerator:
                 output.append(f"  Dividend Yield: {bm_div:.2%}")
             output.append("")
             output.append(f"{'Stock':<8} {'P/E':>8} {'Upside':>10} {'MoS':>8}  {'vs Benchmark'}")
-            output.append(f"{'─'*8} {'─'*8} {'─'*10} {'─'*8}  {'─'*20}")
+            output.append(f"{'─' * 8} {'─' * 8} {'─' * 10} {'─' * 8}  {'─' * 20}")
             for b in sorted(buy_candidates, key=lambda x: x.valuation.margin_of_safety or 0, reverse=True):
                 pe_str = f"{b.pe_ratio:.1f}" if b.pe_ratio else "N/A"
                 upside = b.valuation.upside_potential or 0
@@ -249,6 +249,7 @@ class BriefingGenerator:
             output.append("## SECOND OPINION (Opus Contrarian Review)")
             output.append("")
             for b in opus_picks:
+                assert b.opus_opinion is not None
                 op = b.opus_opinion
                 agreement = op.get("agreement", "N/A")
                 opus_conv = op.get("opus_conviction", "N/A")
@@ -356,7 +357,12 @@ class BriefingGenerator:
 
         # Also save as JSON for programmatic access
         json_data = self._build_json_output(
-            briefings, portfolio_summary, market_temp, bubble_warnings, radar_stocks, performance_metrics,
+            briefings,
+            portfolio_summary,
+            market_temp,
+            bubble_warnings,
+            radar_stocks,
+            performance_metrics,
             benchmark_data,
         )
         json_path = self.output_dir / f"briefing_{now.strftime('%Y_%m')}.json"
@@ -364,7 +370,12 @@ class BriefingGenerator:
 
         # Generate HTML report
         html_content = self._generate_html(
-            briefings, portfolio_summary, market_temp, bubble_warnings, radar_stocks, performance_metrics,
+            briefings,
+            portfolio_summary,
+            market_temp,
+            bubble_warnings,
+            radar_stocks,
+            performance_metrics,
             benchmark_data,
         )
         html_filename = f"briefing_{now.strftime('%Y_%m')}.html"
@@ -528,13 +539,15 @@ footer{{text-align:center;padding:16px;font-size:.8rem;color:#999}}
             parts.append(f'<h3 style="font-size:1rem;margin:16px 0 8px">Benchmark: {bm_name}</h3>')
             parts.append('<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px;font-size:.9rem">')
             if bm_pe:
-                parts.append(f'<span>P/E: <strong>{bm_pe:.1f}</strong></span>')
+                parts.append(f"<span>P/E: <strong>{bm_pe:.1f}</strong></span>")
             if bm_ytd is not None:
-                parts.append(f'<span>YTD: <strong>{bm_ytd:+.1%}</strong></span>')
+                parts.append(f"<span>YTD: <strong>{bm_ytd:+.1%}</strong></span>")
             if bm_1y is not None:
-                parts.append(f'<span>1Y: <strong>{bm_1y:+.1%}</strong></span>')
+                parts.append(f"<span>1Y: <strong>{bm_1y:+.1%}</strong></span>")
             parts.append("</div>")
-            parts.append("<table><tr><th>Stock</th><th>P/E</th><th>Upside</th><th>MoS</th><th>vs Benchmark P/E</th></tr>")
+            parts.append(
+                "<table><tr><th>Stock</th><th>P/E</th><th>Upside</th><th>MoS</th><th>vs Benchmark P/E</th></tr>"
+            )
             for b in buy_candidates:
                 pe_str = f"{b.pe_ratio:.1f}" if b.pe_ratio else "N/A"
                 upside = b.valuation.upside_potential or 0
@@ -604,6 +617,7 @@ footer{{text-align:center;padding:16px;font-size:.8rem;color:#999}}
         if opus_picks:
             parts.append("<section><h2>Second Opinion (Opus Contrarian Review)</h2>")
             for b in opus_picks:
+                assert b.opus_opinion is not None
                 op = b.opus_opinion
                 agreement = op.get("agreement", "N/A")
                 opus_conv = op.get("opus_conviction", "N/A")

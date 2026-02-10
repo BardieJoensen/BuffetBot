@@ -384,7 +384,7 @@ class CompanyAnalyzer:
         user_prompt = f"""{sonnet_summary}
 
 === COMPANY FILING DATA ===
-{filing_text[:self.MAX_FILING_CHARS]}
+{filing_text[: self.MAX_FILING_CHARS]}
 
 Based on the filing data and the prior analyst's assessment above, provide your contrarian second opinion."""
 
