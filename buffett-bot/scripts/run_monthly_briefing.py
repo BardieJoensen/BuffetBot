@@ -333,7 +333,9 @@ def run_monthly_briefing(
         stocks_for_analysis = []
         for val in top_for_analysis:
             filing_text = fetch_company_summary(val.symbol)
-            stocks_for_analysis.append({"symbol": val.symbol, "company_name": val.symbol, "filing_text": filing_text})
+            sc = screened_lookup.get(val.symbol)
+            company_name = sc.name if sc else val.symbol
+            stocks_for_analysis.append({"symbol": val.symbol, "company_name": company_name, "filing_text": filing_text})
 
         analyses = analyzer.batch_analyze_companies(stocks_for_analysis)
         analysis_map = {a.symbol: a for a in analyses}
@@ -379,9 +381,11 @@ def run_monthly_briefing(
 
                 filing_text = fetch_company_summary(val.symbol)
 
+                sc = screened_lookup.get(val.symbol)
+                company_name = sc.name if sc else val.symbol
                 analysis = analyzer.analyze_company(
                     symbol=val.symbol,
-                    company_name=val.symbol,
+                    company_name=company_name,
                     filing_text=filing_text,
                     use_cache=use_cache,
                 )
