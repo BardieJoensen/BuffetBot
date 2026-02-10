@@ -116,8 +116,15 @@ def score_stock(data: dict, criteria: ScreeningCriteria) -> float:
     total_score = 0.0
 
     valid_metrics = {
-        "pe_ratio", "debt_equity", "roe", "revenue_growth", "current_ratio",
-        "fcf_yield", "earnings_quality", "payout_ratio", "operating_margin",
+        "pe_ratio",
+        "debt_equity",
+        "roe",
+        "revenue_growth",
+        "current_ratio",
+        "fcf_yield",
+        "earnings_quality",
+        "payout_ratio",
+        "operating_margin",
     }
 
     for metric_name, rule in criteria.scoring.items():

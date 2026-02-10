@@ -448,14 +448,14 @@ Based on the filing data and the prior analyst's assessment above, provide your 
 
         agreement = "PARTIALLY_AGREE"
         for option in ["PARTIALLY_AGREE", "DISAGREE", "AGREE"]:
-            if re.search(r'\b' + re.escape(option) + r'\b', agreement_section.upper()):
+            if re.search(r"\b" + re.escape(option) + r"\b", agreement_section.upper()):
                 agreement = option
                 break
 
         # Parse conviction
         opus_conviction = "MEDIUM"
         for level in ["HIGH", "MEDIUM", "LOW"]:
-            if re.search(r'\b' + level + r'\b', conviction_section.upper()):
+            if re.search(r"\b" + level + r"\b", conviction_section.upper()):
                 opus_conviction = level
                 break
 
@@ -561,7 +561,7 @@ Based on the filing data and the prior analyst's assessment above, provide your 
             text_upper = text.upper()
             # Sort by length descending so "PARTIALLY_AGREE" matches before "AGREE"
             for option in sorted(options, key=len, reverse=True):
-                if re.search(r'\b' + re.escape(option.upper()) + r'\b', text_upper):
+                if re.search(r"\b" + re.escape(option.upper()) + r"\b", text_upper):
                     return option
             return options[-1]  # Default to last (usually worst)
 
