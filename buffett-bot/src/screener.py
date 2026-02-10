@@ -115,7 +115,10 @@ def score_stock(data: dict, criteria: ScreeningCriteria) -> float:
 
     total_score = 0.0
 
-    valid_metrics = {"pe_ratio", "debt_equity", "roe", "revenue_growth", "current_ratio"}
+    valid_metrics = {
+        "pe_ratio", "debt_equity", "roe", "revenue_growth", "current_ratio",
+        "fcf_yield", "earnings_quality", "payout_ratio", "operating_margin",
+    }
 
     for metric_name, rule in criteria.scoring.items():
         if metric_name not in valid_metrics:
@@ -189,6 +192,10 @@ class ScreenedStock:
     screened_at: datetime
     price: Optional[float] = None
     score: float = 0.0
+    fcf_yield: Optional[float] = None
+    earnings_quality: Optional[float] = None
+    payout_ratio: Optional[float] = None
+    operating_margin: Optional[float] = None
 
     def to_dict(self) -> dict:
         return {
@@ -204,6 +211,10 @@ class ScreenedStock:
             "screened_at": self.screened_at.isoformat(),
             "price": self.price,
             "score": self.score,
+            "fcf_yield": self.fcf_yield,
+            "earnings_quality": self.earnings_quality,
+            "payout_ratio": self.payout_ratio,
+            "operating_margin": self.operating_margin,
         }
 
 
@@ -287,7 +298,26 @@ class StockScreener:
                 "profit_margin": info.get("profitMargins"),
                 "52_week_high": info.get("fiftyTwoWeekHigh"),
                 "52_week_low": info.get("fiftyTwoWeekLow"),
+                "free_cashflow": info.get("freeCashflow"),
+                "operating_cashflow": info.get("operatingCashflow"),
+                "net_income": info.get("netIncomeToCommon"),
+                "payout_ratio": info.get("payoutRatio"),
+                "operating_margin": info.get("operatingMargins"),
             }
+
+            # Derived metrics
+            free_cashflow = data.get("free_cashflow")
+            net_income = data.get("net_income")
+
+            if free_cashflow and market_cap:
+                data["fcf_yield"] = free_cashflow / market_cap
+            else:
+                data["fcf_yield"] = None
+
+            if free_cashflow and net_income and net_income > 0:
+                data["earnings_quality"] = free_cashflow / net_income
+            else:
+                data["earnings_quality"] = None
 
             # Cache the data
             self._save_cached_data(symbol, data)
@@ -392,6 +422,10 @@ class StockScreener:
                     screened_at=datetime.now(),
                     price=price,
                     score=stock_score,
+                    fcf_yield=data.get("fcf_yield"),
+                    earnings_quality=data.get("earnings_quality"),
+                    payout_ratio=data.get("payout_ratio"),
+                    operating_margin=data.get("operating_margin"),
                 )
             )
 
