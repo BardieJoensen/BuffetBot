@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Optional
 
 from .analyzer import QualitativeAnalysis
+from .bubble_detector import BubbleWarning
 from .valuation import AggregatedValuation
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,12 @@ class StockBriefing:
 
     # Position sizing
     position_size: Optional[dict] = None
+
+    # Deeper Buffett fundamentals
+    fcf_yield: Optional[float] = None
+    earnings_quality: Optional[float] = None
+    payout_ratio: Optional[float] = None
+    operating_margin: Optional[float] = None
 
     # Opus second opinion (contrarian review)
     opus_opinion: Optional[dict] = None
@@ -748,6 +755,14 @@ You make the final investment decision. Past performance does not guarantee futu
             lines.append(f"<tr><td>ROE</td><td>{briefing.roe:.1%}</td></tr>")
         if briefing.debt_equity:
             lines.append(f"<tr><td>Debt/Equity</td><td>{briefing.debt_equity:.2f}</td></tr>")
+        if briefing.fcf_yield is not None:
+            lines.append(f"<tr><td>FCF Yield</td><td>{briefing.fcf_yield:.1%}</td></tr>")
+        if briefing.operating_margin is not None:
+            lines.append(f"<tr><td>Operating Margin</td><td>{briefing.operating_margin:.1%}</td></tr>")
+        if briefing.earnings_quality is not None:
+            lines.append(f"<tr><td>Earnings Quality</td><td>{briefing.earnings_quality:.2f}</td></tr>")
+        if briefing.payout_ratio is not None:
+            lines.append(f"<tr><td>Payout Ratio</td><td>{briefing.payout_ratio:.1%}</td></tr>")
         lines.append("</table>")
 
         # Valuation estimates
@@ -786,35 +801,20 @@ You make the final investment decision. Past performance does not guarantee futu
         lines.append("</div>")
         return "\n".join(lines)
 
-    def _html_bubble_card(self, warning) -> str:
+    def _html_bubble_card(self, warning: BubbleWarning) -> str:
         """Build an HTML card for a bubble warning."""
         e = html_module.escape
-        if hasattr(warning, "risk_level"):
-            risk_level = warning.risk_level
-            symbol = warning.symbol
-            company_name = warning.company_name
-            current_price = warning.current_price
-            pe_ratio = warning.pe_ratio
-            signals = warning.signals
-        else:
-            risk_level = warning.get("risk_level", "MEDIUM")
-            symbol = warning.get("symbol", "N/A")
-            company_name = warning.get("company_name", "Unknown")
-            current_price = warning.get("current_price", 0)
-            pe_ratio = warning.get("pe_ratio")
-            signals = warning.get("signals", [])
-
-        pe_str = f"{pe_ratio:.1f}" if pe_ratio else "N/A"
+        pe_str = f"{warning.pe_ratio:.1f}" if warning.pe_ratio else "N/A"
         lines = ['<div class="stock-card bubble">']
-        lines.append(f"<h3>{e(symbol)}: {e(company_name)}</h3>")
-        lines.append(f'<span class="rec rec-bubble">{e(risk_level)} RISK</span>')
-        lines.append(f"<table><tr><td>Price</td><td>${current_price:.2f}</td></tr>")
+        lines.append(f"<h3>{e(warning.symbol)}: {e(warning.company_name)}</h3>")
+        lines.append(f'<span class="rec rec-bubble">{e(warning.risk_level)} RISK</span>')
+        lines.append(f"<table><tr><td>Price</td><td>${warning.current_price:.2f}</td></tr>")
         lines.append(f"<tr><td>P/E</td><td>{e(pe_str)}</td></tr></table>")
-        if signals:
+        if warning.signals:
             lines.append(
                 "<details open><summary>Warning Signals</summary><ul style='font-size:.9rem;margin:8px 0 0 20px;color:#d32f2f'>"
             )
-            for sig in signals[:4]:
+            for sig in warning.signals[:4]:
                 lines.append(f"<li>{e(sig)}</li>")
             lines.append("</ul></details>")
         lines.append("</div>")
@@ -869,6 +869,14 @@ You make the final investment decision. Past performance does not guarantee futu
             lines.append(f"│ ROE:              {briefing.roe:>10.1%}                          │")
         if briefing.debt_equity:
             lines.append(f"│ Debt/Equity:      {briefing.debt_equity:>11.2f}                          │")
+        if briefing.fcf_yield is not None:
+            lines.append(f"│ FCF Yield:        {briefing.fcf_yield:>10.1%}                          │")
+        if briefing.operating_margin is not None:
+            lines.append(f"│ Operating Margin: {briefing.operating_margin:>10.1%}                          │")
+        if briefing.earnings_quality is not None:
+            lines.append(f"│ Earnings Quality: {briefing.earnings_quality:>11.2f}                          │")
+        if briefing.payout_ratio is not None:
+            lines.append(f"│ Payout Ratio:     {briefing.payout_ratio:>10.1%}                          │")
 
         lines.append("└" + "─" * 58 + "┘")
         lines.append("")
@@ -947,36 +955,18 @@ You make the final investment decision. Past performance does not guarantee futu
 
         return "Close to criteria but not compelling enough"
 
-    def _format_bubble_warning(self, warning) -> str:
+    def _format_bubble_warning(self, warning: BubbleWarning) -> str:
         """Format a bubble warning"""
 
         lines = []
 
-        # Handle both dict and object
-        if hasattr(warning, "risk_level"):
-            risk_level = warning.risk_level
-            symbol = warning.symbol
-            company_name = warning.company_name
-            current_price = warning.current_price
-            pe_ratio = warning.pe_ratio
-            signal_count = warning.signal_count
-            signals = warning.signals
-        else:
-            risk_level = warning.get("risk_level", "MEDIUM")
-            symbol = warning.get("symbol", "N/A")
-            company_name = warning.get("company_name", "Unknown")
-            current_price = warning.get("current_price", 0)
-            pe_ratio = warning.get("pe_ratio")
-            signal_count = warning.get("signal_count", 0)
-            signals = warning.get("signals", [])
+        risk_emoji = "🔴" if warning.risk_level == "HIGH" else "🟠"
 
-        risk_emoji = "🔴" if risk_level == "HIGH" else "🟠"
+        lines.append(f"{risk_emoji} {warning.symbol}: {warning.company_name}")
+        lines.append(f"   Price: ${warning.current_price:.2f} | P/E: {warning.pe_ratio or 'N/A'}")
+        lines.append(f"   Signals ({warning.signal_count}):")
 
-        lines.append(f"{risk_emoji} {symbol}: {company_name}")
-        lines.append(f"   Price: ${current_price:.2f} | P/E: {pe_ratio or 'N/A'}")
-        lines.append(f"   Signals ({signal_count}):")
-
-        for signal in signals[:3]:
+        for signal in warning.signals[:3]:
             lines.append(f"     • {signal[:60]}")
 
         return "\n".join(lines)
@@ -1028,6 +1018,10 @@ You make the final investment decision. Past performance does not guarantee futu
                 "debt_equity": briefing.debt_equity,
                 "roe": briefing.roe,
                 "revenue_growth": briefing.revenue_growth,
+                "fcf_yield": briefing.fcf_yield,
+                "operating_margin": briefing.operating_margin,
+                "earnings_quality": briefing.earnings_quality,
+                "payout_ratio": briefing.payout_ratio,
             },
             "valuation": briefing.valuation.to_dict(),
             "qualitative": briefing.analysis.to_dict(),

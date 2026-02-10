@@ -444,16 +444,18 @@ Based on the filing data and the prior analyst's assessment above, provide your 
         summary_section = extract_section(text, "## SUMMARY", None)
 
         # Parse agreement
+        import re
+
         agreement = "PARTIALLY_AGREE"
-        for option in ["DISAGREE", "PARTIALLY_AGREE", "AGREE"]:
-            if option in agreement_section.upper():
+        for option in ["PARTIALLY_AGREE", "DISAGREE", "AGREE"]:
+            if re.search(r"\b" + re.escape(option) + r"\b", agreement_section.upper()):
                 agreement = option
                 break
 
         # Parse conviction
         opus_conviction = "MEDIUM"
         for level in ["HIGH", "MEDIUM", "LOW"]:
-            if level in conviction_section.upper():
+            if re.search(r"\b" + level + r"\b", conviction_section.upper()):
                 opus_conviction = level
                 break
 
@@ -553,10 +555,13 @@ Based on the filing data and the prior analyst's assessment above, provide your 
             return text[start:end].strip()
 
         def extract_rating(text: str, options: list) -> str:
-            """Find which rating option appears in text"""
+            """Find which rating option appears in text using word boundaries"""
+            import re
+
             text_upper = text.upper()
-            for option in options:
-                if option.upper() in text_upper:
+            # Sort by length descending so "PARTIALLY_AGREE" matches before "AGREE"
+            for option in sorted(options, key=len, reverse=True):
+                if re.search(r"\b" + re.escape(option.upper()) + r"\b", text_upper):
                     return option
             return options[-1]  # Default to last (usually worst)
 
@@ -601,7 +606,7 @@ Based on the filing data and the prior analyst's assessment above, provide your 
             else moat_section,
             management_rating=mgmt_rating,
             management_notes=mgmt_section,
-            insider_ownership=None,  # Would need specific extraction
+            insider_ownership=self._extract_insider_ownership(mgmt_section),
             business_summary=business_section,
             competitive_position=competitive_section,
             key_risks=extract_list(risks_section),
@@ -609,6 +614,16 @@ Based on the filing data and the prior analyst's assessment above, provide your 
             investment_thesis=thesis_section,
             conviction_level=conviction,
         )
+
+    @staticmethod
+    def _extract_insider_ownership(mgmt_section: str) -> Optional[str]:
+        """Extract insider ownership info from management section if present."""
+        for line in mgmt_section.split("\n"):
+            if "insider ownership" in line.lower():
+                value = line.split(":", 1)[-1].strip()
+                if value and value.lower() not in ("n/a", "not mentioned", "unknown", "none"):
+                    return value
+        return None
 
     def quick_screen(self, symbol: str, filing_text: str) -> dict:
         """

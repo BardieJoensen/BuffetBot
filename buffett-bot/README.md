@@ -45,12 +45,13 @@ buffett-bot/
 │   ├── universe.py          # Dynamic stock universe (Finviz/Wikipedia/fallback)
 │   ├── screener.py          # Score-based stock screening
 │   ├── valuation.py         # Aggregate fair value estimates
-│   ├── analyzer.py          # LLM qualitative analysis (Sonnet + Haiku)
+│   ├── analyzer.py          # LLM qualitative analysis (Sonnet + Haiku + Opus second opinion)
 │   ├── briefing.py          # Generate monthly reports
 │   ├── portfolio.py         # Portfolio tracking and thesis management
 │   ├── bubble_detector.py   # Market bubble/froth detection
 │   ├── notifications.py     # Email/Telegram/ntfy.sh alerts
-│   └── paper_trader.py      # Alpaca paper trading integration
+│   ├── paper_trader.py      # Alpaca paper trading integration
+│   └── benchmark.py         # Benchmark comparison (SPY default)
 ├── config/
 │   └── screening_criteria.yaml
 ├── data/
@@ -76,11 +77,15 @@ buffett-bot/
 2. `screener.py` filters with yfinance data by market cap, P/E, debt, ROE
 3. Returns ~20-50 candidates, stored in watchlist cache
 
-### Monthly Deep Dive (manual, costs ~$0.50)
-1. Top candidates by margin of safety go to `analyzer.py`
-2. Claude reads company summary and provides qualitative assessment (moat, management, risks)
-3. `briefing.py` combines quant + qual into report
-4. Notifications sent via email/Discord/Telegram
+### Monthly Deep Dive (manual, costs ~$0.25-0.50)
+1. Haiku pre-screens top 30 candidates (cheap filter before expensive Sonnet)
+2. Top candidates go to Sonnet for deep qualitative analysis (moat, management, risks)
+3. Optionally, Opus provides a contrarian second opinion on top 5 BUY picks
+4. `briefing.py` combines quant + qual into report (text, HTML, JSON)
+5. Results compared against benchmark (SPY by default)
+6. Notifications sent via email/Discord/Telegram
+
+Batch API (50% discount) and prompt caching are enabled by default to reduce costs.
 
 ### Continuous Monitoring (automated)
 1. `monitor.py` checks news daily for portfolio holdings
@@ -136,19 +141,44 @@ Results are saved to `./data/briefings/` and sent via your configured notificati
 
 ## Screening Criteria (Default)
 
-Buffett-style value filter:
+Stocks pass hard filters first, then are ranked by a weighted score. Higher-scoring stocks rise to the top.
 
-| Metric | Criteria | Rationale |
-|--------|----------|-----------|
-| Market Cap | $300M - $500B | Avoids micro-caps |
-| P/E Ratio | < 20 | Not overvalued |
-| Debt/Equity | < 0.5 | Conservative balance sheet |
-| ROE | > 12% | Efficient capital use |
-| Revenue Growth | > 5% YoY | Not shrinking |
-| Free Cash Flow | Positive (3yr) | Actually makes money |
-| Dividend | Optional | Shareholder returns |
+### Hard Filters (must pass)
+
+| Filter | Value | Rationale |
+|--------|-------|-----------|
+| Market Cap | $300M - $500B | Avoids micro-caps and mega-caps |
+| Price | > $5 | Avoids penny stocks |
+| P/E Ratio | > 0 | Excludes loss-making companies |
+| Quote Type | EQUITY only | Excludes ETFs, CEFs |
+
+### Scored Metrics (weighted ranking)
+
+| Metric | Ideal | Threshold | Weight | Rationale |
+|--------|-------|-----------|--------|-----------|
+| P/E Ratio | 12 | max 30 | 2.0 | Not overvalued |
+| ROE | 20% | min 5% | 2.0 | Efficient capital use |
+| FCF Yield | 8% | min 2% | 2.0 | Cash generation vs price |
+| Debt/Equity | 0.0 | max 1.0 | 1.5 | Conservative balance sheet |
+| Operating Margin | 25% | min 10% | 1.5 | Pricing power |
+| Earnings Quality | 1.2x | min 0.5x | 1.5 | FCF backs reported earnings |
+| Revenue Growth | 15% | min 0% | 1.0 | Not shrinking |
+| Current Ratio | 2.0 | min 1.0 | 1.0 | Short-term liquidity |
+| Payout Ratio | 35% | 0-80% | 0.5 | Disciplined capital return |
 
 Customize in `config/screening_criteria.yaml`
+
+## Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ANTHROPIC_API_KEY` | (required) | Claude API key |
+| `USE_BATCH_API` | `true` | Use Batch API for 50% cost reduction |
+| `USE_OPUS_SECOND_OPINION` | `false` | Run Opus contrarian review on top BUY picks |
+| `BENCHMARK_SYMBOL` | `SPY` | Benchmark to compare picks against |
+| `PORTFOLIO_VALUE` | `50000` | Portfolio size for position sizing |
+
+See `.env.example` for the full list.
 
 ## Important Limitations
 

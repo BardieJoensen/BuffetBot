@@ -46,6 +46,23 @@ screening:
       ideal: 2.0
       min: 1.0
       weight: 1.0
+    fcf_yield:
+      ideal: 0.08          # 8% FCF yield is excellent
+      min: 0.02             # Below 2% gets zero score
+      weight: 2.0           # High weight — Buffett's core metric
+    operating_margin:
+      ideal: 0.25           # 25% operating margin = strong pricing power
+      min: 0.10             # Below 10% gets zero score
+      weight: 1.5
+    earnings_quality:
+      ideal: 1.2            # FCF slightly exceeds net income = high quality
+      min: 0.5              # Below 0.5 = earnings may not be real cash
+      weight: 1.5
+    payout_ratio:
+      ideal: 0.35           # 35% payout = disciplined but returning cash
+      min: 0.0              # No dividend is fine (growth reinvestment)
+      max: 0.80             # Above 80% is unsustainable
+      weight: 0.5           # Lower weight — no dividend is acceptable
 
   # How many top-scoring stocks to keep
   top_n: 100

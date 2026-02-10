@@ -191,6 +191,8 @@ def run_monthly_briefing(
 
     cached_stocks = load_cached_watchlist(watchlist_cache) if use_cache else []
 
+    screened_lookup = {}
+
     if cached_stocks:
         symbols = [s["symbol"] for s in cached_stocks]
         logger.info(f"Using {len(symbols)} stocks from cache")
@@ -214,6 +216,7 @@ def run_monthly_briefing(
 
         candidates = screener.apply_detailed_filters(candidates, criteria)
         symbols = [c.symbol for c in candidates]
+        screened_lookup = {c.symbol: c for c in candidates}
 
         save_watchlist(candidates, watchlist_cache)
 
@@ -330,7 +333,9 @@ def run_monthly_briefing(
         stocks_for_analysis = []
         for val in top_for_analysis:
             filing_text = fetch_company_summary(val.symbol)
-            stocks_for_analysis.append({"symbol": val.symbol, "company_name": val.symbol, "filing_text": filing_text})
+            sc = screened_lookup.get(val.symbol)
+            company_name = sc.name if sc else val.symbol
+            stocks_for_analysis.append({"symbol": val.symbol, "company_name": company_name, "filing_text": filing_text})
 
         analyses = analyzer.batch_analyze_companies(stocks_for_analysis)
         analysis_map = {a.symbol: a for a in analyses}
@@ -348,19 +353,24 @@ def run_monthly_briefing(
                 current_positions=current_positions,
             )
 
+            sc = screened_lookup.get(val.symbol)
             briefing = StockBriefing(
                 symbol=val.symbol,
                 company_name=analysis.company_name or val.symbol,
                 current_price=val.current_price,
-                market_cap=0,
-                pe_ratio=None,
-                debt_equity=None,
-                roe=None,
-                revenue_growth=None,
+                market_cap=sc.market_cap if sc else 0,
+                pe_ratio=sc.pe_ratio if sc else None,
+                debt_equity=sc.debt_equity if sc else None,
+                roe=sc.roe if sc else None,
+                revenue_growth=sc.revenue_growth if sc else None,
                 valuation=val,
                 analysis=analysis,
                 recommendation=recommendation,
                 position_size=position_size,
+                fcf_yield=sc.fcf_yield if sc else None,
+                earnings_quality=sc.earnings_quality if sc else None,
+                payout_ratio=sc.payout_ratio if sc else None,
+                operating_margin=sc.operating_margin if sc else None,
             )
             briefings.append(briefing)
             analyzed_symbols.append(val.symbol)
@@ -371,9 +381,11 @@ def run_monthly_briefing(
 
                 filing_text = fetch_company_summary(val.symbol)
 
+                sc = screened_lookup.get(val.symbol)
+                company_name = sc.name if sc else val.symbol
                 analysis = analyzer.analyze_company(
                     symbol=val.symbol,
-                    company_name=val.symbol,
+                    company_name=company_name,
                     filing_text=filing_text,
                     use_cache=use_cache,
                 )
@@ -385,19 +397,24 @@ def run_monthly_briefing(
                     current_positions=current_positions,
                 )
 
+                sc = screened_lookup.get(val.symbol)
                 briefing = StockBriefing(
                     symbol=val.symbol,
                     company_name=analysis.company_name or val.symbol,
                     current_price=val.current_price,
-                    market_cap=0,
-                    pe_ratio=None,
-                    debt_equity=None,
-                    roe=None,
-                    revenue_growth=None,
+                    market_cap=sc.market_cap if sc else 0,
+                    pe_ratio=sc.pe_ratio if sc else None,
+                    debt_equity=sc.debt_equity if sc else None,
+                    roe=sc.roe if sc else None,
+                    revenue_growth=sc.revenue_growth if sc else None,
                     valuation=val,
                     analysis=analysis,
                     recommendation=recommendation,
                     position_size=position_size,
+                    fcf_yield=sc.fcf_yield if sc else None,
+                    earnings_quality=sc.earnings_quality if sc else None,
+                    payout_ratio=sc.payout_ratio if sc else None,
+                    operating_margin=sc.operating_margin if sc else None,
                 )
 
                 briefings.append(briefing)
