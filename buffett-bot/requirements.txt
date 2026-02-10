@@ -43,5 +43,9 @@ typer>=0.9.0
 # Testing
 pytest>=7.4.0
 
+# Dev tools
+pre-commit>=3.6.0
+detect-secrets>=1.5.0
+
 # Optional: Jupyter for exploration
 # jupyter>=1.0.0

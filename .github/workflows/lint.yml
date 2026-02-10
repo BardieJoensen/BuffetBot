@@ -2,7 +2,7 @@ name: Lint & Security
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
     branches: [main]
 
@@ -44,3 +44,22 @@ jobs:
           python-version: "3.11"
       - run: pip install bandit
       - run: bandit -r src/ scripts/ -c pyproject.toml
+
+  secrets:
+    name: Secrets scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install detect-secrets
+      - run: detect-secrets scan --all-files --exclude-files '\.git/.*' --force-use-all-plugins | tee .secrets-results.json
+      - run: |
+          if jq -e '.results | to_entries | map(select(.value | length > 0)) | length > 0' .secrets-results.json > /dev/null 2>&1; then
+            echo "::error::Potential secrets detected! Review .secrets-results.json"
+            jq '.results | to_entries[] | select(.value | length > 0)' .secrets-results.json
+            exit 1
+          fi
