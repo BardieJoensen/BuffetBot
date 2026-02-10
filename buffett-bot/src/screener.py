@@ -309,6 +309,7 @@ class StockScreener:
             free_cashflow = data.get("free_cashflow")
             net_income = data.get("net_income")
 
+            market_cap = data.get("market_cap")
             if free_cashflow and market_cap:
                 data["fcf_yield"] = free_cashflow / market_cap
             else:

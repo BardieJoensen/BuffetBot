@@ -191,6 +191,8 @@ def run_monthly_briefing(
 
     cached_stocks = load_cached_watchlist(watchlist_cache) if use_cache else []
 
+    screened_lookup = {}
+
     if cached_stocks:
         symbols = [s["symbol"] for s in cached_stocks]
         logger.info(f"Using {len(symbols)} stocks from cache")
