@@ -55,6 +55,12 @@ class StockBriefing:
     # Position sizing
     position_size: Optional[dict] = None
 
+    # Deeper Buffett fundamentals
+    fcf_yield: Optional[float] = None
+    earnings_quality: Optional[float] = None
+    payout_ratio: Optional[float] = None
+    operating_margin: Optional[float] = None
+
     # Opus second opinion (contrarian review)
     opus_opinion: Optional[dict] = None
 
@@ -748,6 +754,14 @@ You make the final investment decision. Past performance does not guarantee futu
             lines.append(f"<tr><td>ROE</td><td>{briefing.roe:.1%}</td></tr>")
         if briefing.debt_equity:
             lines.append(f"<tr><td>Debt/Equity</td><td>{briefing.debt_equity:.2f}</td></tr>")
+        if briefing.fcf_yield is not None:
+            lines.append(f"<tr><td>FCF Yield</td><td>{briefing.fcf_yield:.1%}</td></tr>")
+        if briefing.operating_margin is not None:
+            lines.append(f"<tr><td>Operating Margin</td><td>{briefing.operating_margin:.1%}</td></tr>")
+        if briefing.earnings_quality is not None:
+            lines.append(f"<tr><td>Earnings Quality</td><td>{briefing.earnings_quality:.2f}</td></tr>")
+        if briefing.payout_ratio is not None:
+            lines.append(f"<tr><td>Payout Ratio</td><td>{briefing.payout_ratio:.1%}</td></tr>")
         lines.append("</table>")
 
         # Valuation estimates
@@ -869,6 +883,14 @@ You make the final investment decision. Past performance does not guarantee futu
             lines.append(f"│ ROE:              {briefing.roe:>10.1%}                          │")
         if briefing.debt_equity:
             lines.append(f"│ Debt/Equity:      {briefing.debt_equity:>11.2f}                          │")
+        if briefing.fcf_yield is not None:
+            lines.append(f"│ FCF Yield:        {briefing.fcf_yield:>10.1%}                          │")
+        if briefing.operating_margin is not None:
+            lines.append(f"│ Operating Margin: {briefing.operating_margin:>10.1%}                          │")
+        if briefing.earnings_quality is not None:
+            lines.append(f"│ Earnings Quality: {briefing.earnings_quality:>11.2f}                          │")
+        if briefing.payout_ratio is not None:
+            lines.append(f"│ Payout Ratio:     {briefing.payout_ratio:>10.1%}                          │")
 
         lines.append("└" + "─" * 58 + "┘")
         lines.append("")
@@ -1028,6 +1050,10 @@ You make the final investment decision. Past performance does not guarantee futu
                 "debt_equity": briefing.debt_equity,
                 "roe": briefing.roe,
                 "revenue_growth": briefing.revenue_growth,
+                "fcf_yield": briefing.fcf_yield,
+                "operating_margin": briefing.operating_margin,
+                "earnings_quality": briefing.earnings_quality,
+                "payout_ratio": briefing.payout_ratio,
             },
             "valuation": briefing.valuation.to_dict(),
             "qualitative": briefing.analysis.to_dict(),
