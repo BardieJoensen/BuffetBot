@@ -567,12 +567,16 @@ Based on the filing data and the prior analyst's assessment above, provide your 
 
         def extract_list(text: str) -> list:
             """Extract bulleted/numbered list items"""
+            import re
+
             items = []
             for line in text.split("\n"):
                 line = line.strip()
                 if line.startswith(("-", "•", "*")) or (line and line[0].isdigit()):
                     # Remove bullet/number
                     cleaned = line.lstrip("-•*0123456789.) ")
+                    # Strip markdown bold/italic markers
+                    cleaned = re.sub(r"\*{1,2}(.+?)\*{1,2}", r"\1", cleaned)
                     if cleaned:
                         items.append(cleaned)
             return items

@@ -255,8 +255,20 @@ def run_monthly_briefing(
     # ─────────────────────────────────────────────────────────────
     logger.info("\n[5/8] CHECKING PORTFOLIO STATUS...")
 
-    portfolio_tracker = PortfolioTracker(data_dir=str(data_dir))
-    portfolio_summary = portfolio_tracker.get_portfolio_summary()
+    # Try Alpaca first (live paper positions), fall back to local portfolio.json
+    from src.paper_trader import PaperTrader, set_trade_log_dir
+
+    set_trade_log_dir(data_dir)
+    trader = PaperTrader()
+    portfolio_summary = {}
+    if trader.is_enabled():
+        portfolio_summary = trader.get_portfolio_summary()
+        if portfolio_summary.get("position_count", 0) > 0:
+            logger.info("Using Alpaca paper trading positions for portfolio status")
+
+    if not portfolio_summary or portfolio_summary.get("position_count", 0) == 0:
+        portfolio_tracker = PortfolioTracker(data_dir=str(data_dir))
+        portfolio_summary = portfolio_tracker.get_portfolio_summary()
 
     portfolio_value = float(os.getenv("PORTFOLIO_VALUE", 50000))
     current_positions = portfolio_summary.get("position_count", 0)
@@ -429,10 +441,6 @@ def run_monthly_briefing(
     # ─────────────────────────────────────────────────────────────
     # Step 6.5: Execute paper trades for BUY recommendations
     # ─────────────────────────────────────────────────────────────
-    from src.paper_trader import PaperTrader, set_trade_log_dir
-
-    set_trade_log_dir(data_dir)
-    trader = PaperTrader()
     if trader.is_enabled():
         logger.info("\n[6.5/9] EXECUTING PAPER TRADES...")
         for briefing in briefings:

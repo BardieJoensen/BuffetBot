@@ -127,7 +127,8 @@ class BriefingGenerator:
             emoji = temp_emoji.get(market_temp.get("temperature", "UNKNOWN"), "❓")
 
             output.append(f"{emoji} {market_temp.get('temperature', 'UNKNOWN')}")
-            output.append(f"Market P/E: {market_temp.get('market_pe', 'N/A')}")
+            market_pe = market_temp.get("market_pe")
+            output.append(f"Market P/E: {market_pe:.1f}" if market_pe else "Market P/E: N/A")
             output.append(f"Interpretation: {market_temp.get('interpretation', '')}")
             output.append("")
 
@@ -963,7 +964,8 @@ You make the final investment decision. Past performance does not guarantee futu
         risk_emoji = "🔴" if warning.risk_level == "HIGH" else "🟠"
 
         lines.append(f"{risk_emoji} {warning.symbol}: {warning.company_name}")
-        lines.append(f"   Price: ${warning.current_price:.2f} | P/E: {warning.pe_ratio or 'N/A'}")
+        pe_str = f"{warning.pe_ratio:.1f}" if warning.pe_ratio else "N/A"
+        lines.append(f"   Price: ${warning.current_price:.2f} | P/E: {pe_str}")
         lines.append(f"   Signals ({warning.signal_count}):")
 
         for signal in warning.signals[:3]:

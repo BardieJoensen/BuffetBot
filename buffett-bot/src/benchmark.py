@@ -49,7 +49,9 @@ def fetch_benchmark_data(symbol: str = "SPY") -> dict:
 
         current_price = info.get("regularMarketPrice") or info.get("currentPrice") or 0
         pe_ratio = info.get("trailingPE")
-        dividend_yield = info.get("dividendYield")
+        # yfinance may return dividendYield as a whole number (e.g. 1.05 = 1.05%)
+        raw_yield = info.get("dividendYield")
+        dividend_yield = raw_yield / 100 if raw_yield is not None and raw_yield > 1 else raw_yield
         high_52w = info.get("fiftyTwoWeekHigh")
         low_52w = info.get("fiftyTwoWeekLow")
         name = info.get("longName") or info.get("shortName") or symbol
