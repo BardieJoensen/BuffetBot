@@ -277,6 +277,71 @@ class PaperTrader:
             logger.error(f"Failed to sell {symbol}: {e}")
             return None
 
+    def get_portfolio_summary(self) -> dict:
+        """
+        Build a portfolio summary from Alpaca positions.
+
+        Returns the same structure as PortfolioTracker.get_portfolio_summary()
+        so the briefing can use either source seamlessly.
+        """
+        if not self._enabled:
+            return {}
+
+        try:
+            account = self.get_account()
+            positions = self.get_positions()
+
+            if not positions:
+                return {
+                    "positions": [],
+                    "position_count": 0,
+                    "total_invested": 0,
+                    "current_value": float(account.get("equity", 0)),
+                    "total_gain_loss": 0,
+                    "total_gain_loss_pct": 0,
+                    "sector_exposure": {},
+                    "sector_warnings": [],
+                }
+
+            total_invested = sum(p["avg_entry_price"] * p["qty"] for p in positions)
+            current_value = sum(p["market_value"] for p in positions)
+            total_pl = sum(p["unrealized_pl"] for p in positions)
+            total_pl_pct = total_pl / total_invested if total_invested > 0 else 0
+
+            # Fetch sectors for exposure calculation
+            import yfinance as yf
+
+            sector_values: dict[str, float] = {}
+            for p in positions:
+                try:
+                    info = yf.Ticker(p["symbol"]).info
+                    sector = info.get("sector", "Unknown")
+                except Exception:
+                    sector = "Unknown"
+                p["sector"] = sector
+                sector_values[sector] = sector_values.get(sector, 0) + p["market_value"]
+
+            sector_exposure = {s: v / current_value for s, v in sector_values.items()} if current_value > 0 else {}
+
+            sector_warnings = [
+                f"{s}: {pct:.1%} (above 30% threshold)" for s, pct in sector_exposure.items() if pct > 0.30
+            ]
+
+            return {
+                "positions": positions,
+                "position_count": len(positions),
+                "total_invested": total_invested,
+                "current_value": current_value,
+                "total_gain_loss": total_pl,
+                "total_gain_loss_pct": total_pl_pct,
+                "sector_exposure": sector_exposure,
+                "sector_warnings": sector_warnings,
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to build Alpaca portfolio summary: {e}")
+            return {}
+
     def _log_trade(self, trade: dict):
         """Append trade to the JSON trade log file."""
         try:
