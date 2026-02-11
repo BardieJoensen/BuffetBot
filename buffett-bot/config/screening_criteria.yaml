@@ -1,21 +1,11 @@
 # Screening Criteria Configuration
-# Adjust these values based on market conditions and your risk tolerance
+# v2.0 — "Find wonderful businesses regardless of price"
+# De-weighted valuation, added trend-based quality metrics, sector-aware scoring
 
 screening:
   # Market cap range (in USD)
   min_market_cap: 300000000    # $300M - avoid micro-caps
   max_market_cap: 500000000000  # $500B - include large-caps
-
-  # Valuation
-  max_pe_ratio: 20             # Avoid overpaying
-
-  # Financial health
-  max_debt_equity: 0.5         # Conservative balance sheet
-  min_current_ratio: 1.5       # Can pay short-term debts
-
-  # Profitability
-  min_roe: 0.12                # 12% return on equity
-  min_revenue_growth: 0.05     # 5% year-over-year growth
 
   # Hard filters (must pass)
   min_price: 5.0
@@ -26,43 +16,124 @@ screening:
 
   # Scored criteria (higher = better, weighted)
   scoring:
+    # === Snapshot valuation (de-weighted) ===
     pe_ratio:
-      ideal: 12        # Best score at this value
-      max: 30           # Zero score above this
-      weight: 2.0
+      ideal: 15
+      max: 60            # Was 30 — let quality compounders in
+      weight: 0.8         # Was 2.0 — valuation de-weighted
     debt_equity:
       ideal: 0.0
-      max: 1.0
-      weight: 1.5
+      max: 1.5            # Was 1.0 — more forgiving
+      weight: 0.8         # Was 1.5
+
+    # === Snapshot quality metrics ===
     roe:
       ideal: 0.20
-      min: 0.05         # Zero score below this
+      min: 0.05
       weight: 2.0
     revenue_growth:
       ideal: 0.15
       min: 0.0
-      weight: 1.0
+      weight: 0.8         # Was 1.0 — partially replaced by revenue_cagr
     current_ratio:
       ideal: 2.0
-      min: 1.0
-      weight: 1.0
+      min: 0.8             # Was 1.0 — loosened
+      weight: 0.5          # Was 1.0
     fcf_yield:
-      ideal: 0.08          # 8% FCF yield is excellent
-      min: 0.02             # Below 2% gets zero score
-      weight: 2.0           # High weight — Buffett's core metric
+      ideal: 0.08
+      min: 0.01            # Was 0.02 — loosened
+      weight: 1.5          # Was 2.0
     operating_margin:
-      ideal: 0.25           # 25% operating margin = strong pricing power
-      min: 0.10             # Below 10% gets zero score
+      ideal: 0.25
+      min: 0.08            # Was 0.10 — loosened
       weight: 1.5
     earnings_quality:
-      ideal: 1.2            # FCF slightly exceeds net income = high quality
-      min: 0.5              # Below 0.5 = earnings may not be real cash
+      ideal: 1.2
+      min: 0.5
       weight: 1.5
     payout_ratio:
-      ideal: 0.35           # 35% payout = disciplined but returning cash
-      min: 0.0              # No dividend is fine (growth reinvestment)
-      max: 0.80             # Above 80% is unsustainable
-      weight: 0.5           # Lower weight — no dividend is acceptable
+      ideal: 0.35
+      min: 0.0
+      max: 0.80
+      weight: 0.5
+
+    # === Trend-based quality metrics (new) ===
+    roe_consistency:
+      ideal: 0.02          # Low std dev = consistent ROE
+      max: 0.15
+      weight: 2.0
+    roic:
+      ideal: 0.20          # 20% return on invested capital
+      min: 0.05
+      weight: 2.5           # Highest weight — Buffett's favorite
+    margin_stability:
+      ideal: 0.02          # Low std dev = stable margins
+      max: 0.12
+      weight: 1.5
+    earnings_consistency:
+      ideal: 4             # 4 out of ~4 years with earnings growth
+      min: 1
+      weight: 2.0
+    revenue_cagr:
+      ideal: 0.12          # 12% compound annual growth
+      min: 0.0
+      weight: 1.5
+    fcf_consistency:
+      ideal: 0.10          # Low std dev of FCF/NI ratio
+      max: 0.50
+      weight: 1.5
+
+  # Sector-specific scoring overrides
+  # Only specify metrics that differ from base rules — unspecified metrics inherit base values
+  sector_overrides:
+    Real Estate:
+      debt_equity:
+        ideal: 0.0
+        max: 3.0            # REITs carry structural leverage
+        weight: 0.3
+      fcf_yield:
+        ideal: 0.06
+        min: 0.0            # REITs have different cash flow patterns
+        weight: 0.5
+      current_ratio:
+        ideal: 1.5
+        min: 0.5
+        weight: 0.3
+    Financial Services:
+      debt_equity:
+        ideal: 0.0
+        max: 5.0            # Banks/insurers carry high leverage by nature
+        weight: 0.2
+      current_ratio:
+        ideal: 1.5
+        min: 0.5
+        weight: 0.2
+    Utilities:
+      debt_equity:
+        ideal: 0.0
+        max: 2.5
+        weight: 0.4
+      revenue_cagr:
+        ideal: 0.06          # Utilities grow slowly
+        min: 0.0
+        weight: 0.8
+      fcf_yield:
+        ideal: 0.06
+        min: 0.0
+        weight: 1.0
+    Energy:
+      margin_stability:
+        ideal: 0.03
+        max: 0.20            # Energy margins are inherently volatile
+        weight: 0.8
+      revenue_cagr:
+        ideal: 0.08
+        min: -0.05           # Commodity price-driven, can shrink
+        weight: 0.8
+      fcf_consistency:
+        ideal: 0.15
+        max: 0.80            # FCF swings with oil prices
+        weight: 0.8
 
   # How many top-scoring stocks to keep
   top_n: 100

@@ -1,10 +1,13 @@
 """
 Stock Screener Module
 
-Filters stocks based on Buffett-style value criteria.
+Filters stocks based on Buffett-style quality criteria.
 Returns candidates that pass quantitative filters for further analysis.
 
 NOTE: Uses yfinance (completely free, no API key) for all stock data.
+
+v2.0 — De-weighted valuation, added trend-based quality metrics from historical
+financials, and sector-specific scoring overrides.
 """
 
 import json
@@ -15,6 +18,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 import yaml
 import yfinance as yf
 
@@ -46,13 +50,9 @@ class ScreeningCriteria:
 
     min_market_cap: float = 300_000_000  # $300M minimum
     max_market_cap: float = 500_000_000_000  # $500B maximum
-    max_pe_ratio: float = 20.0  # Not overvalued
-    max_debt_equity: float = 0.5  # Conservative debt
-    min_roe: float = 0.12  # 12% return on equity
-    min_revenue_growth: float = 0.05  # 5% growth
-    min_current_ratio: float = 1.5  # Can pay short-term debts
     min_price: float = 5.0  # Minimum stock price
     scoring: dict[str, ScoringRule] = field(default_factory=dict)
+    sector_overrides: dict[str, dict[str, ScoringRule]] = field(default_factory=dict)
     top_n: int = 100  # How many top-scoring stocks to keep
 
 
@@ -81,17 +81,27 @@ def load_criteria_from_yaml(config_path: Optional[Path] = None) -> ScreeningCrit
                 max=float(rule_data["max"]) if "max" in rule_data else None,
             )
 
+        # Parse sector overrides — each override inherits from base scoring
+        sector_overrides: dict[str, dict[str, ScoringRule]] = {}
+        overrides_raw = screening.get("sector_overrides", {})
+        for sector_name, sector_rules in overrides_raw.items():
+            sector_scoring = {}
+            for metric, rule_data in sector_rules.items():
+                sector_scoring[metric] = ScoringRule(
+                    ideal=float(rule_data.get("ideal", 0)),
+                    weight=float(rule_data.get("weight", 1.0)),
+                    min=float(rule_data["min"]) if "min" in rule_data else None,
+                    max=float(rule_data["max"]) if "max" in rule_data else None,
+                )
+            sector_overrides[sector_name] = sector_scoring
+
         defaults = ScreeningCriteria()
         return ScreeningCriteria(
             min_market_cap=float(screening.get("min_market_cap", defaults.min_market_cap)),
             max_market_cap=float(screening.get("max_market_cap", defaults.max_market_cap)),
-            max_pe_ratio=float(screening.get("max_pe_ratio", defaults.max_pe_ratio)),
-            max_debt_equity=float(screening.get("max_debt_equity", defaults.max_debt_equity)),
-            min_roe=float(screening.get("min_roe", defaults.min_roe)),
-            min_revenue_growth=float(screening.get("min_revenue_growth", defaults.min_revenue_growth)),
-            min_current_ratio=float(screening.get("min_current_ratio", defaults.min_current_ratio)),
             min_price=float(screening.get("min_price", defaults.min_price)),
             scoring=scoring,
+            sector_overrides=sector_overrides,
             top_n=int(screening.get("top_n", defaults.top_n)),
         )
 
@@ -103,17 +113,28 @@ def load_criteria_from_yaml(config_path: Optional[Path] = None) -> ScreeningCrit
         return ScreeningCriteria()
 
 
-def score_stock(data: dict, criteria: ScreeningCriteria) -> float:
+def score_stock(
+    data: dict, criteria: ScreeningCriteria, sector: str = ""
+) -> tuple[float, float]:
     """
     Score a stock based on how close each metric is to the ideal value.
 
     Each metric gets a 0-1 score, multiplied by its weight.
-    Returns the total weighted score.
+    Returns (total_score, score_confidence) where confidence =
+    scored_weight / total_possible_weight.
     """
     if not criteria.scoring:
-        return 0.0
+        return 0.0, 0.0
+
+    # Merge base scoring with sector overrides
+    effective_scoring = dict(criteria.scoring)
+    if sector and sector in criteria.sector_overrides:
+        for metric, rule in criteria.sector_overrides[sector].items():
+            effective_scoring[metric] = rule
 
     total_score = 0.0
+    scored_weight = 0.0
+    total_possible_weight = 0.0
 
     valid_metrics = {
         "pe_ratio",
@@ -125,11 +146,19 @@ def score_stock(data: dict, criteria: ScreeningCriteria) -> float:
         "earnings_quality",
         "payout_ratio",
         "operating_margin",
+        "roe_consistency",
+        "roic",
+        "margin_stability",
+        "earnings_consistency",
+        "revenue_cagr",
+        "fcf_consistency",
     }
 
-    for metric_name, rule in criteria.scoring.items():
+    for metric_name, rule in effective_scoring.items():
         if metric_name not in valid_metrics:
             continue
+
+        total_possible_weight += rule.weight
 
         value = data.get(metric_name)
         if value is None:
@@ -141,8 +170,10 @@ def score_stock(data: dict, criteria: ScreeningCriteria) -> float:
 
         score = _compute_metric_score(value, rule)
         total_score += score * rule.weight
+        scored_weight += rule.weight
 
-    return total_score
+    confidence = scored_weight / total_possible_weight if total_possible_weight > 0 else 0.0
+    return total_score, confidence
 
 
 def _compute_metric_score(value: float, rule: ScoringRule) -> float:
@@ -199,10 +230,17 @@ class ScreenedStock:
     screened_at: datetime
     price: Optional[float] = None
     score: float = 0.0
+    score_confidence: float = 0.0
     fcf_yield: Optional[float] = None
     earnings_quality: Optional[float] = None
     payout_ratio: Optional[float] = None
     operating_margin: Optional[float] = None
+    roe_consistency: Optional[float] = None
+    roic: Optional[float] = None
+    margin_stability: Optional[float] = None
+    earnings_consistency: Optional[float] = None
+    revenue_cagr: Optional[float] = None
+    fcf_consistency: Optional[float] = None
 
     def to_dict(self) -> dict:
         return {
@@ -218,10 +256,17 @@ class ScreenedStock:
             "screened_at": self.screened_at.isoformat(),
             "price": self.price,
             "score": self.score,
+            "score_confidence": self.score_confidence,
             "fcf_yield": self.fcf_yield,
             "earnings_quality": self.earnings_quality,
             "payout_ratio": self.payout_ratio,
             "operating_margin": self.operating_margin,
+            "roe_consistency": self.roe_consistency,
+            "roic": self.roic,
+            "margin_stability": self.margin_stability,
+            "earnings_consistency": self.earnings_consistency,
+            "revenue_cagr": self.revenue_cagr,
+            "fcf_consistency": self.fcf_consistency,
         }
 
 
@@ -233,7 +278,8 @@ class StockScreener:
     1. Get dynamic universe from Finviz/Wikipedia/fallback (see universe.py)
     2. Fetch detailed data via yfinance
     3. Apply hard filters (market cap, price, quote type, industry)
-    4. Score remaining stocks and return top N
+    4. Fetch historical financials for trend metrics
+    5. Score remaining stocks (with sector overrides) and return top N
     """
 
     CACHE_HOURS = 24  # Cache stock data for 24 hours
@@ -336,6 +382,194 @@ class StockScreener:
             logger.debug(f"Error fetching {symbol}: {e}")
             return None
 
+    def _fetch_historical_data(self, symbol: str, ticker: yf.Ticker) -> dict:
+        """
+        Fetch historical financials and compute trend-based quality metrics.
+
+        Uses ticker.financials, ticker.balance_sheet, ticker.cashflow.
+        Each metric is wrapped in try/except for graceful degradation —
+        if yfinance labels differ across versions, metrics degrade individually.
+
+        Returns dict with metric values and _historical_years count.
+        """
+        result: dict = {"_historical_years": 0}
+
+        try:
+            financials = ticker.financials
+            balance_sheet = ticker.balance_sheet
+            cashflow = ticker.cashflow
+        except Exception as e:
+            logger.debug(f"Failed to fetch historical data for {symbol}: {e}")
+            return result
+
+        # Check we have data
+        if financials is None or financials.empty:
+            return result
+
+        n_years = len(financials.columns)
+        result["_historical_years"] = n_years
+
+        if n_years < 2:
+            return result
+
+        # --- ROE Consistency: std(Net Income / Stockholders Equity) ---
+        try:
+            net_income_row = None
+            for label in ["Net Income", "Net Income Common Stockholders"]:
+                if label in financials.index:
+                    net_income_row = financials.loc[label]
+                    break
+
+            equity_row = None
+            if balance_sheet is not None and not balance_sheet.empty:
+                for label in ["Stockholders Equity", "Total Stockholder Equity",
+                              "Stockholders' Equity", "Common Stock Equity"]:
+                    if label in balance_sheet.index:
+                        equity_row = balance_sheet.loc[label]
+                        break
+
+            if net_income_row is not None and equity_row is not None:
+                # Align columns
+                common_cols = net_income_row.index.intersection(equity_row.index)
+                if len(common_cols) >= 2:
+                    ni = net_income_row[common_cols].astype(float)
+                    eq = equity_row[common_cols].astype(float)
+                    roe_series = ni / eq
+                    roe_series = roe_series.replace([np.inf, -np.inf], np.nan).dropna()
+                    if len(roe_series) >= 2:
+                        result["roe_consistency"] = float(roe_series.std())
+        except Exception as e:
+            logger.debug(f"{symbol} roe_consistency failed: {e}")
+
+        # --- ROIC: Net Income / (Stockholders Equity + Total Debt) for latest year ---
+        try:
+            ni_val = None
+            for label in ["Net Income", "Net Income Common Stockholders"]:
+                if label in financials.index:
+                    ni_val = float(financials.loc[label].iloc[0])
+                    break
+
+            eq_val = None
+            if balance_sheet is not None and not balance_sheet.empty:
+                for label in ["Stockholders Equity", "Total Stockholder Equity",
+                              "Stockholders' Equity", "Common Stock Equity"]:
+                    if label in balance_sheet.index:
+                        eq_val = float(balance_sheet.loc[label].iloc[0])
+                        break
+
+            debt_val = 0.0
+            if balance_sheet is not None and not balance_sheet.empty:
+                for label in ["Total Debt", "Long Term Debt", "Long Term Debt And Capital Lease Obligation"]:
+                    if label in balance_sheet.index:
+                        debt_val = float(balance_sheet.loc[label].iloc[0])
+                        break
+
+            if ni_val is not None and eq_val is not None:
+                invested_capital = eq_val + debt_val
+                if invested_capital > 0:
+                    result["roic"] = ni_val / invested_capital
+        except Exception as e:
+            logger.debug(f"{symbol} roic failed: {e}")
+
+        # --- Margin Stability: std(Operating Income / Total Revenue) ---
+        try:
+            op_income_row = None
+            for label in ["Operating Income", "Operating Revenue"]:
+                if label in financials.index:
+                    op_income_row = financials.loc[label]
+                    break
+
+            revenue_row = None
+            for label in ["Total Revenue", "Revenue"]:
+                if label in financials.index:
+                    revenue_row = financials.loc[label]
+                    break
+
+            if op_income_row is not None and revenue_row is not None:
+                common_cols = op_income_row.index.intersection(revenue_row.index)
+                if len(common_cols) >= 2:
+                    op = op_income_row[common_cols].astype(float)
+                    rev = revenue_row[common_cols].astype(float)
+                    margin_series = op / rev
+                    margin_series = margin_series.replace([np.inf, -np.inf], np.nan).dropna()
+                    if len(margin_series) >= 2:
+                        result["margin_stability"] = float(margin_series.std())
+        except Exception as e:
+            logger.debug(f"{symbol} margin_stability failed: {e}")
+
+        # --- Earnings Consistency: count of years with positive earnings growth ---
+        try:
+            ni_row = None
+            for label in ["Net Income", "Net Income Common Stockholders"]:
+                if label in financials.index:
+                    ni_row = financials.loc[label]
+                    break
+
+            if ni_row is not None and len(ni_row) >= 2:
+                ni_vals = ni_row.astype(float).values
+                # financials columns are newest-first, reverse for chronological
+                ni_vals = ni_vals[::-1]
+                growth_years = sum(
+                    1 for i in range(1, len(ni_vals))
+                    if ni_vals[i] > ni_vals[i - 1]
+                )
+                result["earnings_consistency"] = float(growth_years)
+        except Exception as e:
+            logger.debug(f"{symbol} earnings_consistency failed: {e}")
+
+        # --- Revenue CAGR: (latest_rev / earliest_rev) ^ (1/years) - 1 ---
+        try:
+            rev_row = None
+            for label in ["Total Revenue", "Revenue"]:
+                if label in financials.index:
+                    rev_row = financials.loc[label]
+                    break
+
+            if rev_row is not None and len(rev_row) >= 2:
+                rev_vals = rev_row.astype(float).values
+                # newest first — iloc[0] is latest, iloc[-1] is earliest
+                latest_rev = rev_vals[0]
+                earliest_rev = rev_vals[-1]
+                years = len(rev_vals) - 1
+                if earliest_rev > 0 and latest_rev > 0 and years > 0:
+                    result["revenue_cagr"] = float(
+                        (latest_rev / earliest_rev) ** (1.0 / years) - 1.0
+                    )
+        except Exception as e:
+            logger.debug(f"{symbol} revenue_cagr failed: {e}")
+
+        # --- FCF Consistency: std(Free Cash Flow / Net Income) ---
+        try:
+            fcf_row = None
+            if cashflow is not None and not cashflow.empty:
+                for label in ["Free Cash Flow", "FreeCashFlow"]:
+                    if label in cashflow.index:
+                        fcf_row = cashflow.loc[label]
+                        break
+
+            ni_row2 = None
+            for label in ["Net Income", "Net Income Common Stockholders"]:
+                if label in financials.index:
+                    ni_row2 = financials.loc[label]
+                    break
+
+            if fcf_row is not None and ni_row2 is not None:
+                common_cols = fcf_row.index.intersection(ni_row2.index)
+                if len(common_cols) >= 2:
+                    fcf = fcf_row[common_cols].astype(float)
+                    ni = ni_row2[common_cols].astype(float)
+                    # Only where net income is positive
+                    mask = ni > 0
+                    if mask.sum() >= 2:
+                        ratio = fcf[mask] / ni[mask]
+                        ratio = ratio.replace([np.inf, -np.inf], np.nan).dropna()
+                        if len(ratio) >= 2:
+                            result["fcf_consistency"] = float(ratio.std())
+        except Exception as e:
+            logger.debug(f"{symbol} fcf_consistency failed: {e}")
+
+        return result
+
     def screen(self, criteria: Optional[ScreeningCriteria] = None) -> list[ScreenedStock]:
         """
         Run stock screen with given criteria using yfinance.
@@ -411,8 +645,30 @@ class StockScreener:
             if pe is not None and pe <= 0:
                 continue
 
+            # === Fetch historical data for trend metrics ===
+            if "historical" not in data:
+                try:
+                    ticker = yf.Ticker(symbol)
+                    historical = self._fetch_historical_data(symbol, ticker)
+                    data["historical"] = historical
+                    # Save enriched data back to cache
+                    self._save_cached_data(symbol, data)
+                except Exception as e:
+                    logger.debug(f"Historical data fetch failed for {symbol}: {e}")
+                    data["historical"] = {"_historical_years": 0}
+
+            # Merge historical metrics into flat data dict for scoring
+            historical = data.get("historical", {})
+            for metric in [
+                "roe_consistency", "roic", "margin_stability",
+                "earnings_consistency", "revenue_cagr", "fcf_consistency",
+            ]:
+                if metric not in data and metric in historical:
+                    data[metric] = historical[metric]
+
             # === Score the stock ===
-            stock_score = score_stock(data, criteria)
+            sector = data.get("sector", "Unknown")
+            stock_score, score_confidence = score_stock(data, criteria, sector)
 
             de = data.get("debt_equity")
 
@@ -425,15 +681,22 @@ class StockScreener:
                     debt_equity=de / 100 if de else None,  # Convert to ratio
                     roe=data.get("roe"),
                     revenue_growth=data.get("revenue_growth"),
-                    sector=data.get("sector", "Unknown"),
+                    sector=sector,
                     industry=data.get("industry", "Unknown"),
                     screened_at=datetime.now(),
                     price=price,
                     score=stock_score,
+                    score_confidence=score_confidence,
                     fcf_yield=data.get("fcf_yield"),
                     earnings_quality=data.get("earnings_quality"),
                     payout_ratio=data.get("payout_ratio"),
                     operating_margin=data.get("operating_margin"),
+                    roe_consistency=data.get("roe_consistency"),
+                    roic=data.get("roic"),
+                    margin_stability=data.get("margin_stability"),
+                    earnings_consistency=data.get("earnings_consistency"),
+                    revenue_cagr=data.get("revenue_cagr"),
+                    fcf_consistency=data.get("fcf_consistency"),
                 )
             )
 
@@ -492,9 +755,13 @@ if __name__ == "__main__":
     print(f"\nFound {len(stocks)} candidates:\n")
 
     for stock in stocks[:10]:
-        print(f"  {stock.symbol}: {stock.name} (score: {stock.score:.2f})")
+        print(f"  {stock.symbol}: {stock.name} (score: {stock.score:.2f}, confidence: {stock.score_confidence:.2f})")
         print(f"    Market Cap: ${stock.market_cap:,.0f}")
         print(f"    Price: ${stock.price:.2f}")
         print(f"    P/E: {stock.pe_ratio}")
         print(f"    Sector: {stock.sector}")
+        if stock.roic is not None:
+            print(f"    ROIC: {stock.roic:.1%}")
+        if stock.revenue_cagr is not None:
+            print(f"    Revenue CAGR: {stock.revenue_cagr:.1%}")
         print()

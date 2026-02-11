@@ -4,11 +4,17 @@ LLM Analyzer Module
 Uses Claude API for qualitative analysis of companies.
 The LLM reads documents and provides assessments - it does NOT do math.
 
+v2.0 — Shifted from "should I buy this stock" to "assess this business's
+quality, durability, and fair entry price." Outputs AnalysisV2 schema with
+moat classification, management quality, durability, currency exposure,
+and fair value estimates.
+
 Responsibilities:
-- Summarize 10-K annual reports
-- Assess competitive moat quality
-- Evaluate management from earnings calls
-- Identify risks and red flags
+- Assess competitive moat quality and durability
+- Evaluate management capital allocation
+- Analyze business durability (10-20 year horizon)
+- Estimate currency exposure for Danish ASK investors
+- Provide fair value range and target entry price
 - Monitor news for thesis-breaking events
 
 COST OPTIMIZATION:
@@ -23,12 +29,13 @@ COST OPTIMIZATION:
 import json
 import logging
 import os
+import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Optional, cast
+from typing import Any, Optional, Union, cast
 
 from anthropic import Anthropic
 from anthropic.types import TextBlock
@@ -46,27 +53,45 @@ _cache_dir = DEFAULT_CACHE_DIR
 # ─────────────────────────────────────────────────────────────
 
 ANALYSIS_SYSTEM_PROMPT = """\
-You are a value investing analyst in the style of Warren Buffett.
-Analyze companies for potential long-term investment.
+You are a quality-focused investment analyst in the style of Warren Buffett.
+Your job is to assess business quality, durability, and fair entry price —
+NOT to make short-term trading recommendations.
+
+A wonderful business at a high price still belongs on the watchlist.
+Valuation determines WHEN to buy, not WHETHER to research.
 
 Provide your analysis in the following format:
 
-## MOAT ASSESSMENT
-Rating: [WIDE / NARROW / NONE]
-Sources of moat (list each):
-- [e.g., Switching costs, Network effects, Brand, Cost advantages, etc.]
-Explanation: [2-3 sentences on durability of competitive advantage]
+## MOAT CLASSIFICATION
+Type: [e.g., "brand + switching costs", "network effects + cost advantage"]
+Durability: [STRONG / MODERATE / WEAK / NONE]
+Risks: [What could erode the moat? Be specific about competitive threats, disruption risks, regulatory changes]
 
-## MANAGEMENT ASSESSMENT
-Rating: [EXCELLENT / ADEQUATE / POOR]
-Notes: [Assessment of capital allocation, alignment with shareholders, track record]
-Insider Ownership: [If mentioned in documents]
+## MANAGEMENT QUALITY
+Capital Allocation: [EXCELLENT / GOOD / MIXED / POOR]
+Insider Ownership: [Estimate percentage if known, otherwise "Unknown (estimate: ~X%)" with confidence note]
+Summary: [Assessment of buyback discipline, acquisition track record, compensation alignment, candor]
 
-## BUSINESS SUMMARY
-[2-3 sentence description of what the company does and how it makes money]
+## BUSINESS DURABILITY
+Recession Resilience: [How would this business perform in a severe recession? Revenue impact estimate]
+Existential Risks: [What could kill this business in 10-20 years? Technology disruption, regulation, etc.]
+10-Year Outlook: [Will this business be larger and more profitable in 10 years? Why or why not?]
 
-## COMPETITIVE POSITION
-[Assessment of market position, competitors, industry dynamics]
+## CURRENCY EXPOSURE
+Domestic Revenue: [X% — estimate based on your knowledge of the company]
+International Revenue: [Y% — estimate]
+Risk Level: [LOW / MODERATE / HIGH — considering USD/DKK exposure for a Danish investor]
+Confidence: [HIGH / MODERATE / LOW — how confident are you in these revenue split estimates?]
+
+## FAIR VALUE ASSESSMENT
+Estimated Fair Value: $LOW - $HIGH [range based on your qualitative assessment of business quality, growth, and comparable companies — NOT a precise DCF]
+Target Entry Price: $PRICE [fair value minus 20-30% margin of safety]
+
+## CONVICTION LEVEL
+[HIGH / MEDIUM / LOW] - [One sentence explanation]
+
+## INVESTMENT SUMMARY
+[2-3 sentences: what makes this business wonderful (or not), and what would make it a compelling buy]
 
 ## KEY RISKS
 1. [Risk 1]
@@ -78,34 +103,37 @@ Insider Ownership: [If mentioned in documents]
 1. [Event that would signal "sell immediately"]
 2. [Event that would signal "sell immediately"]
 
-## INVESTMENT THESIS
-[If you were to invest, what is the bull case? 2-3 sentences]
+## TOTAL RETURN POTENTIAL
+[Assessment of combined price appreciation + dividend yield potential over 5-10 years]
 
-## CONVICTION LEVEL
-[HIGH / MEDIUM / LOW] - [One sentence explanation]
+## DIVIDEND YIELD
+[Current yield percentage, or "N/A" if no dividend]
 
 IMPORTANT:
-- Do NOT calculate valuations or fair values
-- Do NOT make price predictions
-- Focus on qualitative business analysis only
-- Be skeptical and highlight genuine risks"""
+- Do NOT build complex DCF models — estimate fair value qualitatively
+- Focus on business quality and durability, not short-term catalysts
+- Be skeptical and highlight genuine risks
+- For currency exposure, note that the investor uses a Danish ASK account (DKK)
+- A high P/E alone is NOT a reason for low conviction — wonderful businesses often trade at premium multiples"""
 
 QUICK_SCREEN_SYSTEM_PROMPT = """\
-You are a value investing analyst. Quickly assess companies for long-term value.
+You are a quality-focused investment analyst. Quickly assess whether this \
+company shows signs of a durable competitive advantage and consistent \
+financial performance — regardless of current valuation.
 Rate moat strength 1-5, business quality 1-5, one-sentence reason.
 Respond in exactly 3 lines:
 MOAT: <1-5>
 QUALITY: <1-5>
-REASON: <one sentence>"""
+REASON: <one sentence focusing on business durability, not price>"""
 
 OPUS_SECOND_OPINION_PROMPT = """\
 You are a contrarian investment analyst providing a "second opinion" review.
 You have been given a prior analyst's assessment of a company. Your job is to:
 
-1. Challenge the thesis — play devil's advocate
-2. Identify what the prior analyst might have missed or underweighted
-3. Assess whether the conviction level is justified
-4. Highlight risks that were downplayed or overlooked
+1. Challenge the MOAT assessment — is the competitive advantage as durable as claimed?
+2. Challenge the DURABILITY thesis — what could disrupt this business in 5-10 years?
+3. Assess whether the management quality rating is justified
+4. Evaluate whether the fair value estimate is reasonable
 5. Consider macro/secular headwinds the prior analyst may have ignored
 
 Respond in this exact format:
@@ -117,9 +145,9 @@ Respond in this exact format:
 [HIGH / MEDIUM / LOW] — your independent conviction level
 
 ## CONTRARIAN RISKS
-1. [Risk or concern the prior analyst missed or underweighted]
-2. [Another risk]
-3. [Another risk]
+1. [Risk or concern the prior analyst missed or underweighted — focus on moat erosion]
+2. [Another risk — focus on durability threats]
+3. [Another risk — focus on management or valuation]
 
 ## ADDITIONAL INSIGHTS
 [2-3 sentences with observations the prior analyst missed — could be positive or negative]
@@ -130,7 +158,8 @@ Respond in this exact format:
 IMPORTANT:
 - Be genuinely critical, not just agreeable
 - If the prior analyst is wrong, say so clearly
-- Focus on what was MISSED, not what was already covered
+- Focus specifically on whether the MOAT and DURABILITY assessments are realistic
+- Challenge the fair value estimate if it seems too optimistic or pessimistic
 - Consider the current macro environment"""
 
 NEWS_MONITOR_SYSTEM_PROMPT = """\
@@ -165,9 +194,14 @@ class ManagementRating(Enum):
     POOR = "poor"  # Red flags present
 
 
+# ─────────────────────────────────────────────────────────────
+# v1 analysis dataclass (kept for backward compatibility during migration)
+# ─────────────────────────────────────────────────────────────
+
+
 @dataclass
 class QualitativeAnalysis:
-    """LLM-generated qualitative assessment of a company"""
+    """v1 LLM-generated qualitative assessment of a company (legacy)"""
 
     symbol: str
     company_name: str
@@ -216,6 +250,154 @@ class QualitativeAnalysis:
         }
 
 
+# ─────────────────────────────────────────────────────────────
+# v2 analysis dataclass
+# ─────────────────────────────────────────────────────────────
+
+
+@dataclass
+class AnalysisV2:
+    """
+    v2 LLM analysis — quality-focused with moat, durability,
+    currency exposure, and fair value assessment.
+
+    Provides backward-compatible properties so downstream consumers
+    that expect QualitativeAnalysis attributes still work.
+    """
+
+    symbol: str
+    company_name: str
+    sector: str
+
+    # Moat Classification
+    moat_type: str  # e.g., "brand + switching costs"
+    moat_durability: str  # strong / moderate / weak / none
+    moat_risks: str  # what could erode it
+
+    # Management Quality
+    mgmt_insider_ownership: Optional[float]  # percentage as decimal, None if unknown
+    mgmt_capital_allocation: str  # excellent / good / mixed / poor
+    mgmt_summary: str
+
+    # Business Durability
+    recession_resilience: str
+    existential_risks: str
+    outlook_10yr: str
+
+    # Currency Exposure
+    domestic_revenue_pct: Optional[float]
+    international_revenue_pct: Optional[float]
+    currency_risk_level: str  # low / moderate / high
+    currency_confidence: str  # high / moderate / low
+
+    # Fair Value Assessment
+    estimated_fair_value_low: Optional[float]
+    estimated_fair_value_high: Optional[float]
+    target_entry_price: Optional[float]
+    current_price: Optional[float]
+
+    # Overall
+    conviction: str  # HIGH / MEDIUM / LOW
+    summary: str
+    dividend_yield_estimate: Optional[float] = None
+    total_return_potential: str = ""
+
+    # Risk fields (also output by v2 prompt)
+    key_risks: list[str] = field(default_factory=list)
+    thesis_risks: list[str] = field(default_factory=list)
+
+    # --- Backward compatibility properties (duck-type as QualitativeAnalysis) ---
+
+    @property
+    def moat_rating(self) -> MoatRating:
+        mapping = {"strong": MoatRating.WIDE, "moderate": MoatRating.NARROW}
+        return mapping.get(self.moat_durability.lower(), MoatRating.NONE)
+
+    @property
+    def moat_sources(self) -> list[str]:
+        return [s.strip() for s in self.moat_type.split("+") if s.strip()]
+
+    @property
+    def moat_explanation(self) -> str:
+        return self.moat_risks
+
+    @property
+    def management_rating(self) -> ManagementRating:
+        mapping = {
+            "excellent": ManagementRating.EXCELLENT,
+            "good": ManagementRating.ADEQUATE,
+            "mixed": ManagementRating.ADEQUATE,
+        }
+        return mapping.get(self.mgmt_capital_allocation.lower(), ManagementRating.POOR)
+
+    @property
+    def management_notes(self) -> str:
+        return self.mgmt_summary
+
+    @property
+    def insider_ownership(self) -> Optional[str]:
+        if self.mgmt_insider_ownership is not None:
+            return f"{self.mgmt_insider_ownership:.1%}"
+        return None
+
+    @property
+    def business_summary(self) -> str:
+        return self.summary
+
+    @property
+    def competitive_position(self) -> str:
+        return f"Moat: {self.moat_type} ({self.moat_durability})"
+
+    @property
+    def investment_thesis(self) -> str:
+        return self.summary
+
+    @property
+    def conviction_level(self) -> str:
+        return self.conviction.upper()
+
+    def to_dict(self) -> dict:
+        return {
+            "schema_version": "v2",
+            "symbol": self.symbol,
+            "company_name": self.company_name,
+            "sector": self.sector,
+            "moat": {
+                "type": self.moat_type,
+                "durability": self.moat_durability,
+                "risks": self.moat_risks,
+            },
+            "management": {
+                "insider_ownership": self.mgmt_insider_ownership,
+                "capital_allocation": self.mgmt_capital_allocation,
+                "summary": self.mgmt_summary,
+            },
+            "durability": {
+                "recession_resilience": self.recession_resilience,
+                "existential_risks": self.existential_risks,
+                "outlook_10yr": self.outlook_10yr,
+            },
+            "currency_exposure": {
+                "domestic_revenue_pct": self.domestic_revenue_pct,
+                "international_revenue_pct": self.international_revenue_pct,
+                "risk_level": self.currency_risk_level,
+                "confidence": self.currency_confidence,
+            },
+            "valuation": {
+                "estimated_fair_value_low": self.estimated_fair_value_low,
+                "estimated_fair_value_high": self.estimated_fair_value_high,
+                "target_entry_price": self.target_entry_price,
+                "current_price": self.current_price,
+            },
+            "conviction": self.conviction,
+            "summary": self.summary,
+            "dividend_yield": self.dividend_yield_estimate,
+            "total_return_potential": self.total_return_potential,
+            "key_risks": self.key_risks,
+            "thesis_risks": self.thesis_risks,
+        }
+
+
 def get_cached_analysis(symbol: str, max_age_days: int = 30) -> Optional[dict]:
     """Return cached analysis if recent enough"""
     cache_file = _cache_dir / f"{symbol}.json"
@@ -249,7 +431,7 @@ class CompanyAnalyzer:
     Key principle: LLM does reading and reasoning, NOT calculations.
 
     Cost optimization:
-    - model_deep (Sonnet): For 10-K analysis, ~$0.05/stock
+    - model_deep (Sonnet): For analysis, ~$0.05/stock
     - model_light (Haiku): For news monitoring, ~$0.002/check (20x cheaper)
     """
 
@@ -268,7 +450,7 @@ class CompanyAnalyzer:
 
         # Three models: Opus for second opinion, Sonnet for deep analysis, Haiku for simple tasks
         self.model_opus = "claude-opus-4-6"  # For contrarian second opinion (~$0.30/stock)
-        self.model_deep = "claude-sonnet-4-5-20250929"  # For 10-K analysis
+        self.model_deep = "claude-sonnet-4-5-20250929"  # For deep analysis
         self.model_light = "claude-haiku-4-5-20251001"  # For news monitoring (20x cheaper)
 
     def analyze_company(
@@ -280,21 +462,12 @@ class CompanyAnalyzer:
         recent_news: Optional[str] = None,
         use_cache: bool = True,
         cache_max_age_days: int = 30,
-    ) -> QualitativeAnalysis:
+        sector: str = "",
+    ) -> AnalysisV2:
         """
         Perform deep qualitative analysis of a company.
 
-        Args:
-            symbol: Stock ticker
-            company_name: Full company name
-            filing_text: 10-K annual report text (or summary)
-            earnings_transcript: Recent earnings call transcript
-            recent_news: Recent news articles about the company
-            use_cache: If True, return cached analysis if available
-            cache_max_age_days: Max age of cached analysis to use
-
-        Returns:
-            QualitativeAnalysis with LLM assessments
+        Returns AnalysisV2 which is duck-type compatible with QualitativeAnalysis.
         """
         # Check cache first to avoid expensive API calls
         if use_cache:
@@ -325,7 +498,7 @@ class CompanyAnalyzer:
         block = response.content[0]
         assert isinstance(block, TextBlock)
         analysis_text: str = block.text
-        analysis = self._parse_analysis(symbol, company_name, analysis_text)
+        analysis = self._parse_analysis(symbol, company_name, analysis_text, sector)
 
         # Cache the result
         save_analysis_to_cache(symbol, analysis.to_dict())
@@ -337,24 +510,14 @@ class CompanyAnalyzer:
         symbol: str,
         company_name: str,
         filing_text: str,
-        sonnet_analysis: QualitativeAnalysis,
+        sonnet_analysis: Union[QualitativeAnalysis, AnalysisV2],
         use_cache: bool = True,
     ) -> dict:
         """
         Run Opus as a contrarian reviewer of Sonnet's analysis.
 
         Cost: ~$0.30 per stock (only run on top 3-5 BUY picks).
-
-        Args:
-            symbol: Stock ticker
-            company_name: Full company name
-            filing_text: 10-K annual report text (or summary)
-            sonnet_analysis: The prior Sonnet analysis to critique
-            use_cache: If True, return cached result if available
-
-        Returns:
-            dict with agreement, opus_conviction, contrarian_risks,
-            additional_insights, and summary
+        Accepts both v1 QualitativeAnalysis and v2 AnalysisV2.
         """
         # Check cache
         if use_cache:
@@ -376,17 +539,32 @@ class CompanyAnalyzer:
             f"({', '.join(sonnet_analysis.moat_sources[:3])})\n"
             f"- Management: {sonnet_analysis.management_rating.value.upper()}\n"
             f"- Conviction: {sonnet_analysis.conviction_level}\n"
-            f"- Thesis: {sonnet_analysis.investment_thesis}\n"
+            f"- Thesis: {sonnet_analysis.investment_thesis[:300]}\n"
             f"- Key Risks: {'; '.join(sonnet_analysis.key_risks[:3])}\n"
             f"- Business: {sonnet_analysis.business_summary[:300]}"
         )
+
+        # Include v2-specific context if available
+        if hasattr(sonnet_analysis, "moat_risks") and sonnet_analysis.moat_risks:
+            sonnet_summary += f"\n- Moat Erosion Risks: {sonnet_analysis.moat_risks[:200]}"
+        if hasattr(sonnet_analysis, "recession_resilience") and sonnet_analysis.recession_resilience:
+            sonnet_summary += f"\n- Recession Resilience: {sonnet_analysis.recession_resilience[:200]}"
+        if hasattr(sonnet_analysis, "outlook_10yr") and sonnet_analysis.outlook_10yr:
+            sonnet_summary += f"\n- 10-Year Outlook: {sonnet_analysis.outlook_10yr[:200]}"
+        if hasattr(sonnet_analysis, "estimated_fair_value_low") and sonnet_analysis.estimated_fair_value_low:
+            fv_low = sonnet_analysis.estimated_fair_value_low
+            fv_high = getattr(sonnet_analysis, "estimated_fair_value_high", fv_low)
+            sonnet_summary += f"\n- Fair Value Range: ${fv_low:,.0f} - ${fv_high:,.0f}"
+        if hasattr(sonnet_analysis, "target_entry_price") and sonnet_analysis.target_entry_price:
+            sonnet_summary += f"\n- Target Entry Price: ${sonnet_analysis.target_entry_price:,.0f}"
 
         user_prompt = f"""{sonnet_summary}
 
 === COMPANY FILING DATA ===
 {filing_text[: self.MAX_FILING_CHARS]}
 
-Based on the filing data and the prior analyst's assessment above, provide your contrarian second opinion."""
+Based on the filing data and the prior analyst's assessment above, provide your contrarian second opinion.
+Focus especially on whether the moat and durability assessments are realistic."""
 
         logger.info(f"Running Opus second opinion on {symbol}...")
 
@@ -444,8 +622,6 @@ Based on the filing data and the prior analyst's assessment above, provide your 
         summary_section = extract_section(text, "## SUMMARY", None)
 
         # Parse agreement
-        import re
-
         agreement = "PARTIALLY_AGREE"
         for option in ["PARTIALLY_AGREE", "DISAGREE", "AGREE"]:
             if re.search(r"\b" + re.escape(option) + r"\b", agreement_section.upper()):
@@ -477,27 +653,96 @@ Based on the filing data and the prior analyst's assessment above, provide your 
             "summary": summary_section,
         }
 
-    def _dict_to_analysis(self, data: dict) -> QualitativeAnalysis:
-        """Convert cached dict back to QualitativeAnalysis"""
+    def _dict_to_analysis(self, data: dict) -> AnalysisV2:
+        """Convert cached dict back to AnalysisV2. Handles both v1 and v2 cache formats."""
+        # Detect v2 format
+        if data.get("schema_version") == "v2":
+            return self._dict_to_analysis_v2(data)
+        # Check for v2 structure without explicit version tag
+        moat_data = data.get("moat", {})
+        if isinstance(moat_data, dict) and "durability" in moat_data:
+            return self._dict_to_analysis_v2(data)
+        # v1 format — convert to v2
+        return self._dict_v1_to_analysis_v2(data)
+
+    def _dict_to_analysis_v2(self, data: dict) -> AnalysisV2:
+        """Load v2 cache format into AnalysisV2."""
+        moat = data.get("moat", {})
+        mgmt = data.get("management", {})
+        dur = data.get("durability", {})
+        curr = data.get("currency_exposure", {})
+        val = data.get("valuation", {})
+
+        return AnalysisV2(
+            symbol=data.get("symbol", ""),
+            company_name=data.get("company_name", ""),
+            sector=data.get("sector", ""),
+            moat_type=moat.get("type", ""),
+            moat_durability=moat.get("durability", "none"),
+            moat_risks=moat.get("risks", ""),
+            mgmt_insider_ownership=mgmt.get("insider_ownership"),
+            mgmt_capital_allocation=mgmt.get("capital_allocation", "poor"),
+            mgmt_summary=mgmt.get("summary", ""),
+            recession_resilience=dur.get("recession_resilience", ""),
+            existential_risks=dur.get("existential_risks", ""),
+            outlook_10yr=dur.get("outlook_10yr", ""),
+            domestic_revenue_pct=curr.get("domestic_revenue_pct"),
+            international_revenue_pct=curr.get("international_revenue_pct"),
+            currency_risk_level=curr.get("risk_level", "moderate"),
+            currency_confidence=curr.get("confidence", "low"),
+            estimated_fair_value_low=val.get("estimated_fair_value_low"),
+            estimated_fair_value_high=val.get("estimated_fair_value_high"),
+            target_entry_price=val.get("target_entry_price"),
+            current_price=val.get("current_price"),
+            conviction=data.get("conviction", "LOW"),
+            summary=data.get("summary", ""),
+            dividend_yield_estimate=data.get("dividend_yield"),
+            total_return_potential=data.get("total_return_potential", ""),
+            key_risks=data.get("key_risks", []),
+            thesis_risks=data.get("thesis_risks", []),
+        )
+
+    def _dict_v1_to_analysis_v2(self, data: dict) -> AnalysisV2:
+        """Convert v1 cache format into AnalysisV2 for backward compatibility."""
         moat_data = data.get("moat", {})
         mgmt_data = data.get("management", {})
         risks_data = data.get("risks", {})
 
-        return QualitativeAnalysis(
+        # Map v1 moat rating to v2 durability
+        v1_rating = moat_data.get("rating", "none")
+        durability_map = {"wide": "strong", "narrow": "moderate", "none": "none"}
+        moat_durability = durability_map.get(v1_rating, "none")
+
+        # Map v1 management rating to v2 capital allocation
+        v1_mgmt = mgmt_data.get("rating", "poor")
+        cap_alloc_map = {"excellent": "excellent", "adequate": "good", "poor": "poor"}
+        mgmt_cap_alloc = cap_alloc_map.get(v1_mgmt, "poor")
+
+        return AnalysisV2(
             symbol=data.get("symbol", ""),
             company_name=data.get("company_name", ""),
-            moat_rating=MoatRating(moat_data.get("rating", "none")),
-            moat_sources=moat_data.get("sources", []),
-            moat_explanation=moat_data.get("explanation", ""),
-            management_rating=ManagementRating(mgmt_data.get("rating", "poor")),
-            management_notes=mgmt_data.get("notes", ""),
-            insider_ownership=mgmt_data.get("insider_ownership"),
-            business_summary=data.get("business_summary", ""),
-            competitive_position=data.get("competitive_position", ""),
+            sector="",
+            moat_type=", ".join(moat_data.get("sources", [])),
+            moat_durability=moat_durability,
+            moat_risks=moat_data.get("explanation", ""),
+            mgmt_insider_ownership=None,
+            mgmt_capital_allocation=mgmt_cap_alloc,
+            mgmt_summary=mgmt_data.get("notes", ""),
+            recession_resilience="",
+            existential_risks="",
+            outlook_10yr="",
+            domestic_revenue_pct=None,
+            international_revenue_pct=None,
+            currency_risk_level="moderate",
+            currency_confidence="low",
+            estimated_fair_value_low=None,
+            estimated_fair_value_high=None,
+            target_entry_price=None,
+            current_price=None,
+            conviction=data.get("conviction_level", "LOW"),
+            summary=data.get("investment_thesis", data.get("business_summary", "")),
             key_risks=risks_data.get("key_risks", []),
             thesis_risks=risks_data.get("thesis_risks", []),
-            investment_thesis=data.get("investment_thesis", ""),
-            conviction_level=data.get("conviction_level", "LOW"),
         )
 
     def _build_analysis_user_prompt(
@@ -512,7 +757,7 @@ Based on the filing data and the prior analyst's assessment above, provide your 
 
         prompt = f"""COMPANY: {company_name} ({symbol})
 
-=== ANNUAL REPORT (10-K) ===
+=== ANNUAL REPORT / COMPANY DATA ===
 {filing_text[: self.MAX_FILING_CHARS]}
 """
 
@@ -528,95 +773,183 @@ Based on the filing data and the prior analyst's assessment above, provide your 
 {recent_news[: self.MAX_NEWS_CHARS]}
 """
 
-        prompt += "\nBased on the above information, provide your analysis."
+        prompt += """
+Based on the above information, provide your quality-focused analysis.
+Assess this business's moat durability, management quality, business longevity,
+currency exposure, and estimate a fair value range with target entry price."""
 
         return prompt
 
-    def _parse_analysis(self, symbol: str, company_name: str, analysis_text: str) -> QualitativeAnalysis:
-        """Parse Claude's response into structured data"""
-
-        # Simple parsing - in production you'd want more robust parsing
-        # or ask Claude to return JSON
+    def _parse_analysis(
+        self, symbol: str, company_name: str, analysis_text: str, sector: str = ""
+    ) -> AnalysisV2:
+        """Parse Claude's v2 response into AnalysisV2"""
 
         def extract_section(text: str, header: str, next_header: Optional[str] = None) -> str:
-            """Extract text between headers"""
             start = text.find(header)
             if start == -1:
                 return ""
             start += len(header)
-
             if next_header:
                 end = text.find(next_header, start)
                 if end == -1:
                     end = len(text)
             else:
                 end = len(text)
-
             return text[start:end].strip()
 
-        def extract_rating(text: str, options: list) -> str:
-            """Find which rating option appears in text using word boundaries"""
-            import re
+        def extract_field(section: str, field_name: str) -> str:
+            """Extract a labeled field like 'Type: brand + switching costs'"""
+            for line in section.split("\n"):
+                stripped = line.strip()
+                if stripped.lower().startswith(field_name.lower() + ":"):
+                    return stripped.split(":", 1)[1].strip()
+            return ""
 
+        def extract_rating(text: str, options: list[str]) -> str:
             text_upper = text.upper()
-            # Sort by length descending so "PARTIALLY_AGREE" matches before "AGREE"
             for option in sorted(options, key=len, reverse=True):
                 if re.search(r"\b" + re.escape(option.upper()) + r"\b", text_upper):
                     return option
-            return options[-1]  # Default to last (usually worst)
+            return options[-1]
 
-        def extract_list(text: str) -> list:
-            """Extract bulleted/numbered list items"""
-            import re
-
+        def extract_list(text: str) -> list[str]:
             items = []
             for line in text.split("\n"):
                 line = line.strip()
                 if line.startswith(("-", "•", "*")) or (line and line[0].isdigit()):
-                    # Remove bullet/number
                     cleaned = line.lstrip("-•*0123456789.) ")
-                    # Strip markdown bold/italic markers
                     cleaned = re.sub(r"\*{1,2}(.+?)\*{1,2}", r"\1", cleaned)
                     if cleaned:
                         items.append(cleaned)
             return items
 
-        # Extract each section
-        moat_section = extract_section(analysis_text, "## MOAT ASSESSMENT", "## MANAGEMENT")
-        mgmt_section = extract_section(analysis_text, "## MANAGEMENT ASSESSMENT", "## BUSINESS")
-        business_section = extract_section(analysis_text, "## BUSINESS SUMMARY", "## COMPETITIVE")
-        competitive_section = extract_section(analysis_text, "## COMPETITIVE POSITION", "## KEY RISKS")
+        def extract_dollar(text: str) -> Optional[float]:
+            match = re.search(r"\$[\d,]+(?:\.\d+)?", text)
+            if match:
+                return float(match.group().replace("$", "").replace(",", ""))
+            return None
+
+        def extract_pct(text: str) -> Optional[float]:
+            match = re.search(r"(\d+(?:\.\d+)?)\s*%", text)
+            if match:
+                return float(match.group(1)) / 100
+            return None
+
+        # Extract sections
+        moat_section = extract_section(analysis_text, "## MOAT CLASSIFICATION", "## MANAGEMENT")
+        mgmt_section = extract_section(analysis_text, "## MANAGEMENT QUALITY", "## BUSINESS DURABILITY")
+        durability_section = extract_section(analysis_text, "## BUSINESS DURABILITY", "## CURRENCY")
+        currency_section = extract_section(analysis_text, "## CURRENCY EXPOSURE", "## FAIR VALUE")
+        fv_section = extract_section(analysis_text, "## FAIR VALUE ASSESSMENT", "## CONVICTION")
+        conviction_section = extract_section(analysis_text, "## CONVICTION LEVEL", "## INVESTMENT SUMMARY")
+        summary_section = extract_section(analysis_text, "## INVESTMENT SUMMARY", "## KEY RISKS")
         risks_section = extract_section(analysis_text, "## KEY RISKS", "## THESIS")
-        thesis_risks_section = extract_section(analysis_text, "## THESIS-BREAKING", "## INVESTMENT THESIS")
-        thesis_section = extract_section(analysis_text, "## INVESTMENT THESIS", "## CONVICTION")
-        conviction_section = extract_section(analysis_text, "## CONVICTION LEVEL", None)
+        thesis_risks_section = extract_section(analysis_text, "## THESIS-BREAKING", "## TOTAL RETURN")
+        return_section = extract_section(analysis_text, "## TOTAL RETURN POTENTIAL", "## DIVIDEND")
+        dividend_section = extract_section(analysis_text, "## DIVIDEND YIELD", None)
 
-        # Parse ratings
-        moat_rating_str = extract_rating(moat_section, ["WIDE", "NARROW", "NONE"])
-        moat_rating = MoatRating(moat_rating_str.lower())
+        # Parse moat
+        moat_type = extract_field(moat_section, "Type") or "unknown"
+        moat_durability = extract_rating(
+            extract_field(moat_section, "Durability") or moat_section,
+            ["STRONG", "MODERATE", "WEAK", "NONE"],
+        ).lower()
+        moat_risks = extract_field(moat_section, "Risks") or ""
 
-        mgmt_rating_str = extract_rating(mgmt_section, ["EXCELLENT", "ADEQUATE", "POOR"])
-        mgmt_rating = ManagementRating(mgmt_rating_str.lower())
+        # Parse management
+        mgmt_cap_alloc = extract_rating(
+            extract_field(mgmt_section, "Capital Allocation") or mgmt_section,
+            ["EXCELLENT", "GOOD", "MIXED", "POOR"],
+        ).lower()
+        insider_str = extract_field(mgmt_section, "Insider Ownership")
+        mgmt_insider = extract_pct(insider_str) if insider_str else None
+        mgmt_summary = extract_field(mgmt_section, "Summary") or mgmt_section
 
+        # Parse durability
+        recession = extract_field(durability_section, "Recession Resilience") or durability_section
+        existential = extract_field(durability_section, "Existential Risks") or ""
+        outlook = (
+            extract_field(durability_section, "10-Year Outlook")
+            or extract_field(durability_section, "Outlook")
+            or ""
+        )
+
+        # Parse currency
+        domestic_str = extract_field(currency_section, "Domestic Revenue")
+        intl_str = extract_field(currency_section, "International Revenue")
+        domestic_pct = extract_pct(domestic_str) if domestic_str else None
+        intl_pct = extract_pct(intl_str) if intl_str else None
+        currency_risk = extract_rating(
+            extract_field(currency_section, "Risk Level") or currency_section,
+            ["LOW", "MODERATE", "HIGH"],
+        ).lower()
+        currency_conf = extract_rating(
+            extract_field(currency_section, "Confidence") or currency_section,
+            ["HIGH", "MODERATE", "LOW"],
+        ).lower()
+
+        # Parse fair value
+        fv_line = (
+            extract_field(fv_section, "Estimated Fair Value")
+            or extract_field(fv_section, "Fair Value Range")
+            or extract_field(fv_section, "Fair Value")
+            or fv_section
+        )
+        fv_amounts = re.findall(r"\$[\d,]+(?:\.\d+)?", fv_line)
+        fv_low = float(fv_amounts[0].replace("$", "").replace(",", "")) if len(fv_amounts) >= 1 else None
+        fv_high = float(fv_amounts[1].replace("$", "").replace(",", "")) if len(fv_amounts) >= 2 else fv_low
+
+        target_str = extract_field(fv_section, "Target Entry Price") or ""
+        target_entry = extract_dollar(target_str)
+
+        # Try to find current price in the fair value section
+        current_price_str = extract_field(fv_section, "Current Price") or ""
+        current_price = extract_dollar(current_price_str)
+
+        # Parse conviction
         conviction = extract_rating(conviction_section, ["HIGH", "MEDIUM", "LOW"])
 
-        return QualitativeAnalysis(
+        # Parse summary
+        summary = summary_section or ""
+
+        # Parse risks
+        key_risks = extract_list(risks_section)
+        thesis_risks = extract_list(thesis_risks_section)
+
+        # Parse total return
+        total_return = return_section or ""
+
+        # Parse dividend
+        div_yield = extract_pct(dividend_section) if dividend_section else None
+
+        return AnalysisV2(
             symbol=symbol,
             company_name=company_name,
-            moat_rating=moat_rating,
-            moat_sources=extract_list(moat_section),
-            moat_explanation=moat_section.split("Explanation:")[-1].strip()
-            if "Explanation:" in moat_section
-            else moat_section,
-            management_rating=mgmt_rating,
-            management_notes=mgmt_section,
-            insider_ownership=self._extract_insider_ownership(mgmt_section),
-            business_summary=business_section,
-            competitive_position=competitive_section,
-            key_risks=extract_list(risks_section),
-            thesis_risks=extract_list(thesis_risks_section),
-            investment_thesis=thesis_section,
-            conviction_level=conviction,
+            sector=sector,
+            moat_type=moat_type,
+            moat_durability=moat_durability,
+            moat_risks=moat_risks,
+            mgmt_insider_ownership=mgmt_insider,
+            mgmt_capital_allocation=mgmt_cap_alloc,
+            mgmt_summary=mgmt_summary,
+            recession_resilience=recession,
+            existential_risks=existential,
+            outlook_10yr=outlook,
+            domestic_revenue_pct=domestic_pct,
+            international_revenue_pct=intl_pct,
+            currency_risk_level=currency_risk,
+            currency_confidence=currency_conf,
+            estimated_fair_value_low=fv_low,
+            estimated_fair_value_high=fv_high,
+            target_entry_price=target_entry,
+            current_price=current_price,
+            conviction=conviction,
+            summary=summary,
+            dividend_yield_estimate=div_yield,
+            total_return_potential=total_return,
+            key_risks=key_risks,
+            thesis_risks=thesis_risks,
         )
 
     @staticmethod
@@ -643,7 +976,8 @@ Based on the filing data and the prior analyst's assessment above, provide your 
 
 {filing_text[:5000]}
 
-Is this company worth deep analysis for a long-term value investor?"""
+Does this company show signs of a durable competitive advantage and consistent financial performance?
+Assess business quality regardless of current valuation."""
 
         try:
             response = self.client.messages.create(
@@ -662,38 +996,7 @@ Is this company worth deep analysis for a long-term value investor?"""
             block = response.content[0]
             assert isinstance(block, TextBlock)
             text: str = block.text
-            lines = [line.strip() for line in text.strip().split("\n") if line.strip()]
-
-            moat_hint = 3
-            quality_hint = 3
-            reason = "Unable to parse response"
-
-            for line in lines:
-                upper = line.upper()
-                if upper.startswith("MOAT:"):
-                    try:
-                        moat_hint = int(line.split(":")[-1].strip()[0])
-                        moat_hint = max(1, min(5, moat_hint))
-                    except (ValueError, IndexError):
-                        pass
-                elif upper.startswith("QUALITY:"):
-                    try:
-                        quality_hint = int(line.split(":")[-1].strip()[0])
-                        quality_hint = max(1, min(5, quality_hint))
-                    except (ValueError, IndexError):
-                        pass
-                elif upper.startswith("REASON:"):
-                    reason = line.split(":", 1)[-1].strip()
-
-            worth_analysis = (moat_hint + quality_hint) >= 6
-
-            return {
-                "symbol": symbol,
-                "worth_analysis": worth_analysis,
-                "moat_hint": moat_hint,
-                "quality_hint": quality_hint,
-                "reason": reason,
-            }
+            return self._parse_quick_screen_result(text, symbol)
 
         except Exception as e:
             logger.warning(f"Haiku quick-screen failed for {symbol}: {e}")
@@ -835,7 +1138,8 @@ Analyze the news and determine:
 
 {filing_text[:5000]}
 
-Is this company worth deep analysis for a long-term value investor?"""
+Does this company show signs of a durable competitive advantage and consistent financial performance?
+Assess business quality regardless of current valuation."""
             requests.append(
                 {
                     "custom_id": symbol,
@@ -895,22 +1199,22 @@ Is this company worth deep analysis for a long-term value investor?"""
             for s in symbol_order
         ]
 
-    def batch_analyze_companies(self, stocks: list[dict]) -> list[QualitativeAnalysis]:
+    def batch_analyze_companies(self, stocks: list[dict]) -> list[AnalysisV2]:
         """
         Batch deep analysis via the Batch API (50% discount).
 
         Args:
             stocks: List of dicts with keys: symbol, company_name, filing_text,
-                    and optionally earnings_transcript, recent_news.
+                    and optionally earnings_transcript, recent_news, sector.
 
         Returns:
-            List of QualitativeAnalysis objects.
+            List of AnalysisV2 objects (duck-type compatible with QualitativeAnalysis).
         """
         if not stocks:
             return []
 
         # Separate cached from uncached
-        cached_results: dict[str, QualitativeAnalysis] = {}
+        cached_results: dict[str, AnalysisV2] = {}
         uncached_stocks: list[dict] = []
 
         for stock in stocks:
@@ -967,7 +1271,11 @@ Is this company worth deep analysis for a long-term value investor?"""
                         (s.get("company_name", s["symbol"]) for s in uncached_stocks if s["symbol"] == symbol),
                         symbol,
                     )
-                    analysis = self._parse_analysis(symbol, company_name, text)
+                    sector = next(
+                        (s.get("sector", "") for s in uncached_stocks if s["symbol"] == symbol),
+                        "",
+                    )
+                    analysis = self._parse_analysis(symbol, company_name, text, sector)
                     save_analysis_to_cache(symbol, analysis.to_dict())
                     cached_results[symbol] = analysis
                 else:
@@ -1001,11 +1309,22 @@ if __name__ == "__main__":
     and marketable securities against $111 billion in debt.
     """
 
-    analysis = analyzer.analyze_company(symbol="AAPL", company_name="Apple Inc.", filing_text=sample_filing)
+    analysis = analyzer.analyze_company(
+        symbol="AAPL", company_name="Apple Inc.", filing_text=sample_filing, sector="Technology"
+    )
 
-    print("\n=== Analysis Results ===\n")
-    print(f"Moat: {analysis.moat_rating.value}")
-    print(f"Management: {analysis.management_rating.value}")
-    print(f"Conviction: {analysis.conviction_level}")
-    print(f"\nThesis: {analysis.investment_thesis}")
+    print("\n=== Analysis Results (v2) ===\n")
+    print(f"Moat: {analysis.moat_type} ({analysis.moat_durability})")
+    print(f"  Backward compat: {analysis.moat_rating.value}")
+    print(f"Management: {analysis.mgmt_capital_allocation}")
+    print(f"  Backward compat: {analysis.management_rating.value}")
+    print(f"Conviction: {analysis.conviction}")
+    print(f"  Backward compat: {analysis.conviction_level}")
+    print(f"\nSummary: {analysis.summary}")
+    if analysis.estimated_fair_value_low:
+        print(f"Fair Value: ${analysis.estimated_fair_value_low:,.0f} - ${analysis.estimated_fair_value_high:,.0f}")
+    if analysis.target_entry_price:
+        print(f"Target Entry: ${analysis.target_entry_price:,.0f}")
     print(f"\nKey Risks: {analysis.key_risks}")
+    if analysis.domestic_revenue_pct:
+        print(f"Currency: {analysis.domestic_revenue_pct:.0%} domestic, risk={analysis.currency_risk_level}")
