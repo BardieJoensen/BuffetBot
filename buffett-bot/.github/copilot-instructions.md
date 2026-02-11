@@ -1,18 +1,20 @@
 # Buffett Bot - AI Copilot Instructions
 
 ## Project Overview
-Buffett Bot is a **Buffett-style value investing research assistant** that combines quantitative stock screening with LLM qualitative analysis. It generates monthly investment briefings by orchestrating multiple external APIs (yfinance, SEC EDGAR, Finnhub) and using Claude for document analysis and thesis assessment.
+Buffett Bot is a **quality-first value investing research assistant** that combines quantitative stock screening with LLM qualitative analysis. It generates monthly tiered watchlist briefings by orchestrating multiple external APIs (yfinance, SEC EDGAR, Finnhub) and using Claude for document analysis and thesis assessment.
 
-**Key Philosophy**: LLMs do narrative analysis (moat, management, risks); APIs do math (valuation, financials).
+**Key Philosophy (v2.0)**: "Find wonderful businesses, track them patiently, deploy capital when price meets patience." LLMs do narrative analysis (moat, management, durability); APIs do math (valuation, financials, trends).
 
 ## Architecture Layers
 ```
-LLM Layer (Claude) → Data Services (APIs) → Output (Briefing/DB)
+LLM Layer (Claude) → Data Services (APIs) → Tier Engine → Output (Briefing/DB)
 ```
 
 ### 1. **Screening Layer** (`src/screener.py`)
-- Uses yfinance to filter stocks by value criteria (`ScreeningCriteria` dataclass)
-- Returns 30-50 candidates passing P/E, debt, ROE, growth thresholds
+- Quality-first scoring: ROIC (weight 2.5), ROE consistency, margin stability, earnings consistency
+- Valuation de-weighted: P/E weight 0.8 (was 2.0), allows P/E up to 60
+- 6 trend metrics from historical financials (revenue CAGR, FCF consistency, etc.)
+- Sector-aware overrides (REITs get higher debt tolerance, financials skip FCF, etc.)
 - Criteria loaded from `config/screening_criteria.yaml`
 
 ### 2. **Valuation Layer** (`src/valuation.py`)
@@ -23,26 +25,46 @@ LLM Layer (Claude) → Data Services (APIs) → Output (Briefing/DB)
 
 ### 3. **Analysis Layer** (`src/analyzer.py`)
 - Uses Claude API with multi-turn conversations (`Anthropic` client)
-- Analyzes: moat rating (WIDE/NARROW/NONE), management quality, risks
-- Returns `QualitativeAnalysis` dataclass with enum ratings
-- Key: LLM reads documents (10-K summaries, transcripts) and provides text assessments
+- **AnalysisV2** schema: moat sources, management quality, earnings durability, competitive currency, fair value range
+- Three-tier model: Haiku (pre-screen), Sonnet (deep analysis), Opus (contrarian second opinion)
+- Backward-compat `@property` accessors mapping to legacy `QualitativeAnalysis` interface
 
-### 4. **Briefing Layer** (`src/briefing.py`)
-- Combines quant + qual into human-readable report
-- Sections: market temp, portfolio status, top picks, watchlist, radar, bubble watch
-- Outputs markdown file with recommendations
+### 4. **Tier Engine** (`src/tier_engine.py`)
+- Assigns stocks to tiers: Tier 1 (buy zone), Tier 2 (watch), Tier 3 (monitor), 0 (excluded)
+- Tier 1 = high quality (wide/narrow moat + HIGH/MEDIUM conviction) + price ≤ target entry
+- Staged entry suggestions: 3 tranches at descending prices from target
+- Movement tracking: detects new/removed/tier_up/tier_down/approaching changes between runs
 
-### 5. **Portfolio/Monitoring** (`src/portfolio.py`, `src/notifications.py`)
-- Tracks positions with thesis and conviction levels
-- Monitors portfolio for thesis-breaking events via news
-- Delivers briefings via email/Telegram/ntfy.sh
+### 5. **Briefing Layer** (`src/briefing.py`)
+- Tiered watchlist format: Market Regime → Portfolio → Executive Summary → Movements → Tier 1/2/3
+- Tier 1 stocks include staged entry suggestions and Opus second opinions
+- Outputs text, HTML (with tier-specific CSS), and JSON (`schema_version: "v2"`)
+
+### 6. **Market Regime** (`src/bubble_detector.py`)
+- `classify_market_regime()`: Euphoria / Overvalued / Fair Value / Correction / Crisis
+- 4 signals: market P/E, VIX, drawdown from 52-week high, distance from 200-day MA
+- Regime-specific deployment guidance (e.g., "Deploy aggressively" in Crisis)
+- Legacy `get_market_temperature()` preserved as backward-compat wrapper
+
+### 7. **Portfolio** (`src/portfolio.py`)
+- ASK (Aktiesparekonto) portfolio: 5-8 concentrated positions, 17% dividend tax
+- Staged entry tracking (tranches filled/planned)
+- Concentration monitoring, dividend summary, annual contribution tracking
+- Gap analysis: identifies missing sectors or quality gaps
+
+### 8. **Validation** (`src/backtest.py`)
+- Quality-return Spearman rank correlation (does higher quality score predict higher returns?)
+- Watchlist snapshot tracking for forward performance measurement
+- Quintile analysis of quality scores vs actual returns
 
 ## Core Data Structures
-- **`ScreenedStock`**: Passes screening (from screener)
+- **`ScreenedStock`**: Quality-scored stock with 6 trend metrics and score confidence
 - **`AggregatedValuation`**: Valuation assessment with margin of safety
-- **`QualitativeAnalysis`**: LLM output (moat/management/risks)
-- **`StockBriefing`**: Complete analysis (quant + qual)
-- **`Position`**: Portfolio holding with thesis and conviction
+- **`AnalysisV2`**: LLM output (moat/management/durability/currency/fair_value)
+- **`TierAssignment`**: Tier + reason + target entry + staged entry tranches
+- **`StockBriefing`**: Complete analysis (quant + qual + tier)
+- **`Position`**: Portfolio holding with thesis, conviction, and tranche tracking
+- **`MarketRegime`**: Current regime classification with confidence and deployment guidance
 
 ## Critical Developer Workflows
 
@@ -50,7 +72,7 @@ LLM Layer (Claude) → Data Services (APIs) → Output (Briefing/DB)
 ```bash
 python scripts/run_monthly_briefing.py
 ```
-Executes: screen → detect bubbles → aggregate valuations → LLM analysis → generate briefing → send notifications
+10-step pipeline: market regime → screen by quality → bubbles → Haiku pre-screen → Sonnet analysis → valuations → tier engine → portfolio check → Opus on Tier 1 → generate tiered briefing
 
 ### Using Docker (Recommended)
 ```bash
@@ -61,14 +83,16 @@ docker exec buffett-bot python -m scripts.run_monthly_briefing  # Manual run
 ### Configuration
 Edit `config/screening_criteria.yaml` to tune:
 - Market cap range ($300M-$500B default)
-- P/E threshold (20x default)
-- Debt/equity, ROE, growth minimums
-- Margin of safety for BUY flag (20% default)
+- Quality weights (ROIC, ROE consistency, margin stability)
+- Sector overrides (Real Estate, Financial Services, Utilities, Energy)
+- Valuation de-weighting (P/E weight 0.8)
 
 ### Environment
 Create `.env` with:
-- `ANTHROPIC_API_KEY` (Claude)
+- `ANTHROPIC_API_KEY` (Claude) — required
 - `FINNHUB_API_KEY` (backup data, optional)
+- `MAX_POSITIONS`, `ASK_CONTRIBUTION_LIMIT` (portfolio sizing)
+- `MARGIN_OF_SAFETY_PCT`, `TIER1_PROXIMITY_ALERT_PCT` (tier thresholds)
 - SMTP/email/Telegram config (optional)
 
 ## Project-Specific Patterns & Conventions
@@ -81,60 +105,60 @@ Create `.env` with:
 ### 2. **Data Serialization**
 All dataclasses have `.to_dict()` and `.from_dict()` methods for JSON persistence.
 Example: `Position.to_dict()` converts to JSON-serializable dict; `Position.from_dict(data)` reconstructs.
-See [src/portfolio.py](src/portfolio.py#L45) for pattern.
 
 ### 3. **LLM Integration Pattern**
 - Use `Anthropic()` client (not async)
-- Pass document text directly (10-K, transcript excerpts)
-- Prompt: ask for structured output (moat sources, management score, thesis risks)
-- Return `QualitativeAnalysis` dataclass with enums (not strings) for ratings
-- See [src/analyzer.py](src/analyzer.py#L80) for multi-turn conversation pattern
+- Three models: `model_light` (Haiku), `model_deep` (Sonnet), `model_opus` (Opus)
+- Prompt caching: system prompts use `cache_control: {"type": "ephemeral"}`
+- Batch API: `batch_quick_screen()` and `batch_analyze_companies()` for 50% discount
+- AnalysisV2 has `@property` accessors for backward compat with QualitativeAnalysis
 
-### 4. **Enum Ratings** (not strings)
-- `MoatRating`: WIDE, NARROW, NONE
-- `ManagementRating`: EXCELLENT, ADEQUATE, POOR
-- `Recommendation`: BUY, WATCHLIST, PASS
-- Ensures type safety and prevents string typos
+### 4. **Tier System** (replaces BUY/WATCHLIST/PASS)
+- Tier 1: Buy zone — high quality + price below target entry
+- Tier 2: Watch — high quality but price above target
+- Tier 3: Monitor — moderate quality, needs more research
+- Tier 0: Excluded — low quality or thesis broken
 
 ### 5. **Caching Strategy**
 - Weekly watchlist cached in `data/watchlist.json` with timestamp
 - Reuse if <7 days old to avoid re-screening (expensive)
-- See [scripts/run_monthly_briefing.py](scripts/run_monthly_briefing.py#L40) for pattern
-- Analyses cached in `data/analyses/{symbol}.json`
+- Analyses cached in `data/analyses/{symbol}.json` (30-day TTL)
+- Historical data cached in per-symbol JSON under `"historical"` key
+- Watchlist snapshots in `data/backtest/` for forward tracking
 
 ### 6. **Error Handling**
 - Log API errors but continue pipeline (don't fail on one missing stock)
 - Return `None` for unavailable data (e.g., private companies have no P/E)
+- Historical trend metrics individually wrapped in try/except for graceful degradation
 - Use optional types: `Optional[float]` in dataclasses
 
 ### 7. **Thesis Tracking**
 - Each position has `thesis` (why bought) and `conviction` (HIGH/MEDIUM/LOW)
 - `thesis_breaking_events` list tracks red flags detected via news monitoring
-- When defining investment thesis in analysis, think about what would invalidate it
-- See [src/portfolio.py](src/portfolio.py#L20) for Position dataclass
+- Staged entry: 3 tranches at descending prices from target
 
 ## Integration Points & Dependencies
-- **yfinance**: Stock screening, fundamentals, ratios, company profiles
+- **yfinance**: Stock screening, fundamentals, ratios, historical financials
 - **SEC EDGAR**: 10-K annual reports (parsed by `sec-edgar-downloader`)
 - **Finnhub**: News, backup financial data
-- **Anthropic Claude**: Qualitative analysis via API
+- **Anthropic Claude**: Qualitative analysis via API (Haiku/Sonnet/Opus)
 - **Alpaca (optional)**: Paper trading, position management
 - External fair value sources: GuruFocus, SimplyWallSt (estimates fetched)
 
 ## Common Tasks
 
 ### Adding a New Stock Metric
-1. Add field to relevant dataclass (e.g., `ScreeningCriteria`)
-2. Fetch from API in `screener.py` or `valuation.py`
-3. Filter in `ScreeningCriteria` if it's a screening criterion
+1. Add field to `ScreenedStock` dataclass (with `Optional` default)
+2. Compute in `_fetch_historical_data()` if trend-based, or in `screen()` if snapshot
+3. Add `ScoringRule` to `screening_criteria.yaml`
 4. Include in `to_dict()` serialization
-5. Update config file
+5. Consider adding sector overrides if metric varies by industry
 
 ### Extending LLM Analysis
 1. Add prompt text (ask Claude to extract new field)
-2. Add field to `QualitativeAnalysis` dataclass
+2. Add field to `AnalysisV2` dataclass
 3. Parse LLM response and populate field in `analyzer.py`
-4. Use enum for ratings (not free text)
+4. Add `@property` accessor if backward compat needed
 5. Include in briefing output
 
 ### Adding New Notification Channel
@@ -144,16 +168,11 @@ See [src/portfolio.py](src/portfolio.py#L45) for pattern.
 4. Add config to `.env` example
 5. Call from `NotificationManager` in pipeline script
 
-## Testing & Validation
-- Run screening: verify ~30-50 results, check filtering logic
-- Run analyzer: verify LLM returns valid enums and non-empty text
-- Validate briefing: check markdown renders, all sections populated
-- Check caching: verify watchlist reused within 7 days
-- Monitor API rate limits: log API call counts
-
 ## Important Constraints
 - **No shorting**: Bubble detector is "stay away", not trading signal
-- **Margin of safety**: Require 20%+ discount to fair value for BUY
+- **Quality over price**: Wonderful business at fair price > mediocre at discount
+- **Concentrated portfolio**: 5-8 positions max (ASK account)
+- **Staged entry**: Never full position at once — 3 tranches at descending prices
 - **Market cap focus**: $300M-$500B range (avoids micro-caps)
 - **US stocks only**: NASDAQ/NYSE for now
 - **Monthly cadence**: Heavy compute/LLM runs once/month; lighter daily news monitoring
