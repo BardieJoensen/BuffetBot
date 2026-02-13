@@ -19,7 +19,6 @@ Features:
 
 import json
 import logging
-import os
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -27,12 +26,14 @@ from typing import Optional
 
 import yfinance as yf
 
+from .config import config
+
 logger = logging.getLogger(__name__)
 
 # ASK constraints
-MAX_POSITIONS = int(os.getenv("MAX_POSITIONS", "8"))
+MAX_POSITIONS = config.max_positions
 MAX_SINGLE_POSITION_PCT = 0.25  # Never >25% in one stock
-ASK_CONTRIBUTION_LIMIT_DKK = int(os.getenv("ASK_CONTRIBUTION_LIMIT", "135900"))  # 2026 limit
+ASK_CONTRIBUTION_LIMIT_DKK = config.ask_contribution_limit_dkk
 
 
 @dataclass

@@ -42,6 +42,7 @@ from src.analyzer import CompanyAnalyzer, set_cache_dir
 from src.benchmark import fetch_benchmark_data, set_benchmark_cache_dir
 from src.briefing import BriefingGenerator, StockBriefing
 from src.bubble_detector import BubbleDetector, get_market_temperature
+from src.config import config
 from src.notifications import NotificationManager
 from src.portfolio import PortfolioTracker, calculate_position_size
 from src.screener import StockScreener, load_criteria_from_yaml
@@ -181,7 +182,7 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
     market_temp = get_market_temperature()
     logger.info(f"Market: {market_temp.get('temperature')} - {market_temp.get('interpretation', '')[:50]}...")
 
-    benchmark_symbol = os.getenv("BENCHMARK_SYMBOL", "SPY")
+    benchmark_symbol = config.benchmark_symbol
     logger.info(f"Fetching benchmark data for {benchmark_symbol}...")
     benchmark_data = fetch_benchmark_data(benchmark_symbol)
     bm_pe = benchmark_data.get("pe_ratio")
@@ -249,7 +250,7 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
     analyzer = CompanyAnalyzer()
     haiku_results = []
 
-    use_batch = os.getenv("USE_BATCH_API", "true").lower() == "true"
+    use_batch = config.use_batch_api
 
     if use_batch:
         logger.info("   Using Batch API (50% discount)...")
@@ -404,7 +405,7 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
         portfolio_tracker = PortfolioTracker(data_dir=str(data_dir))
         portfolio_summary = portfolio_tracker.get_portfolio_summary()
 
-    portfolio_value = float(os.getenv("PORTFOLIO_VALUE", 50000))
+    portfolio_value = config.portfolio_value
     current_positions = portfolio_summary.get("position_count", 0)
 
     logger.info(f"Portfolio: {current_positions} positions, ${portfolio_summary.get('current_value', 0):,.0f} value")
@@ -433,7 +434,7 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
     # ─────────────────────────────────────────────────────────────
     # Step 9: Opus Second Opinion on Tier 1 picks
     # ─────────────────────────────────────────────────────────────
-    use_opus = os.getenv("USE_OPUS_SECOND_OPINION", "false").lower() == "true"
+    use_opus = config.use_opus_second_opinion
     opus_opinions = {}
 
     if use_opus and tier1_symbols:
@@ -610,6 +611,6 @@ if __name__ == "__main__":
 
     # Run the briefing
     run_monthly_briefing(
-        max_analyses=int(os.getenv("MAX_DEEP_ANALYSES", 10)),
+        max_analyses=config.max_deep_analyses,
         send_notifications=True,
     )

@@ -20,7 +20,6 @@ Set MONTHLY_BRIEFING_ENABLED=false to disable auto-briefing
 """
 
 import logging
-import os
 import sys
 import time
 from datetime import datetime
@@ -30,6 +29,8 @@ import schedule
 from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from src.config import config
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -225,8 +226,8 @@ def weekly_auto_trade():
         # Sort by quality and buy top picks
         haiku_results.sort(key=lambda r: r["moat_hint"] + r["quality_hint"], reverse=True)
 
-        min_margin = float(os.getenv("MARGIN_OF_SAFETY_PCT", "25")) / 100
-        portfolio_value = float(os.getenv("PORTFOLIO_VALUE", 50000))
+        min_margin = config.margin_of_safety_pct
+        portfolio_value = config.portfolio_value
         current_positions = len(trader.get_positions())
         max_positions = 10
 
@@ -288,7 +289,7 @@ def monthly_briefing():
     if datetime.now().day != 1:
         return
 
-    if os.getenv("MONTHLY_BRIEFING_ENABLED", "true").lower() == "false":
+    if not config.monthly_briefing_enabled:
         logger.info("MONTHLY_BRIEFING_ENABLED=false — skipping auto-briefing")
         return
 
@@ -300,7 +301,7 @@ def monthly_briefing():
         from scripts.run_monthly_briefing import run_monthly_briefing
 
         run_monthly_briefing(
-            max_analyses=int(os.getenv("MAX_DEEP_ANALYSES", 10)),
+            max_analyses=config.max_deep_analyses,
             send_notifications=True,
         )
 
@@ -320,8 +321,8 @@ def monthly_briefing():
 def run_scheduler():
     """Start the scheduler"""
 
-    auto_trade = os.getenv("AUTO_TRADE_ENABLED", "true").lower() != "false"
-    auto_briefing = os.getenv("MONTHLY_BRIEFING_ENABLED", "true").lower() != "false"
+    auto_trade = config.auto_trade_enabled
+    auto_briefing = config.monthly_briefing_enabled
 
     logger.info("=" * 60)
     logger.info("BUFFETT BOT SCHEDULER")
