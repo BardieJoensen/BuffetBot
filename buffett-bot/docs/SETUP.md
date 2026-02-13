@@ -176,9 +176,9 @@ docker logs buffett-bot-scheduler
 ```
 
 Default schedule:
-- **Weekly (Sunday 18:00):** Update watchlist with fresh screen
-- **Monthly (1st at 19:00):** Full briefing with LLM analysis
-- **Daily (08:00):** Check news for portfolio holdings
+- **Weekly (Friday 17:00):** Update watchlist with fresh screen (free — yfinance only)
+- **Monthly (1st at 09:00):** Full briefing with LLM analysis
+- **Daily (08:00):** Check watchlist prices for margin-of-safety alerts
 
 ### Option B: Use Cron (More Control)
 
@@ -187,11 +187,11 @@ Default schedule:
 crontab -e
 
 # Add these lines:
-# Weekly screen on Sundays at 6pm
-0 18 * * 0 cd /path/to/buffett-bot && docker exec buffett-bot python -c "from scripts.scheduler import weekly_screen; weekly_screen()"
+# Weekly screen on Fridays at 5pm
+0 17 * * 5 cd /path/to/buffett-bot && docker compose run --rm buffett-bot python -c "from scripts.scheduler import weekly_screen; weekly_screen()"
 
-# Monthly briefing on the 1st at 7pm
-0 19 1 * * cd /path/to/buffett-bot && docker exec buffett-bot python -m scripts.run_monthly_briefing
+# Monthly briefing on the 1st at 9am
+0 9 1 * * cd /path/to/buffett-bot && docker compose run --rm buffett-bot python -m scripts.run_monthly_briefing
 ```
 
 ---
@@ -202,7 +202,7 @@ Create `./data/portfolio.json`:
 
 ```json
 {
-  "holdings": [
+  "positions": [
     {
       "symbol": "AAPL",
       "shares": 10,

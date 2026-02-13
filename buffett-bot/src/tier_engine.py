@@ -18,15 +18,14 @@ Output:
 
 import json
 import logging
-import os
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+from .config import config
 
-TIER1_PROXIMITY_ALERT_PCT = float(os.getenv("TIER1_PROXIMITY_ALERT_PCT", "10")) / 100
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -58,7 +57,7 @@ def assign_tier(
     analysis,
     screener_score: float = 0.0,
     external_valuation=None,
-    proximity_alert_pct: float = TIER1_PROXIMITY_ALERT_PCT,
+    proximity_alert_pct: float = config.tier1_proximity_alert_pct,
 ) -> TierAssignment:
     """
     Assign a tier based on quality assessment and valuation.
@@ -112,7 +111,7 @@ def assign_tier(
     if target is None and external_valuation:
         avg_fv = external_valuation.average_fair_value
         if avg_fv:
-            mos_pct = float(os.getenv("MARGIN_OF_SAFETY_PCT", "25")) / 100
+            mos_pct = config.margin_of_safety_pct
             target = avg_fv * (1 - mos_pct)
 
     if current is None and external_valuation:

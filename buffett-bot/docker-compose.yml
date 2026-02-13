@@ -9,6 +9,7 @@ services:
   # Do NOT auto-start this service!
   # =============================================================
   buffett-bot:
+    build: .
     image: ghcr.io/bardiejoensen/buffett-bot:latest
     container_name: buffett-bot
     restart: "no"  # NEVER auto-restart
@@ -44,6 +45,7 @@ services:
   # It will NOT run expensive Claude analyses automatically.
   # =============================================================
   scheduler:
+    build: .
     image: ghcr.io/bardiejoensen/buffett-bot:latest
     container_name: buffett-bot-scheduler
     restart: unless-stopped

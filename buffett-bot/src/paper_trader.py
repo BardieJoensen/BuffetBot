@@ -20,6 +20,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from .config import config
+
 logger = logging.getLogger(__name__)
 
 # Trade log location
@@ -45,7 +47,7 @@ class PaperTrader:
     scheduler's weekly_auto_trade checks this flag.
     """
 
-    MAX_POSITION_PCT = float(os.getenv("MAX_POSITION_PCT", 0.15))  # 15% max per position
+    MAX_POSITION_PCT = config.max_position_pct
 
     def __init__(self):
         self._enabled = False
@@ -84,7 +86,7 @@ class PaperTrader:
         Returns False if AUTO_TRADE_ENABLED is explicitly set to 'false'.
         Defaults to True if not set (backward compatible).
         """
-        return os.getenv("AUTO_TRADE_ENABLED", "true").lower() != "false"
+        return config.auto_trade_enabled
 
     def is_enabled(self) -> bool:
         """Returns True if paper trading is properly configured."""

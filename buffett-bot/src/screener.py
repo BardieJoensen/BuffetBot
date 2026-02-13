@@ -239,6 +239,7 @@ class ScreenedStock:
     earnings_consistency: Optional[float] = None
     revenue_cagr: Optional[float] = None
     fcf_consistency: Optional[float] = None
+    current_ratio: Optional[float] = None
 
     def to_dict(self) -> dict:
         return {
@@ -265,6 +266,7 @@ class ScreenedStock:
             "earnings_consistency": self.earnings_consistency,
             "revenue_cagr": self.revenue_cagr,
             "fcf_consistency": self.fcf_consistency,
+            "current_ratio": self.current_ratio,
         }
 
 
@@ -702,6 +704,7 @@ class StockScreener:
                     earnings_consistency=data.get("earnings_consistency"),
                     revenue_cagr=data.get("revenue_cagr"),
                     fcf_consistency=data.get("fcf_consistency"),
+                    current_ratio=data.get("current_ratio"),
                 )
             )
 
@@ -728,35 +731,13 @@ class StockScreener:
         data = self._get_cached_data(symbol) or self._fetch_stock_data(symbol)
         return data or {}
 
-    def apply_detailed_filters(
-        self, candidates: list[ScreenedStock], criteria: ScreeningCriteria
-    ) -> list[ScreenedStock]:
-        """Kept for backward compatibility. Scoring in screen() handles ranking."""
-        return candidates
-
-
-def run_screen(apply_detailed: bool = False) -> list[ScreenedStock]:
-    """
-    Convenience function to run a full screen.
-
-    Args:
-        apply_detailed: If True, apply additional fundamental filters
-    """
-    screener = StockScreener()
-    criteria = load_criteria_from_yaml()
-
-    candidates = screener.screen(criteria)
-
-    if apply_detailed and candidates:
-        candidates = screener.apply_detailed_filters(candidates, criteria)
-
-    return candidates
-
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
-    stocks = run_screen(apply_detailed=True)
+    screener = StockScreener()
+    criteria = load_criteria_from_yaml()
+    stocks = screener.screen(criteria)
     print(f"\nFound {len(stocks)} candidates:\n")
 
     for stock in stocks[:10]:

@@ -19,7 +19,6 @@ Features:
 
 import json
 import logging
-import os
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -27,12 +26,14 @@ from typing import Optional
 
 import yfinance as yf
 
+from .config import config
+
 logger = logging.getLogger(__name__)
 
 # ASK constraints
-MAX_POSITIONS = int(os.getenv("MAX_POSITIONS", "8"))
+MAX_POSITIONS = config.max_positions
 MAX_SINGLE_POSITION_PCT = 0.25  # Never >25% in one stock
-ASK_CONTRIBUTION_LIMIT_DKK = int(os.getenv("ASK_CONTRIBUTION_LIMIT", "135900"))  # 2026 limit
+ASK_CONTRIBUTION_LIMIT_DKK = config.ask_contribution_limit_dkk
 
 
 @dataclass
@@ -204,7 +205,11 @@ class PortfolioTracker:
         if self.trades_file.exists():
             try:
                 data = json.loads(self.trades_file.read_text())
-                self.trades = [TradeRecord(**t) for t in data.get("trades", [])]
+                trades_raw = data.get("trades", [])
+                for t in trades_raw:
+                    if isinstance(t.get("date"), str):
+                        t["date"] = date.fromisoformat(t["date"])
+                self.trades = [TradeRecord(**t) for t in trades_raw]
             except Exception as e:
                 logger.warning(f"Failed to load trades: {e}")
 
@@ -293,9 +298,14 @@ class PortfolioTracker:
         logger.info(f"Closed position: {symbol} at ${price}")
 
     def update_prices(self):
-        """Fetch current prices for all positions using yfinance"""
+        """Fetch current prices for all positions using yfinance (cached for 60s)"""
         if not self.positions:
             return
+
+        now = datetime.now()
+        if hasattr(self, "_last_price_update") and (now - self._last_price_update).total_seconds() < 60:
+            return
+        self._last_price_update = now
 
         for position in self.positions:
             try:

@@ -3,6 +3,21 @@ __pycache__/
 *.pyc
 .claude/
 
+# Tool caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
 # Runtime data (generated each run)
 buffett-bot/data/analyses/
 buffett-bot/data/briefings/
+buffett-bot/data/cache/
+buffett-bot/data/benchmark/
+buffett-bot/data/backtest/
+buffett-bot/data/watchlist.json
+buffett-bot/data/watchlist_cache.json
+buffett-bot/data/watchlist_history.json
+buffett-bot/data/trade_log.json
+buffett-bot/data/portfolio.json
+buffett-bot/data/trades.json
+buffett-bot/data/contributions.json

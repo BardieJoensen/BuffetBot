@@ -20,7 +20,6 @@ Set MONTHLY_BRIEFING_ENABLED=false to disable auto-briefing
 """
 
 import logging
-import os
 import sys
 import time
 from datetime import datetime
@@ -30,6 +29,8 @@ import schedule
 from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from src.config import config
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -122,7 +123,7 @@ def daily_watchlist_check():
         alerts = []
         for stock in stocks[:10]:  # Only check top 10
             symbol = stock.get("symbol")
-            fair_value = stock.get("fair_value", 0)
+            fair_value = stock.get("average_fair_value", 0)
 
             try:
                 ticker = yf.Ticker(symbol)
@@ -225,8 +226,8 @@ def weekly_auto_trade():
         # Sort by quality and buy top picks
         haiku_results.sort(key=lambda r: r["moat_hint"] + r["quality_hint"], reverse=True)
 
-        min_margin = float(os.getenv("MIN_MARGIN_OF_SAFETY", 0.20))
-        portfolio_value = float(os.getenv("PORTFOLIO_VALUE", 50000))
+        min_margin = config.margin_of_safety_pct
+        portfolio_value = config.portfolio_value
         current_positions = len(trader.get_positions())
         max_positions = 10
 
@@ -234,7 +235,7 @@ def weekly_auto_trade():
             val = result["valuation"]
             if not result["worth_analysis"]:
                 continue
-            if val.margin_of_safety < min_margin:
+            if val.margin_of_safety is None or val.margin_of_safety < min_margin:
                 continue
             if current_positions >= max_positions:
                 logger.info("Max positions reached — stopping buys")
@@ -260,11 +261,11 @@ def weekly_auto_trade():
                 symbol = pos["symbol"]
                 try:
                     val = aggregator.get_valuation(symbol)
-                    if val and val.margin_of_safety < 0.05:
+                    if val and val.margin_of_safety is not None and val.margin_of_safety < 0.05:
                         trader.sell(
                             symbol,
                             reason=f"Take profit: margin of safety {val.margin_of_safety:.1%} "
-                            f"(stock near fair value ${val.fair_value:.2f})",
+                            f"(stock near fair value ${val.average_fair_value:.2f})",
                         )
                 except Exception as e:
                     logger.warning(f"Error checking {symbol}: {e}")
@@ -288,7 +289,7 @@ def monthly_briefing():
     if datetime.now().day != 1:
         return
 
-    if os.getenv("MONTHLY_BRIEFING_ENABLED", "true").lower() == "false":
+    if not config.monthly_briefing_enabled:
         logger.info("MONTHLY_BRIEFING_ENABLED=false — skipping auto-briefing")
         return
 
@@ -300,8 +301,7 @@ def monthly_briefing():
         from scripts.run_monthly_briefing import run_monthly_briefing
 
         run_monthly_briefing(
-            max_analyses=int(os.getenv("MAX_DEEP_ANALYSES", 10)),
-            min_margin_of_safety=float(os.getenv("MIN_MARGIN_OF_SAFETY", 0.20)),
+            max_analyses=config.max_deep_analyses,
             send_notifications=True,
         )
 
@@ -321,8 +321,8 @@ def monthly_briefing():
 def run_scheduler():
     """Start the scheduler"""
 
-    auto_trade = os.getenv("AUTO_TRADE_ENABLED", "true").lower() != "false"
-    auto_briefing = os.getenv("MONTHLY_BRIEFING_ENABLED", "true").lower() != "false"
+    auto_trade = config.auto_trade_enabled
+    auto_briefing = config.monthly_briefing_enabled
 
     logger.info("=" * 60)
     logger.info("BUFFETT BOT SCHEDULER")
