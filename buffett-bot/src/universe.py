@@ -96,7 +96,6 @@ def _fetch_finviz_universe() -> Optional[list[str]]:
             "Market Cap.": "+Small (over $300mln)",  # $300M+
             "Price": "Over $5",  # No penny stocks
             "Average Volume": "Over 100K",  # Liquid
-            "P/E": "Under 30",  # Loose - strict locally
             "Country": "USA",  # US stocks only
         }
 

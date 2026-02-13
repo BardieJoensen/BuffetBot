@@ -7,6 +7,10 @@ Delivers briefings and alerts via:
 - Ntfy.sh (simple push notifications)
 - Discord Webhook
 
+v2.0 additions:
+- Regime-shift alerts (market regime changes)
+- Approaching-target alerts (Tier 2 stocks nearing buy range)
+
 Configure your preferred method in .env
 """
 
@@ -54,20 +58,13 @@ class EmailNotifier:
     def send_briefing(
         self, briefing_text: str, subject: Optional[str] = None, html_content: Optional[str] = None
     ) -> bool:
-        """Send monthly briefing via email.
-
-        Args:
-            briefing_text: Plain-text briefing (used as fallback).
-            subject: Email subject line.
-            html_content: Full HTML briefing. When provided, sent as the
-                HTML part instead of wrapping plain text in <pre> tags.
-        """
+        """Send monthly briefing via email."""
 
         if not self.configured:
             logger.warning("Email not configured. Skipping.")
             return False
 
-        subject = subject or f"Investment Briefing - {datetime.now().strftime('%B %Y')}"
+        subject = subject or f"Watchlist Update - {datetime.now().strftime('%B %Y')}"
 
         try:
             msg = MIMEMultipart("alternative")
@@ -75,13 +72,11 @@ class EmailNotifier:
             msg["To"] = self.email_to
             msg["Subject"] = subject
 
-            # Always attach plain text as fallback
             msg.attach(MIMEText(briefing_text, "plain"))
 
             if html_content:
                 msg.attach(MIMEText(html_content, "html"))
             else:
-                # Wrap plain text in monospace for basic formatting
                 html_body = (
                     "<html><body>"
                     "<pre style=\"font-family:'Courier New',monospace;font-size:12px;\">"
@@ -107,7 +102,7 @@ class EmailNotifier:
         if not self.configured:
             return False
 
-        subject = f"⚠️ ALERT: {symbol}"
+        subject = f"ALERT: {symbol}"
 
         try:
             msg = MIMEMultipart()
@@ -155,15 +150,11 @@ class TelegramNotifier:
             logger.warning("Telegram not configured. Skipping.")
             return False
 
-        # Telegram has 4096 char limit per message
-        # Split into chunks if needed
         chunks = self._split_message(briefing_text, 4000)
 
         success = True
-        for i, chunk in enumerate(chunks):
-            # Wrap in monospace for formatting
+        for chunk in chunks:
             formatted = f"```\n{chunk}\n```"
-
             if not self._send_message(formatted, parse_mode="Markdown"):
                 success = False
 
@@ -175,7 +166,7 @@ class TelegramNotifier:
         if not self.configured:
             return False
 
-        text = f"⚠️ *ALERT: {symbol}*\n\n{message}"
+        text = f"*ALERT: {symbol}*\n\n{message}"
         return self._send_message(text, parse_mode="Markdown")
 
     def send_summary(self, summary: dict) -> bool:
@@ -184,16 +175,16 @@ class TelegramNotifier:
         if not self.configured:
             return False
 
-        text = f"""
-📊 *Weekly Update*
+        text = f"""*Watchlist Update*
 
-🟢 Buy Candidates: {summary.get("buy_count", 0)}
-🟡 Watchlist: {summary.get("watchlist_count", 0)}
-⚠️ Bubble Watch: {summary.get("bubble_count", 0)}
+Tier 1 (Buy Zone): {summary.get("tier1_count", 0)}
+Tier 2 (Watch): {summary.get("tier2_count", 0)}
+Tier 3 (Monitor): {summary.get("tier3_count", 0)}
+Approaching Target: {summary.get("approaching_count", 0)}
 
-💼 Portfolio: {summary.get("portfolio_return", "N/A")}
+Portfolio: {summary.get("portfolio_return", "N/A")}
 
-{summary.get("top_pick", "No strong picks this week.")}
+{summary.get("top_pick", "No Tier 1 picks this cycle.")}
 """
         return self._send_message(text, parse_mode="Markdown")
 
@@ -251,8 +242,6 @@ class NtfyNotifier:
     1. Install ntfy app on your phone
     2. Subscribe to your topic (e.g., "buffett-bot-yourname")
     3. Add to .env: NTFY_TOPIC=buffett-bot-yourname
-
-    Optional: Self-host ntfy for privacy
     """
 
     def __init__(self, topic: Optional[str] = None, server: str = "https://ntfy.sh"):
@@ -268,8 +257,8 @@ class NtfyNotifier:
             return False
 
         return self._send(
-            title="📊 Monthly Briefing Ready",
-            message="Your investment briefing has been generated. Check your email or server.",
+            title="Watchlist Update Ready",
+            message="Your investment watchlist update has been generated. Check your email or server.",
             priority=3,
         )
 
@@ -280,21 +269,21 @@ class NtfyNotifier:
             return False
 
         return self._send(
-            title=f"⚠️ ALERT: {symbol}",
+            title=f"ALERT: {symbol}",
             message=message,
-            priority=5,  # Max priority
+            priority=5,
             tags=["warning", "stock"],
         )
 
-    def send_buy_signal(self, symbol: str, margin_of_safety: float) -> bool:
-        """Notify of a new buy candidate"""
+    def send_buy_signal(self, symbol: str, message: str) -> bool:
+        """Notify of a Tier 1 entry"""
 
         if not self.configured:
             return False
 
         return self._send(
-            title=f"🟢 Buy Signal: {symbol}",
-            message=f"Margin of safety: {margin_of_safety:.1%}",
+            title=f"Tier 1 Entry: {symbol}",
+            message=message,
             priority=4,
             tags=["chart_with_upwards_trend"],
         )
@@ -328,7 +317,7 @@ class DiscordNotifier:
     Send briefings via Discord webhook.
 
     Setup:
-    1. In Discord: Server Settings → Integrations → Webhooks
+    1. In Discord: Server Settings -> Integrations -> Webhooks
     2. Create webhook, copy URL
     3. Add to .env: DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
     """
@@ -344,16 +333,14 @@ class DiscordNotifier:
             logger.warning("Discord not configured. Skipping.")
             return False
 
-        # Discord has 2000 char limit per message
-        # Split into chunks and send as code blocks for formatting
         chunks = self._split_message(briefing_text, 1900)
 
         success = True
         for i, chunk in enumerate(chunks):
             embed = {
-                "title": "📊 Investment Briefing" if i == 0 else f"(continued {i + 1}/{len(chunks)})",
+                "title": "Watchlist Update" if i == 0 else f"(continued {i + 1}/{len(chunks)})",
                 "description": f"```\n{chunk}\n```",
-                "color": 3066993,  # Green
+                "color": 3066993,
             }
 
             if not self._send(embed=embed):
@@ -368,7 +355,7 @@ class DiscordNotifier:
             return False
 
         embed = {
-            "title": f"⚠️ ALERT: {symbol}",
+            "title": f"ALERT: {symbol}",
             "description": message,
             "color": 15158332,  # Red
         }
@@ -382,11 +369,11 @@ class DiscordNotifier:
             return False
 
         embed = {
-            "title": f"🟢 Buy Signal: {symbol}",
+            "title": f"Tier 1 Entry: {symbol}",
             "fields": [
                 {"name": "Margin of Safety", "value": f"{margin_of_safety:.1%}", "inline": True},
             ],
-            "color": 3066993,  # Green
+            "color": 3066993,
         }
 
         if thesis:
@@ -468,12 +455,7 @@ class NotificationManager:
             logger.warning("No notification channels configured")
 
     def send_briefing(self, briefing_text: str, html_content: Optional[str] = None) -> dict:
-        """Send briefing via all channels.
-
-        Args:
-            briefing_text: Plain-text briefing.
-            html_content: Optional HTML briefing for email delivery.
-        """
+        """Send briefing via all channels."""
 
         results = {}
 
@@ -510,6 +492,95 @@ class NotificationManager:
 
         return results
 
+    def send_regime_shift_alert(self, previous_regime: str, new_regime: str, tier2_approaching: list[dict]) -> dict:
+        """
+        Send alert when market regime shifts significantly.
+
+        Triggered when regime moves from overvalued/euphoria to correction/crisis.
+
+        Args:
+            previous_regime: Previous regime name
+            new_regime: New regime name
+            tier2_approaching: List of dicts with symbol, price_gap_pct, target_entry_price
+        """
+        lines = [
+            "MARKET REGIME SHIFT",
+            "",
+            f"Previous: {previous_regime.upper()}",
+            f"Current:  {new_regime.upper()}",
+            "",
+        ]
+
+        if new_regime in ("correction", "crisis"):
+            lines.append("Opportunities may be developing. Check your Tier 2 watchlist:")
+            lines.append("")
+            for stock in tier2_approaching[:10]:
+                sym = stock.get("symbol", "?")
+                gap = stock.get("price_gap_pct", 0)
+                target = stock.get("target_entry_price", 0)
+                lines.append(f"  {sym}: {gap:+.0%} from target ${target:,.0f}")
+            lines.append("")
+            lines.append("Review your watchlist and prepare staged entry plans.")
+        else:
+            lines.append("Consider adjusting deployment strategy accordingly.")
+
+        message = "\n".join(lines)
+
+        results = {}
+        if self.email.configured:
+            results["email"] = self.email.send_alert("REGIME", message)
+        if self.telegram.configured:
+            results["telegram"] = self.telegram.send_alert("REGIME", message)
+        if self.ntfy.configured:
+            results["ntfy"] = self.ntfy.send_alert("REGIME", message)
+        if self.discord.configured:
+            results["discord"] = self.discord.send_alert("REGIME", message)
+
+        return results
+
+    def send_approaching_target_alert(self, stocks: list[dict]) -> dict:
+        """
+        Send alert when Tier 2 stocks approach their target entry price.
+
+        Args:
+            stocks: List of dicts with symbol, current_price, target_entry_price, price_gap_pct
+        """
+        if not stocks:
+            return {}
+
+        lines = [
+            "APPROACHING TARGET PRICE ALERT",
+            "",
+            "The following Tier 2 stocks are approaching their target entry price:",
+            "",
+        ]
+
+        for stock in stocks:
+            sym = stock.get("symbol", "?")
+            price = stock.get("current_price", 0)
+            target = stock.get("target_entry_price", 0)
+            gap = stock.get("price_gap_pct", 0)
+            lines.append(f"  {sym}: ${price:,.0f} -> target ${target:,.0f} ({gap:+.0%})")
+
+        lines.append("")
+        lines.append("Consider preparing staged entry plans for these positions.")
+
+        message = "\n".join(lines)
+
+        results = {}
+        if self.email.configured:
+            results["email"] = self.email.send_briefing(
+                message, subject="Approaching Target: " + ", ".join(s.get("symbol", "") for s in stocks[:5])
+            )
+        if self.telegram.configured:
+            results["telegram"] = self.telegram.send_alert("TARGET", message)
+        if self.ntfy.configured:
+            results["ntfy"] = self.ntfy.send_alert("TARGET", message)
+        if self.discord.configured:
+            results["discord"] = self.discord.send_alert("TARGET", message)
+
+        return results
+
 
 if __name__ == "__main__":
     from dotenv import load_dotenv
@@ -523,13 +594,13 @@ if __name__ == "__main__":
 
     # Test briefing
     test_briefing = """
-    ══════════════════════════════════════════════════
+    ==================================================
     TEST BRIEFING
-    ══════════════════════════════════════════════════
+    ==================================================
 
     This is a test of the notification system.
 
-    Top Pick: ACME (29% margin of safety)
+    Tier 1 Entry: ACME ($175 target)
     """
 
     results = manager.send_briefing(test_briefing)
