@@ -181,9 +181,7 @@ def _fetch_historical_returns(symbol: str, years: int = 3) -> Optional[dict]:
 
 def _compute_rank_correlation(results: list[dict]) -> dict:
     """Compute Spearman rank correlation between score and returns."""
-    correlations = {}
-
-    scores = [r["score"] for r in results]
+    correlations: dict[str, float | None] = {}
 
     for return_key in ["return_1y", "return_3y"]:
         valid = [(r["score"], r[return_key]) for r in results if r.get(return_key) is not None]
@@ -291,9 +289,10 @@ def save_watchlist_snapshot(
     """
     _backtest_dir.mkdir(parents=True, exist_ok=True)
 
-    snapshot = {
+    stocks_data: dict[str, dict] = {}
+    snapshot: dict[str, object] = {
         "snapshot_date": datetime.now().isoformat(),
-        "stocks": {},
+        "stocks": stocks_data,
     }
 
     for symbol, tier in tier_assignments.items():
@@ -310,12 +309,12 @@ def save_watchlist_snapshot(
                 stock_data["score"] = sc.score
             if hasattr(sc, "score_confidence"):
                 stock_data["score_confidence"] = sc.score_confidence
-        snapshot["stocks"][symbol] = stock_data
+        stocks_data[symbol] = stock_data
 
     date_str = datetime.now().strftime("%Y_%m_%d")
     path = _backtest_dir / f"watchlist_snapshot_{date_str}.json"
     path.write_text(json.dumps(snapshot, indent=2))
-    logger.info(f"Saved watchlist snapshot ({len(snapshot['stocks'])} stocks) to {path}")
+    logger.info(f"Saved watchlist snapshot ({len(stocks_data)} stocks) to {path}")
     return path
 
 
@@ -496,8 +495,6 @@ def generate_validation_report(
 
 
 if __name__ == "__main__":
-    import sys
-
     logging.basicConfig(level=logging.INFO)
 
     print("Forward Validation Module")

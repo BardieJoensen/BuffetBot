@@ -50,9 +50,8 @@ from src.tier_engine import (
     compute_movements,
     load_previous_watchlist,
     save_watchlist_state,
-    TierAssignment,
 )
-from src.valuation import ValuationAggregator, screen_for_undervalued
+from src.valuation import ValuationAggregator
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -418,8 +417,8 @@ def run_monthly_briefing(
     if trader.is_enabled() and tier1_symbols:
         logger.info(f"\n[8.5/10] EXECUTING PAPER TRADES FOR {len(tier1_symbols)} TIER 1 PICKS...")
         for sym in tier1_symbols:
-            analysis = analyses.get(sym)
-            conv = getattr(analysis, "conviction_level", "MEDIUM") if analysis else "MEDIUM"
+            analysis_for_trade = analyses.get(sym)
+            conv = getattr(analysis_for_trade, "conviction_level", "MEDIUM") if analysis_for_trade else "MEDIUM"
             sizing = calculate_position_size(
                 portfolio_value=portfolio_value,
                 conviction=conv,
@@ -472,12 +471,14 @@ def run_monthly_briefing(
     # Build StockBriefing objects for each analyzed stock
     briefings = []
     for sym, analysis in analyses.items():
-        tier = tier_assignments.get(sym)
+        tier_or_none = tier_assignments.get(sym)
         sc = screened_lookup.get(sym)
         ext_val = valuation_lookup.get(sym)
 
-        if not tier or tier.tier == 0:
+        if not tier_or_none or tier_or_none.tier == 0:
             continue
+
+        tier = tier_or_none
 
         # Position sizing for Tier 1
         conv = getattr(analysis, "conviction_level", "MEDIUM")
@@ -496,9 +497,6 @@ def run_monthly_briefing(
                 symbol=sym,
                 current_price=tier.current_price or 0,
                 estimates=[],
-                average_fair_value=None,
-                margin_of_safety=None,
-                upside_potential=None,
             )
 
         briefing = StockBriefing(

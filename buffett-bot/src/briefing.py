@@ -19,10 +19,10 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional
 
 from .bubble_detector import BubbleWarning
-from .tier_engine import TierAssignment, WatchlistMovement, staged_entry_suggestion
+from .tier_engine import WatchlistMovement, staged_entry_suggestion
 from .valuation import AggregatedValuation
 
 logger = logging.getLogger(__name__)
@@ -250,9 +250,9 @@ class BriefingGenerator:
             output.append(f"{'---':<8} {'---':>4} {'---':>8} {'---':>10} {'---':>10}")
             for b in picks[:15]:
                 pe_str = f"{b.pe_ratio:.1f}" if b.pe_ratio else "N/A"
-                gap = f"{b.price_gap_pct:+.0%}" if b.price_gap_pct is not None else "N/A"
+                gap_str = f"{b.price_gap_pct:+.0%}" if b.price_gap_pct is not None else "N/A"
                 target = f"${b.target_entry_price:,.0f}" if b.target_entry_price else "N/A"
-                output.append(f"{b.symbol:<8} {'T' + str(b.tier):>4} {pe_str:>8} {gap:>10} {target:>10}")
+                output.append(f"{b.symbol:<8} {'T' + str(b.tier):>4} {pe_str:>8} {gap_str:>10} {target:>10}")
             output.append("")
 
         # -----------------------------------------------------------
@@ -670,9 +670,9 @@ footer{{text-align:center;padding:16px;font-size:.8rem;color:#999}}
                          'These Tier 2 companies are within striking distance of buy range.</p>')
             for b in approaching:
                 gap = b.price_gap_pct or 0
-                parts.append(f'<div class="stock-card approaching">')
+                parts.append('<div class="stock-card approaching">')
                 parts.append(f"<h3>{e(b.symbol)}: {e(b.company_name)}</h3>")
-                parts.append(f'<span class="tier-badge tier-approaching">APPROACHING T1</span>')
+                parts.append('<span class="tier-badge tier-approaching">APPROACHING T1</span>')
                 parts.append(f"<table><tr><td>Current Price</td><td>${b.current_price:,.2f}</td></tr>")
                 parts.append(f"<tr><td>Target Entry</td><td>${b.target_entry_price:,.2f}</td></tr>" if b.target_entry_price else "")
                 parts.append(f"<tr><td>Gap</td><td>{gap:+.1%}</td></tr></table>")

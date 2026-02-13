@@ -273,13 +273,14 @@ def load_previous_watchlist(data_dir: Path) -> dict:
 
 def save_watchlist_state(data_dir: Path, current_tiers: dict[str, TierAssignment]):
     """Save current watchlist state for future comparison."""
-    state = {
+    stocks_state: dict[str, dict] = {}
+    state: dict[str, object] = {
         "date": datetime.now().isoformat(),
-        "stocks": {},
+        "stocks": stocks_state,
     }
     for symbol, tier in current_tiers.items():
         if tier.tier > 0:
-            state["stocks"][symbol] = {
+            stocks_state[symbol] = {
                 "tier": tier.tier,
                 "target_entry": tier.target_entry_price,
                 "price": tier.current_price,

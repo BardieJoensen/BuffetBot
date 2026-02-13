@@ -505,14 +505,12 @@ class NotificationManager:
             new_regime: New regime name
             tier2_approaching: List of dicts with symbol, price_gap_pct, target_entry_price
         """
-        subject = f"Market Regime Shift: {previous_regime} -> {new_regime}"
-
         lines = [
-            f"MARKET REGIME SHIFT",
-            f"",
+            "MARKET REGIME SHIFT",
+            "",
             f"Previous: {previous_regime.upper()}",
             f"Current:  {new_regime.upper()}",
-            f"",
+            "",
         ]
 
         if new_regime in ("correction", "crisis"):

@@ -568,7 +568,7 @@ if __name__ == "__main__":
         print(f"Drawdown: {regime.drawdown_from_peak:.1%}")
     if regime.distance_from_200ma is not None:
         print(f"Distance from 200-day MA: {regime.distance_from_200ma:+.1%}")
-    print(f"\nSignals:")
+    print("\nSignals:")
     for s in regime.signals:
         print(f"  - {s}")
 
