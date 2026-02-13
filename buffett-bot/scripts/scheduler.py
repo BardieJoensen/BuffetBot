@@ -225,7 +225,7 @@ def weekly_auto_trade():
         # Sort by quality and buy top picks
         haiku_results.sort(key=lambda r: r["moat_hint"] + r["quality_hint"], reverse=True)
 
-        min_margin = float(os.getenv("MIN_MARGIN_OF_SAFETY", 0.20))
+        min_margin = float(os.getenv("MARGIN_OF_SAFETY_PCT", "25")) / 100
         portfolio_value = float(os.getenv("PORTFOLIO_VALUE", 50000))
         current_positions = len(trader.get_positions())
         max_positions = 10
@@ -301,7 +301,6 @@ def monthly_briefing():
 
         run_monthly_briefing(
             max_analyses=int(os.getenv("MAX_DEEP_ANALYSES", 10)),
-            min_margin_of_safety=float(os.getenv("MIN_MARGIN_OF_SAFETY", 0.20)),
             send_notifications=True,
         )
 

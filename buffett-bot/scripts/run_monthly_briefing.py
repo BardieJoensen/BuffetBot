@@ -132,15 +132,14 @@ Key Financials:
         return f"Company: {symbol}. Unable to fetch details."
 
 
-def run_monthly_briefing(
-    max_analyses: int = 10, min_margin_of_safety: float = 0.20, use_cache: bool = True, send_notifications: bool = True
-):
+def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_notifications: bool = True):
     """
     Run the full monthly briefing pipeline (v2.0 — quality-first, tiered output).
 
+    Margin of safety is configured via MARGIN_OF_SAFETY_PCT env var (default 25%).
+
     Args:
         max_analyses: Maximum number of stocks to analyze with Claude (costs ~$0.05 each)
-        min_margin_of_safety: Minimum margin of safety for valuation (0.20 = 20%)
         use_cache: Use cached analyses to avoid re-running (recommended)
         send_notifications: Send results via configured notification channels
     """
@@ -613,6 +612,5 @@ if __name__ == "__main__":
     # Run the briefing
     run_monthly_briefing(
         max_analyses=int(os.getenv("MAX_DEEP_ANALYSES", 10)),
-        min_margin_of_safety=float(os.getenv("MIN_MARGIN_OF_SAFETY", 0.20)),
         send_notifications=True,
     )
