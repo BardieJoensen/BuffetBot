@@ -780,9 +780,7 @@ currency exposure, and estimate a fair value range with target entry price."""
 
         return prompt
 
-    def _parse_analysis(
-        self, symbol: str, company_name: str, analysis_text: str, sector: str = ""
-    ) -> AnalysisV2:
+    def _parse_analysis(self, symbol: str, company_name: str, analysis_text: str, sector: str = "") -> AnalysisV2:
         """Parse Claude's v2 response into AnalysisV2"""
 
         def extract_section(text: str, header: str, next_header: Optional[str] = None) -> str:
@@ -870,9 +868,7 @@ currency exposure, and estimate a fair value range with target entry price."""
         recession = extract_field(durability_section, "Recession Resilience") or durability_section
         existential = extract_field(durability_section, "Existential Risks") or ""
         outlook = (
-            extract_field(durability_section, "10-Year Outlook")
-            or extract_field(durability_section, "Outlook")
-            or ""
+            extract_field(durability_section, "10-Year Outlook") or extract_field(durability_section, "Outlook") or ""
         )
 
         # Parse currency

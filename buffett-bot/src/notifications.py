@@ -492,9 +492,7 @@ class NotificationManager:
 
         return results
 
-    def send_regime_shift_alert(
-        self, previous_regime: str, new_regime: str, tier2_approaching: list[dict]
-    ) -> dict:
+    def send_regime_shift_alert(self, previous_regime: str, new_regime: str, tier2_approaching: list[dict]) -> dict:
         """
         Send alert when market regime shifts significantly.
 

@@ -29,24 +29,45 @@ logger = logging.getLogger(__name__)
 
 # Popular/trending stocks to check for bubbles
 TRENDING_STOCKS = [
-    "TSLA", "NVDA", "PLTR", "AMD", "COIN", "HOOD", "MSTR", "RIOT",
-    "SQ", "SHOP", "SNOW", "CRWD", "NET", "DDOG", "ZS", "OKTA",
-    "RBLX", "U", "ABNB", "DASH", "UBER", "LYFT", "RIVN", "LCID",
+    "TSLA",
+    "NVDA",
+    "PLTR",
+    "AMD",
+    "COIN",
+    "HOOD",
+    "MSTR",
+    "RIOT",
+    "SQ",
+    "SHOP",
+    "SNOW",
+    "CRWD",
+    "NET",
+    "DDOG",
+    "ZS",
+    "OKTA",
+    "RBLX",
+    "U",
+    "ABNB",
+    "DASH",
+    "UBER",
+    "LYFT",
+    "RIVN",
+    "LCID",
 ]
 
 # Market regime thresholds
 REGIME_THRESHOLDS = {
-    "pe_euphoria": 30,       # S&P 500 P/E above this = euphoria
-    "pe_overvalued": 23,     # Above this = overvalued
-    "pe_fair_high": 20,      # Fair value ceiling
-    "pe_fair_low": 15,       # Fair value floor
-    "vix_fear": 30,          # VIX above this = elevated fear
+    "pe_euphoria": 30,  # S&P 500 P/E above this = euphoria
+    "pe_overvalued": 23,  # Above this = overvalued
+    "pe_fair_high": 20,  # Fair value ceiling
+    "pe_fair_low": 15,  # Fair value floor
+    "vix_fear": 30,  # VIX above this = elevated fear
     "vix_extreme_fear": 40,  # VIX above this = crisis fear
-    "vix_complacency": 12,   # VIX below this = complacency (euphoria signal)
+    "vix_complacency": 12,  # VIX below this = complacency (euphoria signal)
     "drawdown_correction": -0.10,  # 10% below peak
-    "drawdown_crisis": -0.20,      # 20% below peak
-    "ma200_euphoria": 0.15,        # 15%+ above 200-day MA
-    "ma200_correction": -0.05,     # 5%+ below 200-day MA
+    "drawdown_crisis": -0.20,  # 20% below peak
+    "ma200_euphoria": 0.15,  # 15%+ above 200-day MA
+    "ma200_correction": -0.05,  # 5%+ below 200-day MA
 }
 
 
@@ -212,6 +233,7 @@ def classify_market_regime() -> MarketRegime:
         confidence = "low"
     else:
         from collections import Counter
+
         vote_counts = Counter(regime_votes)
         regime, top_count = vote_counts.most_common(1)[0]
         total_votes = len(regime_votes)

@@ -113,9 +113,7 @@ def load_criteria_from_yaml(config_path: Optional[Path] = None) -> ScreeningCrit
         return ScreeningCriteria()
 
 
-def score_stock(
-    data: dict, criteria: ScreeningCriteria, sector: str = ""
-) -> tuple[float, float]:
+def score_stock(data: dict, criteria: ScreeningCriteria, sector: str = "") -> tuple[float, float]:
     """
     Score a stock based on how close each metric is to the ideal value.
 
@@ -422,8 +420,12 @@ class StockScreener:
 
             equity_row = None
             if balance_sheet is not None and not balance_sheet.empty:
-                for label in ["Stockholders Equity", "Total Stockholder Equity",
-                              "Stockholders' Equity", "Common Stock Equity"]:
+                for label in [
+                    "Stockholders Equity",
+                    "Total Stockholder Equity",
+                    "Stockholders' Equity",
+                    "Common Stock Equity",
+                ]:
                     if label in balance_sheet.index:
                         equity_row = balance_sheet.loc[label]
                         break
@@ -451,8 +453,12 @@ class StockScreener:
 
             eq_val = None
             if balance_sheet is not None and not balance_sheet.empty:
-                for label in ["Stockholders Equity", "Total Stockholder Equity",
-                              "Stockholders' Equity", "Common Stock Equity"]:
+                for label in [
+                    "Stockholders Equity",
+                    "Total Stockholder Equity",
+                    "Stockholders' Equity",
+                    "Common Stock Equity",
+                ]:
                     if label in balance_sheet.index:
                         eq_val = float(balance_sheet.loc[label].iloc[0])
                         break
@@ -509,10 +515,7 @@ class StockScreener:
                 ni_vals = ni_row.astype(float).values
                 # financials columns are newest-first, reverse for chronological
                 ni_vals = ni_vals[::-1]
-                growth_years = sum(
-                    1 for i in range(1, len(ni_vals))
-                    if ni_vals[i] > ni_vals[i - 1]
-                )
+                growth_years = sum(1 for i in range(1, len(ni_vals)) if ni_vals[i] > ni_vals[i - 1])
                 result["earnings_consistency"] = float(growth_years)
         except Exception as e:
             logger.debug(f"{symbol} earnings_consistency failed: {e}")
@@ -532,9 +535,7 @@ class StockScreener:
                 earliest_rev = rev_vals[-1]
                 years = len(rev_vals) - 1
                 if earliest_rev > 0 and latest_rev > 0 and years > 0:
-                    result["revenue_cagr"] = float(
-                        (latest_rev / earliest_rev) ** (1.0 / years) - 1.0
-                    )
+                    result["revenue_cagr"] = float((latest_rev / earliest_rev) ** (1.0 / years) - 1.0)
         except Exception as e:
             logger.debug(f"{symbol} revenue_cagr failed: {e}")
 
@@ -660,8 +661,12 @@ class StockScreener:
             # Merge historical metrics into flat data dict for scoring
             historical = data.get("historical", {})
             for metric in [
-                "roe_consistency", "roic", "margin_stability",
-                "earnings_consistency", "revenue_cagr", "fcf_consistency",
+                "roe_consistency",
+                "roic",
+                "margin_stability",
+                "earnings_consistency",
+                "revenue_cagr",
+                "fcf_consistency",
             ]:
                 if metric not in data and metric in historical:
                     data[metric] = historical[metric]

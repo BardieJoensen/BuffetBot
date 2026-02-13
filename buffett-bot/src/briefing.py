@@ -210,7 +210,9 @@ class BriefingGenerator:
             output.append("Tier 1 Opportunities (at/below target entry):")
             for b in tier1:
                 conv = getattr(b.analysis, "conviction_level", "N/A")
-                output.append(f"  [T1] {b.symbol}: ${b.current_price:,.0f} (target ${b.target_entry_price:,.0f}), {conv} conviction")
+                output.append(
+                    f"  [T1] {b.symbol}: ${b.current_price:,.0f} (target ${b.target_entry_price:,.0f}), {conv} conviction"
+                )
             output.append("")
         elif approaching:
             output.append("No Tier 1 picks yet, but these are approaching target:")
@@ -284,7 +286,9 @@ class BriefingGenerator:
             output.append("")
             for b in approaching:
                 gap = b.price_gap_pct or 0
-                output.append(f"  [!!] {b.symbol}: ${b.current_price:,.0f} -> target ${b.target_entry_price:,.0f} ({gap:+.0%})")
+                output.append(
+                    f"  [!!] {b.symbol}: ${b.current_price:,.0f} -> target ${b.target_entry_price:,.0f} ({gap:+.0%})"
+                )
                 moat = getattr(b.analysis, "moat_rating", None)
                 if moat:
                     output.append(f"       Moat: {moat.value.upper()} | {b.tier_reason}")
@@ -627,9 +631,7 @@ footer{{text-align:center;padding:16px;font-size:.8rem;color:#999}}
             if bm_1y is not None:
                 parts.append(f"<span>1Y: <strong>{bm_1y:+.1%}</strong></span>")
             parts.append("</div>")
-            parts.append(
-                "<table><tr><th>Stock</th><th>Tier</th><th>Price</th><th>Target</th><th>Gap</th></tr>"
-            )
+            parts.append("<table><tr><th>Stock</th><th>Tier</th><th>Price</th><th>Target</th><th>Gap</th></tr>")
             for b in (tier1 + tier2)[:15]:
                 gap_str = f"{b.price_gap_pct:+.0%}" if b.price_gap_pct is not None else "N/A"
                 target_str = f"${b.target_entry_price:,.0f}" if b.target_entry_price else "N/A"
@@ -650,31 +652,39 @@ footer{{text-align:center;padding:16px;font-size:.8rem;color:#999}}
             parts.append("<section><h2>Movement Log</h2><div class='movement-log'>")
             for m in movements:
                 badge_class = {
-                    "new": "mv-new", "removed": "mv-removed",
-                    "tier_up": "mv-up", "tier_down": "mv-down",
+                    "new": "mv-new",
+                    "removed": "mv-removed",
+                    "tier_up": "mv-up",
+                    "tier_down": "mv-down",
                     "approaching": "mv-approaching",
                 }.get(m.change_type, "mv-removed")
                 label = m.change_type.upper().replace("_", " ")
                 parts.append(
                     f'<div class="movement-item">'
                     f'<span class="movement-badge {badge_class}">{e(label)}</span>'
-                    f'<strong>{e(m.symbol)}</strong> {e(m.detail)}'
-                    f'</div>'
+                    f"<strong>{e(m.symbol)}</strong> {e(m.detail)}"
+                    f"</div>"
                 )
             parts.append("</div></section>")
 
         # Approaching Target Alerts
         if approaching:
             parts.append('<section><h2 style="color:#E91E63">Approaching Target Price</h2>')
-            parts.append('<p style="font-size:.9rem;color:#666;margin-bottom:12px">'
-                         'These Tier 2 companies are within striking distance of buy range.</p>')
+            parts.append(
+                '<p style="font-size:.9rem;color:#666;margin-bottom:12px">'
+                "These Tier 2 companies are within striking distance of buy range.</p>"
+            )
             for b in approaching:
                 gap = b.price_gap_pct or 0
                 parts.append('<div class="stock-card approaching">')
                 parts.append(f"<h3>{e(b.symbol)}: {e(b.company_name)}</h3>")
                 parts.append('<span class="tier-badge tier-approaching">APPROACHING T1</span>')
                 parts.append(f"<table><tr><td>Current Price</td><td>${b.current_price:,.2f}</td></tr>")
-                parts.append(f"<tr><td>Target Entry</td><td>${b.target_entry_price:,.2f}</td></tr>" if b.target_entry_price else "")
+                parts.append(
+                    f"<tr><td>Target Entry</td><td>${b.target_entry_price:,.2f}</td></tr>"
+                    if b.target_entry_price
+                    else ""
+                )
                 parts.append(f"<tr><td>Gap</td><td>{gap:+.1%}</td></tr></table>")
                 parts.append("</div>")
             parts.append("</section>")
@@ -757,8 +767,10 @@ footer{{text-align:center;padding:16px;font-size:.8rem;color:#999}}
 
         # Tier 3 Monitoring
         if tier3:
-            parts.append('<section><h2>Tier 3: Monitoring</h2>')
-            parts.append('<p style="font-size:.9rem;color:#666;margin-bottom:12px">Good businesses to re-evaluate next cycle.</p>')
+            parts.append("<section><h2>Tier 3: Monitoring</h2>")
+            parts.append(
+                '<p style="font-size:.9rem;color:#666;margin-bottom:12px">Good businesses to re-evaluate next cycle.</p>'
+            )
             parts.append("<table><tr><th>Stock</th><th>Moat</th><th>Conviction</th><th>Reason</th></tr>")
             for b in tier3:
                 moat = getattr(b.analysis, "moat_rating", None)

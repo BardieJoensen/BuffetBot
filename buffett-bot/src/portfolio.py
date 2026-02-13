@@ -369,21 +369,25 @@ class PortfolioTracker:
             if total_value > 0 and p.current_value:
                 weight = p.current_value / total_value
                 if weight > MAX_SINGLE_POSITION_PCT:
-                    overweight.append({
-                        "symbol": p.symbol,
-                        "weight": weight,
-                        "max": MAX_SINGLE_POSITION_PCT,
-                    })
+                    overweight.append(
+                        {
+                            "symbol": p.symbol,
+                            "weight": weight,
+                            "max": MAX_SINGLE_POSITION_PCT,
+                        }
+                    )
 
         # Check staged entry completeness
         incomplete_entries = []
         for p in self.positions:
             if p.tranches_filled < p.tranches_planned:
-                incomplete_entries.append({
-                    "symbol": p.symbol,
-                    "filled": p.tranches_filled,
-                    "planned": p.tranches_planned,
-                })
+                incomplete_entries.append(
+                    {
+                        "symbol": p.symbol,
+                        "filled": p.tranches_filled,
+                        "planned": p.tranches_planned,
+                    }
+                )
 
         return {
             "position_count": position_count,
@@ -409,11 +413,13 @@ class PortfolioTracker:
                 weight = p.current_value / total_value
                 weighted_yield += p.dividend_yield * weight
                 est_annual = p.current_value * p.dividend_yield
-                position_dividends.append({
-                    "symbol": p.symbol,
-                    "yield": p.dividend_yield,
-                    "est_annual_usd": est_annual,
-                })
+                position_dividends.append(
+                    {
+                        "symbol": p.symbol,
+                        "yield": p.dividend_yield,
+                        "est_annual_usd": est_annual,
+                    }
+                )
 
         return {
             "weighted_yield": weighted_yield,
@@ -486,8 +492,7 @@ class PortfolioTracker:
         recommendations = []
         if room > 0 and new_tier1:
             recommendations.append(
-                f"You have room for {room} more positions. "
-                f"Current Tier 1 candidates: {', '.join(new_tier1[:5])}"
+                f"You have room for {room} more positions. Current Tier 1 candidates: {', '.join(new_tier1[:5])}"
             )
         elif room == 0 and new_tier1:
             recommendations.append(
@@ -501,9 +506,7 @@ class PortfolioTracker:
                     f"consider completing next tranche"
                 )
         if new_approaching:
-            recommendations.append(
-                f"Watch for entry: {', '.join(new_approaching[:5])} approaching target price"
-            )
+            recommendations.append(f"Watch for entry: {', '.join(new_approaching[:5])} approaching target price")
 
         return {
             "room_for_new": room,
@@ -624,9 +627,9 @@ def calculate_position_size(
 
     # Base allocation by conviction (full position target)
     conviction_allocation = {
-        "HIGH": 0.20,    # 20% target position
+        "HIGH": 0.20,  # 20% target position
         "MEDIUM": 0.12,  # 12% target position
-        "LOW": 0.08,     # 8% target position
+        "LOW": 0.08,  # 8% target position
     }
 
     base_pct = conviction_allocation.get(conviction, 0.12)

@@ -79,17 +79,19 @@ def run_quality_return_correlation(
             if returns is None:
                 continue
 
-            results.append({
-                "symbol": symbol,
-                "score": score,
-                "score_confidence": stock.get("score_confidence", 0),
-                "sector": stock.get("sector", "Unknown"),
-                "return_1y": returns.get("return_1y"),
-                "return_3y": returns.get("return_3y"),
-                "return_5y": returns.get("return_5y"),
-                "max_drawdown": returns.get("max_drawdown"),
-                "volatility": returns.get("volatility"),
-            })
+            results.append(
+                {
+                    "symbol": symbol,
+                    "score": score,
+                    "score_confidence": stock.get("score_confidence", 0),
+                    "sector": stock.get("sector", "Unknown"),
+                    "return_1y": returns.get("return_1y"),
+                    "return_3y": returns.get("return_3y"),
+                    "return_5y": returns.get("return_5y"),
+                    "max_drawdown": returns.get("max_drawdown"),
+                    "volatility": returns.get("volatility"),
+                }
+            )
         except Exception as e:
             logger.debug(f"Error fetching returns for {symbol}: {e}")
             continue
@@ -170,7 +172,7 @@ def _fetch_historical_returns(symbol: str, years: int = 3) -> Optional[dict]:
 
         # Annualized volatility
         daily_returns = hist["Close"].pct_change().dropna()
-        returns["volatility"] = daily_returns.std() * (252 ** 0.5)
+        returns["volatility"] = daily_returns.std() * (252**0.5)
 
         return returns
 
@@ -196,7 +198,7 @@ def _compute_rank_correlation(results: list[dict]) -> dict:
 
         n = len(s_ranks)
         d_sq_sum = sum((s - r) ** 2 for s, r in zip(s_ranks, r_ranks))
-        rho = 1 - (6 * d_sq_sum) / (n * (n ** 2 - 1))
+        rho = 1 - (6 * d_sq_sum) / (n * (n**2 - 1))
         correlations[return_key] = round(rho, 3)
 
     return correlations
@@ -235,14 +237,16 @@ def _quintile_analysis(results: list[dict]) -> list[dict]:
         returns_1y = [r["return_1y"] for r in group if r.get("return_1y") is not None]
         avg_score = sum(r["score"] for r in group) / len(group) if group else 0
 
-        quintiles.append({
-            "quintile": q + 1,
-            "label": ["Top 20%", "20-40%", "40-60%", "60-80%", "Bottom 20%"][q],
-            "count": len(group),
-            "avg_score": round(avg_score, 2),
-            "avg_return_1y": round(sum(returns_1y) / len(returns_1y), 4) if returns_1y else None,
-            "stocks": [r["symbol"] for r in group[:5]],
-        })
+        quintiles.append(
+            {
+                "quintile": q + 1,
+                "label": ["Top 20%", "20-40%", "40-60%", "60-80%", "Bottom 20%"][q],
+                "count": len(group),
+                "avg_score": round(avg_score, 2),
+                "avg_return_1y": round(sum(returns_1y) / len(returns_1y), 4) if returns_1y else None,
+                "stocks": [r["symbol"] for r in group[:5]],
+            }
+        )
 
     return quintiles
 
@@ -362,15 +366,17 @@ def track_watchlist_performance() -> dict:
                     else:
                         price_change = None
 
-                    snapshot_result["stocks"].append({
-                        "symbol": symbol,
-                        "tier": stock_data.get("tier"),
-                        "score": stock_data.get("score"),
-                        "snapshot_price": snapshot_price,
-                        "current_price": current_price,
-                        "price_change": price_change,
-                        "target_entry": stock_data.get("target_entry_price"),
-                    })
+                    snapshot_result["stocks"].append(
+                        {
+                            "symbol": symbol,
+                            "tier": stock_data.get("tier"),
+                            "score": stock_data.get("score"),
+                            "snapshot_price": snapshot_price,
+                            "current_price": current_price,
+                            "price_change": price_change,
+                            "target_entry": stock_data.get("target_entry_price"),
+                        }
+                    )
 
                 except Exception as e:
                     logger.debug(f"Error tracking {symbol}: {e}")
@@ -401,7 +407,9 @@ def track_watchlist_performance() -> dict:
     # Save tracking report
     try:
         report_path = _backtest_dir / "tracking_report.json"
-        report_path.write_text(json.dumps({"generated_at": datetime.now().isoformat(), "snapshots": results}, indent=2, default=str))
+        report_path.write_text(
+            json.dumps({"generated_at": datetime.now().isoformat(), "snapshots": results}, indent=2, default=str)
+        )
         logger.info(f"Saved tracking report to {report_path}")
     except Exception as e:
         logger.warning(f"Failed to save tracking report: {e}")
@@ -459,9 +467,7 @@ def generate_validation_report(
             lines.append(f"  {'---':<12} {'---':>8} {'---':>10} {'---':>8}")
             for q in quintiles:
                 ret_str = f"{q['avg_return_1y']:+.1%}" if q.get("avg_return_1y") is not None else "N/A"
-                lines.append(
-                    f"  {q['label']:<12} {q['avg_score']:>8.1f} {ret_str:>10} {q['count']:>8}"
-                )
+                lines.append(f"  {q['label']:<12} {q['avg_score']:>8.1f} {ret_str:>10} {q['count']:>8}")
             lines.append("")
 
     if tracking_results and tracking_results.get("snapshots"):

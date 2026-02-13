@@ -277,9 +277,7 @@ def run_monthly_briefing(
                 )
             except Exception as ex:
                 logger.warning(f"  {sym}: Haiku screen failed: {ex}")
-                haiku_results.append(
-                    {"symbol": sym, "worth_analysis": True, "moat_hint": 3, "quality_hint": 3}
-                )
+                haiku_results.append({"symbol": sym, "worth_analysis": True, "moat_hint": 3, "quality_hint": 3})
 
     # Sort by combined moat + quality score, take top max_analyses for Sonnet
     haiku_results.sort(key=lambda r: r["moat_hint"] + r["quality_hint"], reverse=True)
@@ -311,10 +309,14 @@ def run_monthly_briefing(
             sc = screened_lookup.get(sym)
             company_name = sc.name if sc else sym
             sector = sc.sector if sc and hasattr(sc, "sector") else ""
-            stocks_for_analysis.append({
-                "symbol": sym, "company_name": company_name,
-                "filing_text": filing_text, "sector": sector or "",
-            })
+            stocks_for_analysis.append(
+                {
+                    "symbol": sym,
+                    "company_name": company_name,
+                    "filing_text": filing_text,
+                    "sector": sector or "",
+                }
+            )
 
         analysis_list = analyzer.batch_analyze_companies(stocks_for_analysis)
         for a in analysis_list:
@@ -454,8 +456,7 @@ def run_monthly_briefing(
                 )
                 opus_opinions[sym] = opus_result
                 logger.info(
-                    f"  {sym}: {opus_result.get('agreement')} "
-                    f"(Opus conviction: {opus_result.get('opus_conviction')})"
+                    f"  {sym}: {opus_result.get('agreement')} (Opus conviction: {opus_result.get('opus_conviction')})"
                 )
             except Exception as ex:
                 logger.error(f"  Opus second opinion failed for {sym}: {ex}")
@@ -493,6 +494,7 @@ def run_monthly_briefing(
         # Build a minimal AggregatedValuation if we don't have one
         if not ext_val:
             from src.valuation import AggregatedValuation
+
             ext_val = AggregatedValuation(
                 symbol=sym,
                 current_price=tier.current_price or 0,

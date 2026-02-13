@@ -159,9 +159,7 @@ def assign_tier(
     )
 
 
-def staged_entry_suggestion(
-    target_entry_price: float, num_tranches: int = 3, step_pct: float = 0.05
-) -> list[dict]:
+def staged_entry_suggestion(target_entry_price: float, num_tranches: int = 3, step_pct: float = 0.05) -> list[dict]:
     """
     Generate staged entry price levels.
 
@@ -291,6 +289,6 @@ def save_watchlist_state(data_dir: Path, current_tiers: dict[str, TierAssignment
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(state, indent=2))
-        logger.info(f"Saved watchlist state ({len(state['stocks'])} stocks)")
+        logger.info(f"Saved watchlist state ({len(stocks_state)} stocks)")
     except Exception as e:
         logger.warning(f"Failed to save watchlist state: {e}")
