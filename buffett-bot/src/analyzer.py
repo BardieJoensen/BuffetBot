@@ -948,16 +948,6 @@ currency exposure, and estimate a fair value range with target entry price."""
             thesis_risks=thesis_risks,
         )
 
-    @staticmethod
-    def _extract_insider_ownership(mgmt_section: str) -> Optional[str]:
-        """Extract insider ownership info from management section if present."""
-        for line in mgmt_section.split("\n"):
-            if "insider ownership" in line.lower():
-                value = line.split(":", 1)[-1].strip()
-                if value and value.lower() not in ("n/a", "not mentioned", "unknown", "none"):
-                    return value
-        return None
-
     def quick_screen(self, symbol: str, filing_text: str) -> dict:
         """
         Haiku-powered quick screen to decide if a stock is worth deep analysis.

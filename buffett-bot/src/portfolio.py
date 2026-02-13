@@ -204,7 +204,11 @@ class PortfolioTracker:
         if self.trades_file.exists():
             try:
                 data = json.loads(self.trades_file.read_text())
-                self.trades = [TradeRecord(**t) for t in data.get("trades", [])]
+                trades_raw = data.get("trades", [])
+                for t in trades_raw:
+                    if isinstance(t.get("date"), str):
+                        t["date"] = date.fromisoformat(t["date"])
+                self.trades = [TradeRecord(**t) for t in trades_raw]
             except Exception as e:
                 logger.warning(f"Failed to load trades: {e}")
 
@@ -293,9 +297,14 @@ class PortfolioTracker:
         logger.info(f"Closed position: {symbol} at ${price}")
 
     def update_prices(self):
-        """Fetch current prices for all positions using yfinance"""
+        """Fetch current prices for all positions using yfinance (cached for 60s)"""
         if not self.positions:
             return
+
+        now = datetime.now()
+        if hasattr(self, "_last_price_update") and (now - self._last_price_update).total_seconds() < 60:
+            return
+        self._last_price_update = now
 
         for position in self.positions:
             try:

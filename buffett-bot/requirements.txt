@@ -1,10 +1,8 @@
 # API Clients
 requests>=2.31.0
-httpx>=0.25.0
 
 # Financial Data (yfinance is free, no API key needed)
 yfinance>=0.2.36
-finnhub-python>=2.4.19
 finvizfinance>=1.0.0
 
 # Anthropic Claude API
@@ -13,10 +11,6 @@ anthropic>=0.39.0
 # Data Processing
 pandas>=2.1.0
 numpy>=1.24.0
-
-# Database / Storage
-sqlalchemy>=2.0.0
-# sqlite3 is built-in to Python, no install needed
 
 # Configuration
 pyyaml>=6.0
@@ -28,24 +22,9 @@ schedule>=1.2.0
 # Trading (Alpaca)
 alpaca-py>=0.13.0
 
-# SEC EDGAR parsing
-sec-edgar-downloader>=5.0.0
-beautifulsoup4>=4.12.0
-lxml>=4.9.0
-
-# Rate limiting
-ratelimit>=2.2.1
-
-# CLI
-rich>=13.6.0
-typer>=0.9.0
-
 # Testing
 pytest>=7.4.0
 
 # Dev tools
 pre-commit>=3.6.0
 detect-secrets>=1.5.0
-
-# Optional: Jupyter for exploration
-# jupyter>=1.0.0

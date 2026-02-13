@@ -122,7 +122,7 @@ def daily_watchlist_check():
         alerts = []
         for stock in stocks[:10]:  # Only check top 10
             symbol = stock.get("symbol")
-            fair_value = stock.get("fair_value", 0)
+            fair_value = stock.get("average_fair_value", 0)
 
             try:
                 ticker = yf.Ticker(symbol)
@@ -234,7 +234,7 @@ def weekly_auto_trade():
             val = result["valuation"]
             if not result["worth_analysis"]:
                 continue
-            if val.margin_of_safety < min_margin:
+            if val.margin_of_safety is None or val.margin_of_safety < min_margin:
                 continue
             if current_positions >= max_positions:
                 logger.info("Max positions reached — stopping buys")
@@ -260,11 +260,11 @@ def weekly_auto_trade():
                 symbol = pos["symbol"]
                 try:
                     val = aggregator.get_valuation(symbol)
-                    if val and val.margin_of_safety < 0.05:
+                    if val and val.margin_of_safety is not None and val.margin_of_safety < 0.05:
                         trader.sell(
                             symbol,
                             reason=f"Take profit: margin of safety {val.margin_of_safety:.1%} "
-                            f"(stock near fair value ${val.fair_value:.2f})",
+                            f"(stock near fair value ${val.average_fair_value:.2f})",
                         )
                 except Exception as e:
                     logger.warning(f"Error checking {symbol}: {e}")

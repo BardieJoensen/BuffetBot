@@ -138,28 +138,3 @@ screening:
   # How many top-scoring stocks to keep
   top_n: 100
 
-valuation:
-  # Minimum margin of safety to flag as BUY
-  min_margin_of_safety: 0.20   # 20% below fair value
-
-  # Sources to use (in order of preference)
-  sources:
-    - yfinance_analyst_target
-    - finnhub_price_target
-    - pe_multiple
-    - graham_number
-
-analysis:
-  # Max stocks to run deep LLM analysis on per month
-  max_deep_analyses: 10
-
-  # Model to use for analysis
-  model: "claude-sonnet-4-20250514"
-
-monitoring:
-  # How often to check news for portfolio holdings
-  news_check_frequency: "daily"
-
-  # Alert thresholds
-  price_drop_alert: 0.10       # Alert if down 10% from purchase
-  price_target_alert: 0.90     # Alert when within 10% of fair value

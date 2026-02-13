@@ -218,7 +218,6 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
         if len(candidates) > 100:
             candidates = candidates[:100]
 
-        candidates = screener.apply_detailed_filters(candidates, criteria)
         symbols = [c.symbol for c in candidates]
         screened_lookup = {c.symbol: c for c in candidates}
 
