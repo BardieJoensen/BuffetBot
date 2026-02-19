@@ -9,6 +9,17 @@ screening:
 
   # Hard filters (must pass)
   min_price: 5.0
+  min_adtv: 2000000         # $2M minimum average daily dollar volume
+
+  # "Too hard" industries — binary-outcome or non-Buffett businesses
+  too_hard_industries:
+    - "Biotechnology"
+    - "Pharmaceutical Retailers"
+    - "Oil & Gas E&P"
+    - "Oil & Gas Exploration"
+    - "Uranium"
+    - "Gambling"
+    - "Cannabis"
 
   # Geographic focus
   country: "US"
@@ -42,7 +53,11 @@ screening:
     fcf_yield:
       ideal: 0.08
       min: 0.01            # Was 0.02 — loosened
-      weight: 1.5          # Was 2.0
+      weight: 0.5          # Reduced — real_fcf_yield is primary
+    real_fcf_yield:
+      ideal: 0.06           # Slightly lower ideal (SBC haircut)
+      min: 0.00
+      weight: 2.0           # Higher weight — this is the "real" number
     operating_margin:
       ideal: 0.25
       min: 0.08            # Was 0.10 — loosened

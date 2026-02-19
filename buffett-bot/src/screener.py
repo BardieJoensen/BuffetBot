@@ -53,6 +53,8 @@ class ScreeningCriteria:
     min_market_cap: float = 300_000_000  # $300M minimum
     max_market_cap: float = 500_000_000_000  # $500B maximum
     min_price: float = 5.0  # Minimum stock price
+    min_adtv: float = 2_000_000  # Minimum avg daily dollar volume
+    too_hard_industries: list[str] = field(default_factory=list)
     scoring: dict[str, ScoringRule] = field(default_factory=dict)
     sector_overrides: dict[str, dict[str, ScoringRule]] = field(default_factory=dict)
     top_n: int = 100  # How many top-scoring stocks to keep
@@ -97,11 +99,16 @@ def load_criteria_from_yaml(config_path: Optional[Path] = None) -> ScreeningCrit
                 )
             sector_overrides[sector_name] = sector_scoring
 
+        # Parse "too hard" industry blocklist
+        too_hard = screening.get("too_hard_industries", [])
+
         defaults = ScreeningCriteria()
         return ScreeningCriteria(
             min_market_cap=float(screening.get("min_market_cap", defaults.min_market_cap)),
             max_market_cap=float(screening.get("max_market_cap", defaults.max_market_cap)),
             min_price=float(screening.get("min_price", defaults.min_price)),
+            min_adtv=float(screening.get("min_adtv", defaults.min_adtv)),
+            too_hard_industries=[str(i) for i in too_hard],
             scoring=scoring,
             sector_overrides=sector_overrides,
             top_n=int(screening.get("top_n", defaults.top_n)),
@@ -152,6 +159,7 @@ def score_stock(data: dict, criteria: ScreeningCriteria, sector: str = "") -> tu
         "earnings_consistency",
         "revenue_cagr",
         "fcf_consistency",
+        "real_fcf_yield",
     }
 
     for metric_name, rule in effective_scoring.items():
@@ -242,6 +250,8 @@ class ScreenedStock:
     revenue_cagr: Optional[float] = None
     fcf_consistency: Optional[float] = None
     current_ratio: Optional[float] = None
+    real_fcf_yield: Optional[float] = None
+    sbc_ratio: Optional[float] = None
 
     @property
     def effective_score(self) -> float:
@@ -274,6 +284,8 @@ class ScreenedStock:
             "revenue_cagr": self.revenue_cagr,
             "fcf_consistency": self.fcf_consistency,
             "current_ratio": self.current_ratio,
+            "real_fcf_yield": self.real_fcf_yield,
+            "sbc_ratio": self.sbc_ratio,
         }
 
 
@@ -363,6 +375,7 @@ class StockScreener:
                 "net_income": info.get("netIncomeToCommon"),
                 "payout_ratio": info.get("payoutRatio"),
                 "operating_margin": info.get("operatingMargins"),
+                "avg_volume": info.get("averageVolume"),
             }
 
             # Derived metrics
@@ -380,6 +393,14 @@ class StockScreener:
             else:
                 data["earnings_quality"] = None
 
+            # SBC-adjusted FCF
+            real_fcf = self._calculate_real_fcf(ticker, float(market_cap or 0))
+            data["real_fcf_yield"] = real_fcf.get("real_fcf_yield")
+            data["sbc_ratio"] = real_fcf.get("sbc_ratio")
+            # Fall back to standard fcf_yield if real_fcf calc failed
+            if data["real_fcf_yield"] is None:
+                data["real_fcf_yield"] = data.get("fcf_yield")
+
             # Cache the data
             self._save_cached_data(symbol, data)
 
@@ -388,6 +409,63 @@ class StockScreener:
         except Exception as e:
             logger.debug(f"Error fetching {symbol}: {e}")
             return None
+
+    def _calculate_real_fcf(self, ticker: yf.Ticker, market_cap: float) -> dict:
+        """
+        Calculate SBC-adjusted free cash flow.
+
+        Formula: real_fcf = OCF - |CapEx| - SBC
+        Falls back gracefully if cashflow statement fields are missing.
+        """
+        result: dict = {"real_fcf": None, "real_fcf_yield": None, "sbc_ratio": None}
+        if not market_cap:
+            return result
+
+        try:
+            cashflow = ticker.cashflow
+            if cashflow is None or cashflow.empty:
+                return result
+
+            # Find SBC
+            sbc = None
+            for label in [
+                "Stock Based Compensation",
+                "Share Based Compensation",
+                "ShareBasedCompensation",
+            ]:
+                if label in cashflow.index:
+                    sbc = abs(float(cashflow.loc[label].iloc[0]))
+                    break
+
+            if sbc is None:
+                return result  # No SBC data — caller falls back to standard FCF
+
+            # Find OCF
+            ocf = None
+            for label in [
+                "Operating Cash Flow",
+                "Cash Flow From Continuing Operating Activities",
+            ]:
+                if label in cashflow.index:
+                    ocf = float(cashflow.loc[label].iloc[0])
+                    break
+
+            # Find CapEx
+            capex = 0.0
+            for label in ["Capital Expenditure", "Capital Expenditures"]:
+                if label in cashflow.index:
+                    capex = abs(float(cashflow.loc[label].iloc[0]))
+                    break
+
+            if ocf is not None:
+                real_fcf = ocf - capex - sbc
+                result["real_fcf"] = real_fcf
+                result["real_fcf_yield"] = real_fcf / market_cap
+                result["sbc_ratio"] = sbc / market_cap
+        except Exception as e:
+            logger.debug(f"real_fcf calculation failed for {ticker.ticker}: {e}")
+
+        return result
 
     def _fetch_historical_data(self, symbol: str, ticker: yf.Ticker) -> dict:
         """
@@ -600,6 +678,8 @@ class StockScreener:
         candidates = []
         processed = 0
         errors = 0
+        too_hard_count = 0
+        adtv_rejected = 0
 
         for symbol in universe:
             processed += 1
@@ -640,6 +720,12 @@ class StockScreener:
             ):
                 continue
 
+            # "Too hard" industry filter (binary-outcome businesses)
+            if criteria.too_hard_industries:
+                if any(blocked.lower() in industry for blocked in criteria.too_hard_industries):
+                    too_hard_count += 1
+                    continue
+
             # Market cap filter
             market_cap = data.get("market_cap", 0) or 0
             if market_cap < criteria.min_market_cap or market_cap > criteria.max_market_cap:
@@ -648,6 +734,13 @@ class StockScreener:
             # Minimum price filter
             price = data.get("price", 0)
             if not price or price < criteria.min_price:
+                continue
+
+            # ADTV (average daily dollar volume) floor
+            avg_volume = data.get("avg_volume") or 0
+            adtv = avg_volume * price
+            if criteria.min_adtv and adtv < criteria.min_adtv:
+                adtv_rejected += 1
                 continue
 
             # Negative P/E means losses — skip
@@ -712,10 +805,16 @@ class StockScreener:
                     revenue_cagr=data.get("revenue_cagr"),
                     fcf_consistency=data.get("fcf_consistency"),
                     current_ratio=data.get("current_ratio"),
+                    real_fcf_yield=data.get("real_fcf_yield"),
+                    sbc_ratio=data.get("sbc_ratio"),
                 )
             )
 
         logger.info(f"Processed {processed} stocks, {errors} errors")
+        if too_hard_count:
+            logger.info(f"Filtered {too_hard_count} stocks from 'too hard' industries")
+        if adtv_rejected:
+            logger.info(f"ADTV floor rejected {adtv_rejected} illiquid stocks (< ${criteria.min_adtv:,.0f}/day)")
         logger.info(f"After hard filters: {len(candidates)} candidates")
 
         # Sort by effective score (score × confidence), banded to 0.5 precision.
