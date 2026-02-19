@@ -31,6 +31,7 @@ import json
 import logging
 import os
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -63,7 +64,7 @@ logger = logging.getLogger(__name__)
 
 def load_cached_watchlist(cache_path: Path) -> list[dict]:
     """Load watchlist from cache if recent enough"""
-    paths_to_check = [cache_path, Path("/tmp/buffett-bot-watchlist.json")]
+    paths_to_check = [cache_path, Path(tempfile.gettempdir()) / "buffett-bot-watchlist.json"]
 
     for path in paths_to_check:
         if path.exists():
@@ -90,7 +91,7 @@ def save_watchlist(stocks: list, cache_path: Path):
         cache_path.write_text(json.dumps(data, indent=2))
         logger.info(f"Saved {len(stocks)} stocks to watchlist cache")
     except PermissionError:
-        fallback_path = Path("/tmp/buffett-bot-watchlist.json")
+        fallback_path = Path(tempfile.gettempdir()) / "buffett-bot-watchlist.json"
         fallback_path.write_text(json.dumps(data, indent=2))
         logger.warning(f"Permission denied for {cache_path}, saved to {fallback_path}")
 
@@ -169,7 +170,7 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
         test_file.write_text("test")
         test_file.unlink()
     except PermissionError:
-        data_dir = Path("/tmp/buffett-bot-data")
+        data_dir = Path(tempfile.gettempdir()) / "buffett-bot-data"
         data_dir.mkdir(exist_ok=True)
         logger.warning(f"Using fallback data dir: {data_dir}")
 

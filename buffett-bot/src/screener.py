@@ -13,6 +13,7 @@ financials, and sector-specific scoring overrides.
 import json
 import logging
 import random
+import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -295,7 +296,7 @@ class StockScreener:
         try:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
         except PermissionError:
-            self.cache_dir = Path("/tmp/buffett-bot-cache")
+            self.cache_dir = Path(tempfile.gettempdir()) / "buffett-bot-cache"
             self.cache_dir.mkdir(parents=True, exist_ok=True)
             logger.warning(f"Using fallback cache dir: {self.cache_dir}")
         # Share the resolved cache dir with the universe module
@@ -721,9 +722,9 @@ class StockScreener:
         # Within bands: prefer larger market cap, then randomize to avoid
         # alphabetical bias from stable sort preserving Finviz order.
         if criteria.scoring:
-            seed = random.randint(0, 2**31)
+            seed = random.randint(0, 2**31)  # nosec B311 — tiebreaker, not security
             logger.info(f"Sort tiebreaker seed: {seed} (for reproducibility)")
-            rng = random.Random(seed)
+            rng = random.Random(seed)  # nosec B311
             candidates.sort(
                 key=lambda s: (
                     -(round(s.effective_score * 2) / 2),

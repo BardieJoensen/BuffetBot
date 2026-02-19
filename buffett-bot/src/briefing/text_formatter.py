@@ -222,7 +222,7 @@ def generate_text_report(
         output.append("## SECOND OPINION (Opus Contrarian Review)")
         output.append("")
         for b in opus_picks:
-            assert b.opus_opinion is not None
+            assert b.opus_opinion is not None  # nosec B101 — filtered above
             op = b.opus_opinion
             agreement = op.get("agreement", "N/A")
             opus_conv = op.get("opus_conviction", "N/A")

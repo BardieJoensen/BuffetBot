@@ -498,7 +498,7 @@ class CompanyAnalyzer:
 
         # Parse the response
         block = response.content[0]
-        assert isinstance(block, TextBlock)
+        assert isinstance(block, TextBlock)  # nosec B101 — type narrowing
         analysis_text: str = block.text
         analysis = parse_analysis(symbol, company_name, analysis_text, sector)
 
@@ -584,7 +584,7 @@ Focus especially on whether the moat and durability assessments are realistic.""
         )
 
         block = response.content[0]
-        assert isinstance(block, TextBlock)
+        assert isinstance(block, TextBlock)  # nosec B101 — type narrowing
         text: str = block.text
 
         # Parse the response
@@ -814,7 +814,7 @@ Assess business quality regardless of current valuation."""
             )
 
             block = response.content[0]
-            assert isinstance(block, TextBlock)
+            assert isinstance(block, TextBlock)  # nosec B101 — type narrowing
             text: str = block.text
             return parse_quick_screen(text, symbol)
 
@@ -872,7 +872,7 @@ Analyze the news and determine:
         )
 
         block = response.content[0]
-        assert isinstance(block, TextBlock)
+        assert isinstance(block, TextBlock)  # nosec B101 — type narrowing
         text: str = block.text
         has_flags = "RED FLAGS DETECTED: YES" in text.upper()
 
@@ -957,7 +957,7 @@ Assess business quality regardless of current valuation."""
             symbol = result.custom_id
             if result.result.type == "succeeded":
                 blk = result.result.message.content[0]
-                assert isinstance(blk, TextBlock)
+                assert isinstance(blk, TextBlock)  # nosec B101 — type narrowing
                 text: str = blk.text
                 results_map[symbol] = parse_quick_screen(text, symbol)
             else:
@@ -1050,7 +1050,7 @@ Assess business quality regardless of current valuation."""
                 symbol = result.custom_id
                 if result.result.type == "succeeded":
                     blk = result.result.message.content[0]
-                    assert isinstance(blk, TextBlock)
+                    assert isinstance(blk, TextBlock)  # nosec B101 — type narrowing
                     text = blk.text
                     company_name = next(
                         (s.get("company_name", s["symbol"]) for s in uncached_stocks if s["symbol"] == symbol),

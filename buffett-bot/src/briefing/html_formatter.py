@@ -301,7 +301,7 @@ footer{{text-align:center;padding:16px;font-size:.8rem;color:#999}}
     if opus_picks:
         parts.append("<section><h2>Second Opinion (Opus Contrarian Review)</h2>")
         for b in opus_picks:
-            assert b.opus_opinion is not None
+            assert b.opus_opinion is not None  # nosec B101 — filtered above
             op = b.opus_opinion
             agreement = op.get("agreement", "N/A")
             opus_conv = op.get("opus_conviction", "N/A")

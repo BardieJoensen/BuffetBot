@@ -197,7 +197,7 @@ Portfolio: {summary.get("portfolio_return", "N/A")}
             if parse_mode:
                 payload["parse_mode"] = parse_mode
 
-            response = requests.post(f"{self.api_url}/sendMessage", json=payload)
+            response = requests.post(f"{self.api_url}/sendMessage", json=payload, timeout=30)
 
             if response.status_code == 200:
                 return True
@@ -303,7 +303,7 @@ class NtfyNotifier:
             if tags:
                 headers["Tags"] = ",".join(tags)
 
-            response = requests.post(f"{self.server}/{self.topic}", data=message.encode("utf-8"), headers=headers)
+            response = requests.post(f"{self.server}/{self.topic}", data=message.encode("utf-8"), headers=headers, timeout=30)
 
             return response.status_code == 200
 
@@ -391,7 +391,7 @@ class DiscordNotifier:
             if embed:
                 payload["embeds"] = [embed]
 
-            response = requests.post(self.webhook_url, json=payload)
+            response = requests.post(self.webhook_url, json=payload, timeout=30)
 
             if response.status_code in [200, 204]:
                 return True

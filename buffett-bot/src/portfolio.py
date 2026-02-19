@@ -448,8 +448,8 @@ class PortfolioTracker:
                 data = json.loads(self.contributions_file.read_text())
                 if data.get("year") == year:
                     contributed = data.get("contributed_dkk", 0.0)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Failed to read contributions file: {e}")
 
         return ContributionStatus(
             year=year,
@@ -684,7 +684,9 @@ if __name__ == "__main__":
 
     logging.basicConfig(level=logging.INFO)
 
-    tracker = PortfolioTracker(data_dir="/tmp/test_portfolio")
+    import tempfile
+
+    tracker = PortfolioTracker(data_dir=str(Path(tempfile.gettempdir()) / "test_portfolio"))
 
     # Test adding positions
     tracker.add_position(
