@@ -9,6 +9,7 @@ NOTE: Uses yfinance (free) and Finnhub (free tier).
 """
 
 import logging
+import math
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -224,8 +225,6 @@ class ValuationAggregator:
 
         if not eps or eps <= 0 or not book_value or book_value <= 0:
             return None
-
-        import math
 
         graham_number = math.sqrt(22.5 * eps * book_value)
 

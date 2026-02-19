@@ -27,7 +27,7 @@ LLM Layer (Claude) → Data Services (APIs) → Tier Engine → Output (Briefing
 - Uses Claude API with multi-turn conversations (`Anthropic` client)
 - **AnalysisV2** schema: moat sources, management quality, earnings durability, competitive currency, fair value range
 - Three-tier model: Haiku (pre-screen), Sonnet (deep analysis), Opus (contrarian second opinion)
-- Backward-compat `@property` accessors mapping to legacy `QualitativeAnalysis` interface
+- Convenience `@property` accessors (moat_rating, conviction_level, etc.) used by tier_engine and opus_second_opinion
 
 ### 4. **Tier Engine** (`src/tier_engine.py`)
 - Assigns stocks to tiers: Tier 1 (buy zone), Tier 2 (watch), Tier 3 (monitor), 0 (excluded)
@@ -111,7 +111,7 @@ Example: `Position.to_dict()` converts to JSON-serializable dict; `Position.from
 - Three models: `model_light` (Haiku), `model_deep` (Sonnet), `model_opus` (Opus)
 - Prompt caching: system prompts use `cache_control: {"type": "ephemeral"}`
 - Batch API: `batch_quick_screen()` and `batch_analyze_companies()` for 50% discount
-- AnalysisV2 has `@property` accessors for backward compat with QualitativeAnalysis
+- AnalysisV2 has `@property` accessors (moat_rating, conviction_level, etc.) used by tier_engine and opus
 
 ### 4. **Tier System** (replaces BUY/WATCHLIST/PASS)
 - Tier 1: Buy zone — high quality + price below target entry

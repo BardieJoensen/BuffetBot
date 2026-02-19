@@ -48,7 +48,7 @@ class StockBriefing:
     # Valuation (from external sources)
     valuation: AggregatedValuation
 
-    # Qualitative (from LLM — accepts QualitativeAnalysis or AnalysisV2)
+    # Qualitative (from LLM)
     analysis: object
 
     # Tier assignment (from tier_engine)

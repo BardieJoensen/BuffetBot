@@ -63,7 +63,7 @@ def assign_tier(
     Assign a tier based on quality assessment and valuation.
 
     Args:
-        analysis: AnalysisV2 (or duck-typed QualitativeAnalysis)
+        analysis: AnalysisV2
         screener_score: Quantitative score from screener
         external_valuation: AggregatedValuation from valuation module
         proximity_alert_pct: Alert when price is within this % of target

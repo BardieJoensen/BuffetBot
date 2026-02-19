@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Optional, Union, cast
+from typing import Any, Optional, cast
 
 from anthropic import Anthropic
 from anthropic.types import TextBlock
@@ -204,74 +204,18 @@ class ManagementRating(Enum):
 
 
 # ─────────────────────────────────────────────────────────────
-# v1 analysis dataclass (kept for backward compatibility during migration)
-# ─────────────────────────────────────────────────────────────
-
-
-@dataclass
-class QualitativeAnalysis:
-    """v1 LLM-generated qualitative assessment of a company (legacy)"""
-
-    symbol: str
-    company_name: str
-
-    # Moat Assessment
-    moat_rating: MoatRating
-    moat_sources: list[str]  # e.g., ["switching costs", "network effects"]
-    moat_explanation: str
-
-    # Management Assessment
-    management_rating: ManagementRating
-    management_notes: str
-    insider_ownership: Optional[str]
-
-    # Business Quality
-    business_summary: str
-    competitive_position: str
-
-    # Risks
-    key_risks: list[str]
-    thesis_risks: list[str]  # What would break the investment thesis
-
-    # Overall
-    investment_thesis: str
-    conviction_level: str  # HIGH, MEDIUM, LOW
-
-    def to_dict(self) -> dict:
-        return {
-            "symbol": self.symbol,
-            "company_name": self.company_name,
-            "moat": {
-                "rating": self.moat_rating.value,
-                "sources": self.moat_sources,
-                "explanation": self.moat_explanation,
-            },
-            "management": {
-                "rating": self.management_rating.value,
-                "notes": self.management_notes,
-                "insider_ownership": self.insider_ownership,
-            },
-            "business_summary": self.business_summary,
-            "competitive_position": self.competitive_position,
-            "risks": {"key_risks": self.key_risks, "thesis_risks": self.thesis_risks},
-            "investment_thesis": self.investment_thesis,
-            "conviction_level": self.conviction_level,
-        }
-
-
-# ─────────────────────────────────────────────────────────────
-# v2 analysis dataclass
+# Analysis dataclass
 # ─────────────────────────────────────────────────────────────
 
 
 @dataclass
 class AnalysisV2:
     """
-    v2 LLM analysis — quality-focused with moat, durability,
+    LLM analysis — quality-focused with moat, durability,
     currency exposure, and fair value assessment.
 
-    Provides backward-compatible properties so downstream consumers
-    that expect QualitativeAnalysis attributes still work.
+    Provides convenience properties (moat_rating, conviction_level, etc.)
+    used by tier_engine and opus_second_opinion.
     """
 
     symbol: str
@@ -322,7 +266,7 @@ class AnalysisV2:
     key_risks: list[str] = field(default_factory=list)
     thesis_risks: list[str] = field(default_factory=list)
 
-    # --- Backward compatibility properties (duck-type as QualitativeAnalysis) ---
+    # --- Convenience properties (used by tier_engine, opus_second_opinion) ---
 
     @property
     def moat_rating(self) -> MoatRating:
@@ -490,7 +434,7 @@ class CompanyAnalyzer:
         """
         Perform deep qualitative analysis of a company.
 
-        Returns AnalysisV2 which is duck-type compatible with QualitativeAnalysis.
+        Returns AnalysisV2.
         """
         # Check cache first to avoid expensive API calls
         if use_cache:
@@ -533,14 +477,13 @@ class CompanyAnalyzer:
         symbol: str,
         company_name: str,
         filing_text: str,
-        sonnet_analysis: Union[QualitativeAnalysis, AnalysisV2],
+        sonnet_analysis: AnalysisV2,
         use_cache: bool = True,
     ) -> dict:
         """
         Run Opus as a contrarian reviewer of Sonnet's analysis.
 
         Cost: ~$0.30 per stock (only run on top 3-5 BUY picks).
-        Accepts both v1 QualitativeAnalysis and v2 AnalysisV2.
         """
         # Check cache
         if use_cache:
@@ -1020,7 +963,7 @@ Assess business quality regardless of current valuation."""
                     and optionally earnings_transcript, recent_news, sector.
 
         Returns:
-            List of AnalysisV2 objects (duck-type compatible with QualitativeAnalysis).
+            List of AnalysisV2 objects.
         """
         if not stocks:
             return []
