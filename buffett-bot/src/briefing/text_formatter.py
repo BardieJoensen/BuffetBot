@@ -26,6 +26,7 @@ def generate_text_report(
     performance_metrics: Optional[dict] = None,
     benchmark_data: Optional[dict] = None,
     movements: Optional[list[WatchlistMovement]] = None,
+    campaign_progress: Optional[dict] = None,
 ) -> str:
     """Generate a complete monthly briefing as plain text."""
     now = datetime.now()
@@ -101,6 +102,28 @@ def generate_text_report(
     output.append(f"Bubble Watch:       {len(bubble_warnings) if bubble_warnings else 0}")
     output.append(f"Radar:              {len(radar_stocks) if radar_stocks else 0}")
     output.append("")
+
+    # COVERAGE CAMPAIGN
+    if campaign_progress:
+        output.append("-" * 70)
+        output.append("## COVERAGE CAMPAIGN")
+        output.append("")
+        cp = campaign_progress
+        output.append(f"Campaign:           {cp.get('campaign_id', 'N/A')}")
+        output.append(
+            f"Haiku Screened:     {cp.get('haiku_screened', 0)}/{cp.get('universe_size', 0)} "
+            f"({cp.get('coverage_pct', 0):.0%})"
+        )
+        output.append(f"Haiku Passed:       {cp.get('haiku_passed', 0)}")
+        output.append(f"Deeply Analyzed:    {cp.get('deeply_analyzed', 0)}")
+        output.append(f"Registry Total:     {cp.get('total_studied_all_time', 0)} companies (all campaigns)")
+        est = cp.get("est_runs_remaining", 0)
+        if est > 0:
+            output.append(f"Est. Runs to Cover: {est}")
+        stale = cp.get("stale_symbols", [])
+        if stale:
+            output.append(f"Stale (>{cp.get('max_age_days', 180)}d): {', '.join(stale[:10])}")
+        output.append("")
 
     if tier1:
         output.append("Tier 1 Opportunities (at/below target entry):")

@@ -31,6 +31,11 @@ class Config:
     benchmark_symbol: str = os.getenv("BENCHMARK_SYMBOL", "SPY")
     max_deep_analyses: int = int(os.getenv("MAX_DEEP_ANALYSES", "10"))
 
+    # Coverage campaign
+    haiku_batch_size: int = int(os.getenv("HAIKU_BATCH_SIZE", "100"))
+    haiku_min_score: int = int(os.getenv("HAIKU_MIN_SCORE", "5"))
+    analysis_max_age_days: int = int(os.getenv("ANALYSIS_MAX_AGE_DAYS", "180"))
+
     # Automation kill switches
     auto_trade_enabled: bool = os.getenv("AUTO_TRADE_ENABLED", "true").lower() != "false"
     monthly_briefing_enabled: bool = os.getenv("MONTHLY_BRIEFING_ENABLED", "true").lower() != "false"

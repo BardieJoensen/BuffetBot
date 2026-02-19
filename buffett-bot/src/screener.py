@@ -12,6 +12,7 @@ financials, and sector-specific scoring overrides.
 
 import json
 import logging
+import random
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -240,6 +241,11 @@ class ScreenedStock:
     revenue_cagr: Optional[float] = None
     fcf_consistency: Optional[float] = None
     current_ratio: Optional[float] = None
+
+    @property
+    def effective_score(self) -> float:
+        """Score weighted by data confidence — used for tiebreaking."""
+        return self.score * self.score_confidence
 
     def to_dict(self) -> dict:
         return {
@@ -711,9 +717,20 @@ class StockScreener:
         logger.info(f"Processed {processed} stocks, {errors} errors")
         logger.info(f"After hard filters: {len(candidates)} candidates")
 
-        # Sort by score descending and return top N
+        # Sort by effective score (score × confidence), banded to 0.5 precision.
+        # Within bands: prefer larger market cap, then randomize to avoid
+        # alphabetical bias from stable sort preserving Finviz order.
         if criteria.scoring:
-            candidates.sort(key=lambda s: s.score, reverse=True)
+            seed = random.randint(0, 2**31)
+            logger.info(f"Sort tiebreaker seed: {seed} (for reproducibility)")
+            rng = random.Random(seed)
+            candidates.sort(
+                key=lambda s: (
+                    -(round(s.effective_score * 2) / 2),
+                    -s.market_cap,
+                    rng.random(),
+                )
+            )
             top_n = criteria.top_n
             if len(candidates) > top_n:
                 logger.info(f"Keeping top {top_n} by score (from {len(candidates)})")
