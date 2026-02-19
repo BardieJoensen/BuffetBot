@@ -104,6 +104,7 @@ class BriefingGenerator:
         performance_metrics: Optional[dict] = None,
         benchmark_data: Optional[dict] = None,
         movements: Optional[list[WatchlistMovement]] = None,
+        campaign_progress: Optional[dict] = None,
     ) -> str:
         """
         Generate a complete monthly briefing document.
@@ -123,6 +124,7 @@ class BriefingGenerator:
             performance_metrics,
             benchmark_data,
             movements,
+            campaign_progress,
         )
 
         # Save text
@@ -155,6 +157,7 @@ class BriefingGenerator:
             performance_metrics,
             benchmark_data,
             movements,
+            campaign_progress,
         )
         html_filename = f"briefing_{now.strftime('%Y_%m')}.html"
         self.html_path = self.output_dir / html_filename

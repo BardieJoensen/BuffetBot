@@ -12,6 +12,8 @@ financials, and sector-specific scoring overrides.
 
 import json
 import logging
+import random
+import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -241,6 +243,11 @@ class ScreenedStock:
     fcf_consistency: Optional[float] = None
     current_ratio: Optional[float] = None
 
+    @property
+    def effective_score(self) -> float:
+        """Score weighted by data confidence — used for tiebreaking."""
+        return self.score * self.score_confidence
+
     def to_dict(self) -> dict:
         return {
             "symbol": self.symbol,
@@ -289,7 +296,7 @@ class StockScreener:
         try:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
         except PermissionError:
-            self.cache_dir = Path("/tmp/buffett-bot-cache")
+            self.cache_dir = Path(tempfile.gettempdir()) / "buffett-bot-cache"
             self.cache_dir.mkdir(parents=True, exist_ok=True)
             logger.warning(f"Using fallback cache dir: {self.cache_dir}")
         # Share the resolved cache dir with the universe module
@@ -711,9 +718,20 @@ class StockScreener:
         logger.info(f"Processed {processed} stocks, {errors} errors")
         logger.info(f"After hard filters: {len(candidates)} candidates")
 
-        # Sort by score descending and return top N
+        # Sort by effective score (score × confidence), banded to 0.5 precision.
+        # Within bands: prefer larger market cap, then randomize to avoid
+        # alphabetical bias from stable sort preserving Finviz order.
         if criteria.scoring:
-            candidates.sort(key=lambda s: s.score, reverse=True)
+            seed = random.randint(0, 2**31)  # nosec B311 — tiebreaker, not security
+            logger.info(f"Sort tiebreaker seed: {seed} (for reproducibility)")
+            rng = random.Random(seed)  # nosec B311
+            candidates.sort(
+                key=lambda s: (
+                    -(round(s.effective_score * 2) / 2),
+                    -s.market_cap,
+                    rng.random(),
+                )
+            )
             top_n = criteria.top_n
             if len(candidates) > top_n:
                 logger.info(f"Keeping top {top_n} by score (from {len(candidates)})")

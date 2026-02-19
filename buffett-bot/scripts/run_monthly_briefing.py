@@ -1,26 +1,27 @@
 #!/usr/bin/env python3
 """
-Monthly Briefing Runner (v2.0 — Tiered Watchlist)
+Monthly Briefing Runner (v2.1 — Coverage Campaign)
 
 Orchestrates the full pipeline:
 1. Check market temperature
 2. Screen stocks by quality (not valuation)
-3. Detect bubble stocks to avoid
-4. Haiku pre-screen top candidates
-5. Sonnet deep analysis on best candidates
-6. Fetch supplementary valuations
-7. Tier engine: assign tiers based on quality + price vs target
-8. Portfolio check
-9. Opus second opinion on Tier 1 picks
-10. Generate tiered briefing with movement log
-11. Send notifications
+3. Load registry, check campaign status
+4. Detect bubble stocks to avoid
+5. Haiku pre-screen (campaign-aware: only new stocks)
+6. Sonnet deep analysis on best candidates
+7. Fetch supplementary valuations
+8. Tier engine: assign tiers + update registry
+9. Portfolio check
+10. Opus second opinion on Tier 1 picks
+11. Generate tiered briefing with campaign progress
+12. Send notifications
 
 COST WARNING:
 This script calls the Claude API which costs money!
 - Each deep analysis costs ~$0.03-0.05 (Sonnet)
-- Haiku pre-screen costs ~$0.002 per stock
+- Haiku pre-screen costs ~$0.002 per stock (~100 per run)
 - 10 analyses = ~$0.30-0.50 per run
-- Analyses are cached for 30 days to avoid re-running
+- Full campaign (~6 runs to cover ~585 stocks): ~$4-5 total
 
 Run manually:  docker compose run --rm buffett-bot
 Auto-schedule: scheduler.py runs this on 1st of each month (if enabled)
@@ -30,6 +31,7 @@ import json
 import logging
 import os
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -45,6 +47,7 @@ from src.bubble_detector import BubbleDetector, get_market_temperature
 from src.config import config
 from src.notifications import NotificationManager
 from src.portfolio import PortfolioTracker, calculate_position_size
+from src.registry import Registry
 from src.screener import StockScreener, load_criteria_from_yaml
 from src.tier_engine import (
     assign_tier,
@@ -52,7 +55,7 @@ from src.tier_engine import (
     load_previous_watchlist,
     save_watchlist_state,
 )
-from src.valuation import ValuationAggregator
+from src.valuation import AggregatedValuation, ValuationAggregator
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -61,7 +64,7 @@ logger = logging.getLogger(__name__)
 
 def load_cached_watchlist(cache_path: Path) -> list[dict]:
     """Load watchlist from cache if recent enough"""
-    paths_to_check = [cache_path, Path("/tmp/buffett-bot-watchlist.json")]
+    paths_to_check = [cache_path, Path(tempfile.gettempdir()) / "buffett-bot-watchlist.json"]
 
     for path in paths_to_check:
         if path.exists():
@@ -88,7 +91,7 @@ def save_watchlist(stocks: list, cache_path: Path):
         cache_path.write_text(json.dumps(data, indent=2))
         logger.info(f"Saved {len(stocks)} stocks to watchlist cache")
     except PermissionError:
-        fallback_path = Path("/tmp/buffett-bot-watchlist.json")
+        fallback_path = Path(tempfile.gettempdir()) / "buffett-bot-watchlist.json"
         fallback_path.write_text(json.dumps(data, indent=2))
         logger.warning(f"Permission denied for {cache_path}, saved to {fallback_path}")
 
@@ -135,7 +138,7 @@ Key Financials:
 
 def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_notifications: bool = True):
     """
-    Run the full monthly briefing pipeline (v2.0 — quality-first, tiered output).
+    Run the full monthly briefing pipeline (v2.1 — coverage campaign).
 
     Margin of safety is configured via MARGIN_OF_SAFETY_PCT env var (default 25%).
 
@@ -149,12 +152,13 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
     max_analyses = min(max_analyses, 15)
 
     logger.info("=" * 60)
-    logger.info("STARTING WATCHLIST UPDATE (v2.0)")
+    logger.info("STARTING WATCHLIST UPDATE (v2.1 — Coverage Campaign)")
     logger.info("=" * 60)
     logger.info("")
     logger.info("COST ESTIMATE:")
     logger.info(f"   Max analyses: {max_analyses} stocks")
-    logger.info(f"   Est. cost: ~${max_analyses * 0.05:.2f} (Sonnet)")
+    logger.info(f"   Haiku batch:  up to {config.haiku_batch_size} stocks (~${config.haiku_batch_size * 0.002:.2f})")
+    logger.info(f"   Est. cost: ~${max_analyses * 0.05 + config.haiku_batch_size * 0.002:.2f}")
     logger.info(f"   Cache enabled: {use_cache} (reuses analyses < 30 days old)")
     logger.info("")
 
@@ -166,7 +170,7 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
         test_file.write_text("test")
         test_file.unlink()
     except PermissionError:
-        data_dir = Path("/tmp/buffett-bot-data")
+        data_dir = Path(tempfile.gettempdir()) / "buffett-bot-data"
         data_dir.mkdir(exist_ok=True)
         logger.warning(f"Using fallback data dir: {data_dir}")
 
@@ -177,7 +181,7 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
     # ─────────────────────────────────────────────────────────────
     # Step 1: Market Temperature
     # ─────────────────────────────────────────────────────────────
-    logger.info("\n[1/10] CHECKING MARKET REGIME...")
+    logger.info("\n[1/11] CHECKING MARKET REGIME...")
 
     market_temp = get_market_temperature()
     logger.info(f"Market: {market_temp.get('temperature')} - {market_temp.get('interpretation', '')[:50]}...")
@@ -192,7 +196,7 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
     # ─────────────────────────────────────────────────────────────
     # Step 2: Screen Stocks by Quality
     # ─────────────────────────────────────────────────────────────
-    logger.info("\n[2/10] SCREENING STOCKS BY QUALITY...")
+    logger.info("\n[2/11] SCREENING STOCKS BY QUALITY...")
 
     cached_stocks = load_cached_watchlist(watchlist_cache) if use_cache else []
 
@@ -216,9 +220,7 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
             logger.error("  3. Try relaxing screening criteria in config/screening_criteria.yaml\n")
             return
 
-        if len(candidates) > 100:
-            candidates = candidates[:100]
-
+        # Keep ALL candidates (registry handles prioritization across runs)
         symbols = [c.symbol for c in candidates]
         screened_lookup = {c.symbol: c for c in candidates}
 
@@ -231,9 +233,29 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
         return
 
     # ─────────────────────────────────────────────────────────────
-    # Step 3: Detect Bubbles
+    # Step 3: Load Registry & Check Campaign
     # ─────────────────────────────────────────────────────────────
-    logger.info("\n[3/10] SCANNING FOR BUBBLE STOCKS...")
+    logger.info("\n[3/11] LOADING REGISTRY...")
+
+    registry = Registry(data_dir)
+
+    if registry.should_start_new_campaign(len(all_screened_symbols)):
+        new_id = registry.start_new_campaign()
+        logger.info(f"Started new campaign: {new_id} (previous covered >90% of universe)")
+    else:
+        logger.info(f"Continuing campaign: {registry.campaign['campaign_id']}")
+
+    progress = registry.get_campaign_progress(len(all_screened_symbols))
+    logger.info(
+        f"Campaign progress: {progress['haiku_screened']}/{progress['universe_size']} screened "
+        f"({progress['coverage_pct']:.0%}), {progress['deeply_analyzed']} analyzed, "
+        f"{progress['total_studied_all_time']} in registry"
+    )
+
+    # ─────────────────────────────────────────────────────────────
+    # Step 4: Detect Bubbles
+    # ─────────────────────────────────────────────────────────────
+    logger.info("\n[4/11] SCANNING FOR BUBBLE STOCKS...")
 
     bubble_detector = BubbleDetector()
     bubble_warnings = bubble_detector.scan_for_bubbles()
@@ -241,54 +263,86 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
     logger.info(f"Found {len(bubble_warnings)} potential bubble stocks")
 
     # ─────────────────────────────────────────────────────────────
-    # Step 4: Haiku Pre-Screen (cheap filter before expensive Sonnet)
+    # Step 5: Haiku Pre-Screen (campaign-aware)
     # ─────────────────────────────────────────────────────────────
-    haiku_candidates = min(30, len(symbols))
-    logger.info(f"\n[4/10] HAIKU PRE-SCREEN ON TOP {haiku_candidates} QUALITY STOCKS...")
-    logger.info(f"   Cost: ~${haiku_candidates * 0.002:.2f} (Haiku, 25x cheaper than Sonnet)")
+    unstudied = registry.get_unstudied_symbols(all_screened_symbols)
+    previously_passed = registry.get_unanalyzed_haiku_passed()
+    haiku_batch_size = config.haiku_batch_size
+    batch_to_screen = unstudied[:haiku_batch_size]
+
+    logger.info("\n[5/11] HAIKU PRE-SCREEN...")
+    logger.info(f"   Universe: {len(all_screened_symbols)}, Unstudied: {len(unstudied)}, Batch: {len(batch_to_screen)}")
+    logger.info(f"   Previously passed (backlog): {len(previously_passed)}")
+    logger.info(f"   Cost: ~${len(batch_to_screen) * 0.002:.2f} (Haiku)")
 
     analyzer = CompanyAnalyzer()
     haiku_results = []
 
     use_batch = config.use_batch_api
 
-    if use_batch:
-        logger.info("   Using Batch API (50% discount)...")
-        stocks_for_screen = []
-        for sym in symbols[:haiku_candidates]:
-            filing_text = fetch_company_summary(sym)
-            stocks_for_screen.append((sym, filing_text))
-
-        batch_results = analyzer.batch_quick_screen(stocks_for_screen)
-        for result in batch_results:
-            haiku_results.append(result)
-            logger.info(
-                f"  {result['symbol']}: moat={result['moat_hint']}, quality={result['quality_hint']} - {result['reason'][:60]}"
-            )
-    else:
-        for sym in symbols[:haiku_candidates]:
-            try:
+    if batch_to_screen:
+        if use_batch:
+            logger.info("   Using Batch API (50% discount)...")
+            stocks_for_screen = []
+            for sym in batch_to_screen:
                 filing_text = fetch_company_summary(sym)
-                result = analyzer.quick_screen(sym, filing_text)
+                stocks_for_screen.append((sym, filing_text))
+
+            batch_results = analyzer.batch_quick_screen(stocks_for_screen)
+            for result in batch_results:
                 haiku_results.append(result)
                 logger.info(
-                    f"  {sym}: moat={result['moat_hint']}, quality={result['quality_hint']} - {result['reason'][:60]}"
+                    f"  {result['symbol']}: moat={result['moat_hint']}, quality={result['quality_hint']} - {result['reason'][:60]}"
                 )
-            except Exception as ex:
-                logger.warning(f"  {sym}: Haiku screen failed: {ex}")
-                haiku_results.append({"symbol": sym, "worth_analysis": True, "moat_hint": 3, "quality_hint": 3})
+        else:
+            for sym in batch_to_screen:
+                try:
+                    filing_text = fetch_company_summary(sym)
+                    result = analyzer.quick_screen(sym, filing_text)
+                    haiku_results.append(result)
+                    logger.info(
+                        f"  {sym}: moat={result['moat_hint']}, quality={result['quality_hint']} - {result['reason'][:60]}"
+                    )
+                except Exception as ex:
+                    logger.warning(f"  {sym}: Haiku screen failed: {ex}")
+                    haiku_results.append({"symbol": sym, "worth_analysis": True, "moat_hint": 3, "quality_hint": 3})
 
-    # Sort by combined moat + quality score, take top max_analyses for Sonnet
-    haiku_results.sort(key=lambda r: r["moat_hint"] + r["quality_hint"], reverse=True)
-    top_for_analysis = [r["symbol"] for r in haiku_results if r["worth_analysis"]][:max_analyses]
+        # Record results in registry
+        registry.mark_haiku_screened(batch_to_screen, haiku_results, min_score=config.haiku_min_score)
+    else:
+        logger.info("   No new stocks to Haiku-screen this run")
 
-    logger.info(f"   Haiku selected {len(top_for_analysis)} stocks for deep analysis (from {haiku_candidates})")
+    # Combine newly passed + backlog, sort by Haiku score, take top for analysis
+    newly_passed = [
+        r["symbol"]
+        for r in haiku_results
+        if (r.get("moat_hint", 0) + r.get("quality_hint", 0)) >= config.haiku_min_score
+    ]
+    haiku_result_map = {r["symbol"]: r for r in haiku_results}
+
+    # Merge: previously passed backlog + newly passed
+    all_passed = list(dict.fromkeys(previously_passed + newly_passed))
+
+    # Sort all passed by Haiku score (newly screened have scores, backlog gets default)
+    def _haiku_sort_key(sym: str) -> int:
+        r = haiku_result_map.get(sym)
+        if r:
+            return r.get("moat_hint", 0) + r.get("quality_hint", 0)
+        return 6  # default for backlog (they passed threshold)
+
+    all_passed.sort(key=_haiku_sort_key, reverse=True)
+    top_for_analysis = all_passed[:max_analyses]
+
+    logger.info(
+        f"   Haiku: {len(newly_passed)} newly passed, {len(previously_passed)} backlog"
+        f" -> {len(top_for_analysis)} for deep analysis"
+    )
 
     # ─────────────────────────────────────────────────────────────
-    # Step 5: LLM Analysis (COSTS MONEY - uses Claude API)
+    # Step 6: LLM Analysis (COSTS MONEY - uses Claude API)
     # ─────────────────────────────────────────────────────────────
     num_to_analyze = len(top_for_analysis)
-    logger.info(f"\n[5/10] RUNNING LLM ANALYSIS ON TOP {num_to_analyze} CANDIDATES...")
+    logger.info(f"\n[6/11] RUNNING LLM ANALYSIS ON TOP {num_to_analyze} CANDIDATES...")
     logger.info("   Cached analyses (<30 days old) will be reused to save costs")
 
     from src.analyzer import get_cached_analysis
@@ -342,12 +396,16 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
                 logger.error(f"Error analyzing {sym}: {ex}")
                 continue
 
+    # Mark analyzed in registry
+    for sym in analyzed_symbols:
+        registry.mark_analyzed(sym)
+
     logger.info(f"   Completed {len(analyses)} analyses")
 
     # ─────────────────────────────────────────────────────────────
-    # Step 6: Fetch Supplementary Valuations
+    # Step 7: Fetch Supplementary Valuations
     # ─────────────────────────────────────────────────────────────
-    logger.info(f"\n[6/10] FETCHING SUPPLEMENTARY VALUATIONS FOR {len(analyzed_symbols)} STOCKS...")
+    logger.info(f"\n[7/11] FETCHING SUPPLEMENTARY VALUATIONS FOR {len(analyzed_symbols)} STOCKS...")
 
     aggregator = ValuationAggregator()
     valuation_lookup = {}
@@ -361,19 +419,85 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
     logger.info(f"Got valuations for {len(valuation_lookup)} stocks")
 
     # ─────────────────────────────────────────────────────────────
-    # Step 7: Tier Engine — assign tiers
+    # Step 8: Tier Engine — assign tiers + update registry
     # ─────────────────────────────────────────────────────────────
-    logger.info("\n[7/10] ASSIGNING TIERS...")
+    logger.info("\n[8/11] ASSIGNING TIERS...")
 
     tier_assignments = {}
     for sym, analysis in analyses.items():
         sc = screened_lookup.get(sym)
         screener_score = sc.score if sc else 0.0
+        screener_confidence = sc.score_confidence if sc else 0.0
         ext_val = valuation_lookup.get(sym)
 
         tier = assign_tier(analysis, screener_score=screener_score, external_valuation=ext_val)
         tier_assignments[sym] = tier
         logger.info(f"  {sym}: Tier {tier.tier} — {tier.tier_reason}")
+
+        # Update registry
+        registry.add_study(
+            symbol=sym,
+            analysis=analysis,
+            tier_assignment=tier,
+            haiku_result=haiku_result_map.get(sym),
+            score=screener_score,
+            confidence=screener_confidence,
+        )
+
+    # Include Tier 1/2 entries from registry that aren't freshly analyzed
+    registry_tier12 = registry.get_tier_entries([1, 2])
+    for sym, entry in registry_tier12.items():
+        if sym in tier_assignments:
+            continue  # Already have fresh analysis
+        # Reconstruct a TierAssignment from stored data
+        from src.tier_engine import TierAssignment
+
+        age_days = 0
+        try:
+            analyzed_at = datetime.fromisoformat(entry["analyzed_at"])
+            age_days = (datetime.now() - analyzed_at).days
+        except (KeyError, ValueError):
+            pass
+
+        stale_note = f" [analyzed {age_days}d ago]" if age_days > 0 else ""
+
+        # Lightweight price fetch to recalculate gap to target
+        stored_price = entry.get("current_price_at_analysis")
+        target = entry.get("target_entry_price")
+        current_price = stored_price
+        price_stale = False
+        try:
+            import yfinance as yf
+
+            ticker = yf.Ticker(sym)
+            live_price = ticker.info.get("regularMarketPrice") or ticker.info.get("currentPrice")
+            if live_price and live_price > 0:
+                current_price = live_price
+            else:
+                price_stale = True
+        except Exception:
+            price_stale = True
+
+        if price_stale and stored_price:
+            stale_note += " [stale price]"
+
+        # Recalculate price gap
+        price_gap_pct = None
+        approaching = False
+        if current_price and target and target > 0:
+            price_gap_pct = (current_price - target) / target
+            approaching = 0 < price_gap_pct <= config.tier1_proximity_alert_pct
+
+        tier_assignments[sym] = TierAssignment(
+            symbol=sym,
+            tier=entry["tier"],
+            quality_level="high" if entry["tier"] <= 2 else "moderate",
+            tier_reason=entry.get("tier_reason", "") + stale_note,
+            target_entry_price=target,
+            current_price=current_price,
+            price_gap_pct=price_gap_pct,
+            approaching_target=approaching,
+        )
 
     # Compute movements from previous state
     previous_state = load_previous_watchlist(data_dir)
@@ -386,10 +510,14 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
     # Save current state for next run
     save_watchlist_state(data_dir, tier_assignments)
 
+    # Save registry
+    registry.save()
+    logger.info(f"Registry saved ({len(registry.get_all_studied())} total studies)")
+
     # ─────────────────────────────────────────────────────────────
-    # Step 8: Portfolio Check
+    # Step 9: Portfolio Check
     # ─────────────────────────────────────────────────────────────
-    logger.info("\n[8/10] CHECKING PORTFOLIO STATUS...")
+    logger.info("\n[9/11] CHECKING PORTFOLIO STATUS...")
 
     from src.paper_trader import PaperTrader, set_trade_log_dir
 
@@ -411,12 +539,12 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
     logger.info(f"Portfolio: {current_positions} positions, ${portfolio_summary.get('current_value', 0):,.0f} value")
 
     # ─────────────────────────────────────────────────────────────
-    # Step 8.5: Paper trades for Tier 1 picks
+    # Step 9.5: Paper trades for Tier 1 picks
     # ─────────────────────────────────────────────────────────────
     tier1_symbols = [sym for sym, t in tier_assignments.items() if t.tier == 1]
 
     if trader.is_enabled() and tier1_symbols:
-        logger.info(f"\n[8.5/10] EXECUTING PAPER TRADES FOR {len(tier1_symbols)} TIER 1 PICKS...")
+        logger.info(f"\n[9.5/11] EXECUTING PAPER TRADES FOR {len(tier1_symbols)} TIER 1 PICKS...")
         for sym in tier1_symbols:
             analysis_for_trade = analyses.get(sym)
             conv = getattr(analysis_for_trade, "conviction_level", "MEDIUM") if analysis_for_trade else "MEDIUM"
@@ -429,16 +557,16 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
             if amount > 0:
                 trader.buy(sym, amount)
     else:
-        logger.info("\n[8.5/10] PAPER TRADING SKIPPED (no Tier 1 picks or Alpaca not configured)")
+        logger.info("\n[9.5/11] PAPER TRADING SKIPPED (no Tier 1 picks or Alpaca not configured)")
 
     # ─────────────────────────────────────────────────────────────
-    # Step 9: Opus Second Opinion on Tier 1 picks
+    # Step 10: Opus Second Opinion on Tier 1 picks
     # ─────────────────────────────────────────────────────────────
     use_opus = config.use_opus_second_opinion
     opus_opinions = {}
 
     if use_opus and tier1_symbols:
-        logger.info(f"\n[9/10] OPUS SECOND OPINION ON {len(tier1_symbols)} TIER 1 PICKS...")
+        logger.info(f"\n[10/11] OPUS SECOND OPINION ON {len(tier1_symbols)} TIER 1 PICKS...")
         logger.info(f"   Cost: ~${len(tier1_symbols) * 0.30:.2f} (Opus)")
 
         for sym in tier1_symbols[:5]:
@@ -461,15 +589,18 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
                 logger.error(f"  Opus second opinion failed for {sym}: {ex}")
     else:
         reason = "no Tier 1 picks" if not tier1_symbols else "USE_OPUS_SECOND_OPINION != true"
-        logger.info(f"\n[9/10] OPUS SECOND OPINION SKIPPED ({reason})")
+        logger.info(f"\n[10/11] OPUS SECOND OPINION SKIPPED ({reason})")
 
     # ─────────────────────────────────────────────────────────────
-    # Step 10: Generate Tiered Briefing
+    # Step 11: Generate Tiered Briefing
     # ─────────────────────────────────────────────────────────────
-    logger.info("\n[10/10] GENERATING TIERED BRIEFING...")
+    logger.info("\n[11/11] GENERATING TIERED BRIEFING...")
 
-    # Build StockBriefing objects for each analyzed stock
+    # Build StockBriefing objects for each analyzed stock + registry Tier 1/2
     briefings = []
+    briefing_symbols = set()
+
+    # Fresh analyses first
     for sym, analysis in analyses.items():
         tier_or_none = tier_assignments.get(sym)
         sc = screened_lookup.get(sym)
@@ -490,10 +621,7 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
                 current_positions=current_positions,
             )
 
-        # Build a minimal AggregatedValuation if we don't have one
         if not ext_val:
-            from src.valuation import AggregatedValuation
-
             ext_val = AggregatedValuation(
                 symbol=sym,
                 current_price=tier.current_price or 0,
@@ -524,9 +652,69 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
             opus_opinion=opus_opinions.get(sym),
         )
         briefings.append(briefing)
+        briefing_symbols.add(sym)
 
-    # Radar = screened but not analyzed
-    radar_stocks = [s for s in all_screened_symbols if s not in analyzed_symbols][:30]
+    # Registry Tier 1/2 entries not already in briefings
+    for sym, entry in registry_tier12.items():
+        if sym in briefing_symbols:
+            continue
+        tier_info = tier_assignments.get(sym)
+        if not tier_info or tier_info.tier == 0:
+            continue
+
+        # Build minimal briefing from registry data
+        analysis_dict = entry.get("analysis", {})
+        ext_val = AggregatedValuation(
+            symbol=sym,
+            current_price=entry.get("current_price_at_analysis") or 0,
+            estimates=[],
+        )
+
+        # Use a SimpleNamespace as a duck-typed analysis for display
+        from types import SimpleNamespace
+
+        mock_analysis = SimpleNamespace(
+            **{
+                "company_name": entry.get("company_name", sym),
+                "moat_rating": None,
+                "conviction_level": analysis_dict.get("conviction", "MEDIUM"),
+                "investment_thesis": analysis_dict.get("summary", ""),
+                "key_risks": analysis_dict.get("key_risks", []),
+                "thesis_risks": analysis_dict.get("thesis_risks", []),
+                "management_rating": None,
+                "moat_sources": [],
+                "to_dict": lambda: analysis_dict,
+            }
+        )
+
+        briefing = StockBriefing(
+            symbol=sym,
+            company_name=entry.get("company_name", sym),
+            current_price=entry.get("current_price_at_analysis") or 0,
+            market_cap=0,
+            pe_ratio=None,
+            debt_equity=None,
+            roe=None,
+            revenue_growth=None,
+            valuation=ext_val,
+            analysis=mock_analysis,
+            tier=tier_info.tier,
+            tier_reason=tier_info.tier_reason,
+            target_entry_price=tier_info.target_entry_price,
+            price_gap_pct=tier_info.price_gap_pct,
+            approaching_target=tier_info.approaching_target,
+        )
+        briefings.append(briefing)
+        briefing_symbols.add(sym)
+
+    # Radar = unanalyzed Haiku-passed stocks from registry
+    radar_stocks = registry.get_unanalyzed_haiku_passed()[:30]
+
+    # Campaign progress for briefing
+    campaign_progress = registry.get_campaign_progress(len(all_screened_symbols))
+    stale = registry.get_stale_symbols(config.analysis_max_age_days)
+    campaign_progress["stale_symbols"] = stale
+    campaign_progress["max_age_days"] = config.analysis_max_age_days
 
     # Performance metrics from portfolio tracker
     perf = portfolio_summary.get("performance", {})
@@ -547,6 +735,7 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
         performance_metrics=performance_metrics,
         benchmark_data=benchmark_data,
         movements=movements,
+        campaign_progress=campaign_progress,
     )
 
     # Read the generated HTML for email delivery
@@ -590,6 +779,11 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
     logger.info(f"Movements:          {len(movements)}")
     logger.info(f"Bubble Warnings:    {len(bubble_warnings)}")
     logger.info(f"Radar:              {len(radar_stocks)}")
+    logger.info(
+        f"Campaign:           {campaign_progress['campaign_id']} "
+        f"({campaign_progress['coverage_pct']:.0%} coverage, "
+        f"{campaign_progress['total_studied_all_time']} total studies)"
+    )
     logger.info(f"\nBriefing saved to: {data_dir / 'briefings'}")
     if html_content:
         logger.info(f"HTML report:        {generator.html_path}")

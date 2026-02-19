@@ -263,8 +263,8 @@ def load_previous_watchlist(data_dir: Path) -> dict:
     if path.exists():
         try:
             return json.loads(path.read_text())
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Failed to load previous watchlist: {e}")
     return {}
 
 

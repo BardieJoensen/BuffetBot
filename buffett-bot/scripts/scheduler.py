@@ -21,6 +21,7 @@ Set MONTHLY_BRIEFING_ENABLED=false to disable auto-briefing
 
 import logging
 import sys
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -68,7 +69,7 @@ def weekly_screen():
         try:
             data_dir.mkdir(exist_ok=True)
         except PermissionError:
-            data_dir = Path("/tmp/buffett-bot-data")
+            data_dir = Path(tempfile.gettempdir()) / "buffett-bot-data"
             data_dir.mkdir(exist_ok=True)
 
         watchlist = {"updated_at": datetime.now().isoformat(), "stocks": [v.to_dict() for v in valuations]}
@@ -100,7 +101,7 @@ def daily_watchlist_check():
 
     watchlist_path = Path("./data/watchlist.json")
     if not watchlist_path.exists():
-        watchlist_path = Path("/tmp/buffett-bot-data/watchlist.json")
+        watchlist_path = Path(tempfile.gettempdir()) / "buffett-bot-data" / "watchlist.json"
 
     if not watchlist_path.exists():
         logger.info("No watchlist found. Run weekly_screen first.")
@@ -133,8 +134,8 @@ def daily_watchlist_check():
                     margin = (fair_value - current_price) / fair_value
                     if margin > 0.30:  # 30%+ margin of safety
                         alerts.append(f"{symbol}: ${current_price:.2f} (margin: {margin:.1%})")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Price check failed for {symbol}: {e}")
 
             time.sleep(0.1)
 
@@ -189,7 +190,7 @@ def weekly_auto_trade():
         # Load watchlist from weekly_screen
         watchlist_path = Path("./data/watchlist.json")
         if not watchlist_path.exists():
-            watchlist_path = Path("/tmp/buffett-bot-data/watchlist.json")
+            watchlist_path = Path(tempfile.gettempdir()) / "buffett-bot-data" / "watchlist.json"
         if not watchlist_path.exists():
             logger.info("No watchlist found — run weekly_screen first")
             return
@@ -314,8 +315,8 @@ def monthly_briefing():
 
             notifier = NotificationManager()
             notifier.send_alert("SYSTEM", f"Monthly briefing failed: {e}")
-        except Exception:
-            pass
+        except Exception as notify_err:
+            logger.debug(f"Failed to send failure notification: {notify_err}")
 
 
 def run_scheduler():

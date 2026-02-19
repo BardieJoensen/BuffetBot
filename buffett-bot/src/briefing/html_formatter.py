@@ -27,6 +27,7 @@ def generate_html_report(
     performance_metrics: Optional[dict] = None,
     benchmark_data: Optional[dict] = None,
     movements: Optional[list[WatchlistMovement]] = None,
+    campaign_progress: Optional[dict] = None,
 ) -> str:
     """Generate a self-contained HTML briefing report."""
     now = datetime.now()
@@ -170,6 +171,27 @@ footer{{text-align:center;padding:16px;font-size:.8rem;color:#999}}
         )
     parts.append("</div>")
 
+    # Campaign Progress
+    if campaign_progress:
+        cp = campaign_progress
+        cov_pct = cp.get("coverage_pct", 0)
+        bar_width = max(1, int(cov_pct * 100))
+        parts.append(
+            f'<div style="background:#e8eaf6;border-radius:8px;padding:16px;margin:12px 0">'
+            f'<div style="font-weight:600;margin-bottom:8px">Coverage Campaign: {e(str(cp.get("campaign_id", "")))}</div>'
+            f'<div style="background:#c5cae9;border-radius:4px;height:24px;position:relative;overflow:hidden">'
+            f'<div style="background:#3f51b5;height:100%;width:{bar_width}%;border-radius:4px;'
+            f'transition:width .3s"></div>'
+            f'<div style="position:absolute;top:0;left:0;right:0;text-align:center;line-height:24px;'
+            f'font-size:.8rem;font-weight:600;color:#fff">{cov_pct:.0%} screened</div></div>'
+            f'<div style="display:flex;gap:16px;margin-top:8px;font-size:.85rem;color:#555">'
+            f"<span>Haiku: {cp.get('haiku_screened', 0)}/{cp.get('universe_size', 0)}</span>"
+            f"<span>Passed: {cp.get('haiku_passed', 0)}</span>"
+            f"<span>Analyzed: {cp.get('deeply_analyzed', 0)}</span>"
+            f"<span>Registry: {cp.get('total_studied_all_time', 0)} total</span>"
+            f"</div></div>"
+        )
+
     # Benchmark comparison
     if benchmark_data and (tier1 or tier2):
         bm_name = html_module.escape(benchmark_data.get("name", benchmark_data.get("symbol", "SPY")))
@@ -279,7 +301,7 @@ footer{{text-align:center;padding:16px;font-size:.8rem;color:#999}}
     if opus_picks:
         parts.append("<section><h2>Second Opinion (Opus Contrarian Review)</h2>")
         for b in opus_picks:
-            assert b.opus_opinion is not None
+            assert b.opus_opinion is not None  # nosec B101 — filtered above
             op = b.opus_opinion
             agreement = op.get("agreement", "N/A")
             opus_conv = op.get("opus_conviction", "N/A")
