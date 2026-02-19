@@ -394,7 +394,7 @@ class StockScreener:
                 data["earnings_quality"] = None
 
             # SBC-adjusted FCF
-            real_fcf = self._calculate_real_fcf(ticker, market_cap)
+            real_fcf = self._calculate_real_fcf(ticker, float(market_cap or 0))
             data["real_fcf_yield"] = real_fcf.get("real_fcf_yield")
             data["sbc_ratio"] = real_fcf.get("sbc_ratio")
             # Fall back to standard fcf_yield if real_fcf calc failed
