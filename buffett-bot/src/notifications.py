@@ -303,7 +303,9 @@ class NtfyNotifier:
             if tags:
                 headers["Tags"] = ",".join(tags)
 
-            response = requests.post(f"{self.server}/{self.topic}", data=message.encode("utf-8"), headers=headers, timeout=30)
+            response = requests.post(
+                f"{self.server}/{self.topic}", data=message.encode("utf-8"), headers=headers, timeout=30
+            )
 
             return response.status_code == 200
 
