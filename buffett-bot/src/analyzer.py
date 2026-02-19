@@ -79,6 +79,13 @@ Recession Resilience: [How would this business perform in a severe recession? Re
 Existential Risks: [What could kill this business in 10-20 years? Technology disruption, regulation, etc.]
 10-Year Outlook: [Will this business be larger and more profitable in 10 years? Why or why not?]
 
+## BEAR CASE
+Customer Concentration: [LOW / MODERATE / HIGH — flag if any customer >10% of revenue]
+Switching Cost Test: [1-5 rating — "If this company disappeared tomorrow, would customers be in pain (5) or switch by lunch (1)?"]
+Regulatory/Tech Risk: [Key regulatory changes or technological disruptions that could materially impact the business within 5 years]
+Patent/IP Dependency: [Does the moat depend on IP expiring within 5 years? YES/NO + details if yes]
+Bear Case Summary: [2-3 sentences — the strongest argument AGAINST this investment]
+
 ## CURRENCY EXPOSURE
 Domestic Revenue: [X% — estimate based on your knowledge of the company]
 International Revenue: [Y% — estimate]
@@ -304,6 +311,13 @@ class AnalysisV2:
     dividend_yield_estimate: Optional[float] = None
     total_return_potential: str = ""
 
+    # Bear case (red team probe)
+    customer_concentration_risk: str = ""  # low / moderate / high
+    switching_cost_rating: int = 0  # 1-5 (0 = not assessed)
+    regulatory_tech_risk: str = ""
+    patent_ip_dependency: str = ""
+    bear_case_summary: str = ""
+
     # Risk fields (also output by v2 prompt)
     key_risks: list[str] = field(default_factory=list)
     thesis_risks: list[str] = field(default_factory=list)
@@ -390,6 +404,13 @@ class AnalysisV2:
                 "estimated_fair_value_high": self.estimated_fair_value_high,
                 "target_entry_price": self.target_entry_price,
                 "current_price": self.current_price,
+            },
+            "bear_case": {
+                "customer_concentration": self.customer_concentration_risk,
+                "switching_cost_rating": self.switching_cost_rating,
+                "regulatory_tech_risk": self.regulatory_tech_risk,
+                "patent_ip_dependency": self.patent_ip_dependency,
+                "summary": self.bear_case_summary,
             },
             "conviction": self.conviction,
             "summary": self.summary,
@@ -674,6 +695,7 @@ Focus especially on whether the moat and durability assessments are realistic.""
         dur = data.get("durability", {})
         curr = data.get("currency_exposure", {})
         val = data.get("valuation", {})
+        bear = data.get("bear_case", {})
 
         return AnalysisV2(
             symbol=data.get("symbol", ""),
@@ -696,6 +718,11 @@ Focus especially on whether the moat and durability assessments are realistic.""
             estimated_fair_value_high=val.get("estimated_fair_value_high"),
             target_entry_price=val.get("target_entry_price"),
             current_price=val.get("current_price"),
+            customer_concentration_risk=bear.get("customer_concentration", ""),
+            switching_cost_rating=int(bear.get("switching_cost_rating", 0)),
+            regulatory_tech_risk=bear.get("regulatory_tech_risk", ""),
+            patent_ip_dependency=bear.get("patent_ip_dependency", ""),
+            bear_case_summary=bear.get("summary", ""),
             conviction=data.get("conviction", "LOW"),
             summary=data.get("summary", ""),
             dividend_yield_estimate=data.get("dividend_yield"),

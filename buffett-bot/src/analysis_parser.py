@@ -82,7 +82,12 @@ def parse_analysis(symbol: str, company_name: str, analysis_text: str, sector: s
     # Extract sections
     moat_section = extract_section(analysis_text, "## MOAT CLASSIFICATION", "## MANAGEMENT")
     mgmt_section = extract_section(analysis_text, "## MANAGEMENT QUALITY", "## BUSINESS DURABILITY")
-    durability_section = extract_section(analysis_text, "## BUSINESS DURABILITY", "## CURRENCY")
+    # Bear case may be absent in old cached responses — fall back gracefully
+    has_bear_case = "## BEAR CASE" in analysis_text
+    durability_section = extract_section(
+        analysis_text, "## BUSINESS DURABILITY", "## BEAR CASE" if has_bear_case else "## CURRENCY"
+    )
+    bear_section = extract_section(analysis_text, "## BEAR CASE", "## CURRENCY") if has_bear_case else ""
     currency_section = extract_section(analysis_text, "## CURRENCY EXPOSURE", "## FAIR VALUE")
     fv_section = extract_section(analysis_text, "## FAIR VALUE ASSESSMENT", "## CONVICTION")
     conviction_section = extract_section(analysis_text, "## CONVICTION LEVEL", "## INVESTMENT SUMMARY")
@@ -113,6 +118,25 @@ def parse_analysis(symbol: str, company_name: str, analysis_text: str, sector: s
     recession = extract_field(durability_section, "Recession Resilience") or durability_section
     existential = extract_field(durability_section, "Existential Risks") or ""
     outlook = extract_field(durability_section, "10-Year Outlook") or extract_field(durability_section, "Outlook") or ""
+
+    # Parse bear case (gracefully handles missing section from old cached responses)
+    customer_concentration = (
+        extract_rating(
+            extract_field(bear_section, "Customer Concentration") or "",
+            ["LOW", "MODERATE", "HIGH"],
+        ).lower()
+        if bear_section
+        else ""
+    )
+    switching_cost_str = extract_field(bear_section, "Switching Cost Test") or ""
+    switching_cost_rating = 0
+    if switching_cost_str:
+        sc_match = re.search(r"[1-5]", switching_cost_str)
+        if sc_match:
+            switching_cost_rating = int(sc_match.group())
+    regulatory_tech_risk = extract_field(bear_section, "Regulatory/Tech Risk") or ""
+    patent_ip_dependency = extract_field(bear_section, "Patent/IP Dependency") or ""
+    bear_case_summary = extract_field(bear_section, "Bear Case Summary") or bear_section
 
     # Parse currency
     domestic_str = extract_field(currency_section, "Domestic Revenue")
@@ -168,6 +192,11 @@ def parse_analysis(symbol: str, company_name: str, analysis_text: str, sector: s
         recession_resilience=recession,
         existential_risks=existential,
         outlook_10yr=outlook,
+        customer_concentration_risk=customer_concentration,
+        switching_cost_rating=switching_cost_rating,
+        regulatory_tech_risk=regulatory_tech_risk,
+        patent_ip_dependency=patent_ip_dependency,
+        bear_case_summary=bear_case_summary,
         domestic_revenue_pct=domestic_pct,
         international_revenue_pct=intl_pct,
         currency_risk_level=currency_risk,
