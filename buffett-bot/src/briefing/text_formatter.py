@@ -23,6 +23,7 @@ def generate_text_report(
     market_temp: Optional[dict] = None,
     bubble_warnings: Optional[list] = None,
     radar_stocks: Optional[list[str]] = None,
+    radar_context: Optional[dict] = None,
     performance_metrics: Optional[dict] = None,
     benchmark_data: Optional[dict] = None,
     movements: Optional[list[WatchlistMovement]] = None,
@@ -70,6 +71,21 @@ def generate_text_report(
         gain_sign = "+" if gain >= 0 else ""
         output.append(f"Gain/Loss:      {gain_sign}${gain:,.0f} ({gain_sign}{gain_pct:.1%})")
         output.append("")
+        positions = portfolio_summary.get("positions", [])
+        if positions:
+            output.append(f"  {'Ticker':<6} {'Shares':>7} {'Cost':>8} {'Value':>9} {'P&L':>10} {'P&L%':>7}")
+            output.append(
+                f"  {'------':<6} {'-------':>7} {'--------':>8} {'---------':>9} {'----------':>10} {'-------':>7}"
+            )
+            for p in positions:
+                pl = p.get("unrealized_pl", 0)
+                plpc = p.get("unrealized_plpc", 0)
+                pl_sign = "+" if pl >= 0 else ""
+                output.append(
+                    f"  {p['symbol']:<6} {p.get('qty', 0):>7.1f} {p.get('avg_entry_price', 0):>8.2f}"
+                    f" {p.get('market_value', 0):>9,.0f} {pl_sign}${abs(pl):>8,.0f} {pl_sign}{abs(plpc):.1%}"
+                )
+            output.append("")
         exposure = portfolio_summary.get("sector_exposure", {})
         if exposure:
             output.append("Sector Exposure:")
@@ -261,12 +277,21 @@ def generate_text_report(
         output.append("-" * 70)
         output.append("## RADAR (Passed Screen, Not Yet Analyzed)")
         output.append("")
-        output.append("These stocks passed quantitative screening but haven't received")
+        output.append("These stocks passed Haiku screening but haven't received")
         output.append("deep analysis yet. Consider for future research:")
         output.append("")
-        for i in range(0, len(radar_stocks), 5):
-            chunk = radar_stocks[i : i + 5]
-            output.append("  " + "  ".join(f"{s:8}" for s in chunk))
+        ctx = radar_context or {}
+        if any(ctx.get(s) for s in radar_stocks):
+            for s in radar_stocks:
+                reason = ctx.get(s, "")
+                if reason:
+                    output.append(f"  {s:<6} — {reason[:78]}")
+                else:
+                    output.append(f"  {s}")
+        else:
+            for i in range(0, len(radar_stocks), 5):
+                chunk = radar_stocks[i : i + 5]
+                output.append("  " + "  ".join(f"{s:8}" for s in chunk))
         output.append("")
 
     # BUBBLE WATCH
@@ -423,17 +448,28 @@ def _format_tier2_item(briefing: StockBriefing) -> str:
     lines.append(f"   Moat: {moat.value.upper() if moat else 'N/A'} | Conviction: {conv}")
     lines.append(f"   {briefing.tier_reason}")
 
+    # Bear case: show moat risks and top key risk so the wait feels informed
+    moat_risks = getattr(briefing.analysis, "moat_risks", "")
+    key_risks = getattr(briefing.analysis, "key_risks", [])
+    if moat_risks:
+        lines.append(f"   Bear case: {moat_risks[:100]}")
+    if key_risks:
+        lines.append(f"   Key risk:  {key_risks[0][:100]}")
+
     return "\n".join(lines)
 
 
 def _format_tier3_item(briefing: StockBriefing) -> str:
-    """Format a Tier 3 monitoring item (brief)."""
+    """Format a Tier 3 monitoring item (brief) with one distinguishing metric."""
     moat = getattr(briefing.analysis, "moat_rating", None)
     conv = getattr(briefing.analysis, "conviction_level", "N/A")
-    return (
-        f"  [T3] {briefing.symbol}: {moat.value.upper() if moat else 'N/A'} moat, "
-        f"{conv} conviction - {briefing.tier_reason}"
-    )
+    metrics: list[str] = []
+    if briefing.pe_ratio:
+        metrics.append(f"P/E: {briefing.pe_ratio:.1f}")
+    if briefing.fcf_yield is not None:
+        metrics.append(f"FCF: {briefing.fcf_yield:.1%}")
+    metrics_str = " | " + " | ".join(metrics) if metrics else ""
+    return f"  [T3] {briefing.symbol}: {moat.value.upper() if moat else 'N/A'} moat, {conv} conviction{metrics_str}"
 
 
 def _format_bubble_warning(warning: BubbleWarning) -> str:

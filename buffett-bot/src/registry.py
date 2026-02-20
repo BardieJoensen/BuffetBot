@@ -66,6 +66,7 @@ class Registry:
                 "haiku_screened": [],
                 "haiku_passed": [],
                 "haiku_failed": {},  # {symbol: screened_at ISO string}
+                "haiku_passed_reasons": {},  # {symbol: reason_string}
                 "analyzed": [],
             },
             "studies": {},
@@ -113,6 +114,10 @@ class Registry:
         analyzed = set(self.campaign["analyzed"])
         return [s for s in self.campaign["haiku_passed"] if s not in analyzed]
 
+    def get_haiku_passed_context(self) -> dict[str, str]:
+        """Return {symbol: reason} for all Haiku-passed stocks in this campaign."""
+        return dict(self.campaign.get("haiku_passed_reasons", {}))
+
     def mark_haiku_screened(self, symbols: list[str], results: list[dict], min_score: int = 5) -> None:
         """
         Record Haiku screening results. Symbols scoring >= min_score
@@ -129,6 +134,7 @@ class Registry:
 
         result_map = {r["symbol"]: r for r in results}
         now_iso = datetime.now().isoformat()
+        reasons = campaign.setdefault("haiku_passed_reasons", {})
 
         for sym in symbols:
             if sym in screened_set:
@@ -137,6 +143,7 @@ class Registry:
             r = result_map.get(sym)
             if r and (r.get("moat_hint", 0) + r.get("quality_hint", 0)) >= min_score:
                 passed_set.add(sym)
+                reasons[sym] = r.get("reason", "")
             else:
                 failed_dict[sym] = now_iso
 
