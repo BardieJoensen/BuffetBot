@@ -74,7 +74,9 @@ def generate_text_report(
         positions = portfolio_summary.get("positions", [])
         if positions:
             output.append(f"  {'Ticker':<6} {'Shares':>7} {'Cost':>8} {'Value':>9} {'P&L':>10} {'P&L%':>7}")
-            output.append(f"  {'------':<6} {'-------':>7} {'--------':>8} {'---------':>9} {'----------':>10} {'-------':>7}")
+            output.append(
+                f"  {'------':<6} {'-------':>7} {'--------':>8} {'---------':>9} {'----------':>10} {'-------':>7}"
+            )
             for p in positions:
                 pl = p.get("unrealized_pl", 0)
                 plpc = p.get("unrealized_plpc", 0)
@@ -467,10 +469,7 @@ def _format_tier3_item(briefing: StockBriefing) -> str:
     if briefing.fcf_yield is not None:
         metrics.append(f"FCF: {briefing.fcf_yield:.1%}")
     metrics_str = " | " + " | ".join(metrics) if metrics else ""
-    return (
-        f"  [T3] {briefing.symbol}: {moat.value.upper() if moat else 'N/A'} moat, "
-        f"{conv} conviction{metrics_str}"
-    )
+    return f"  [T3] {briefing.symbol}: {moat.value.upper() if moat else 'N/A'} moat, {conv} conviction{metrics_str}"
 
 
 def _format_bubble_warning(warning: BubbleWarning) -> str:

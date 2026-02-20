@@ -282,7 +282,9 @@ footer{{text-align:center;padding:16px;font-size:.8rem;color:#999}}
         positions = portfolio_summary.get("positions", [])
         if positions:
             parts.append('<h3 style="font-size:1rem;margin:16px 0 8px">Positions</h3>')
-            parts.append("<table><tr><th>Ticker</th><th>Shares</th><th>Cost</th><th>Value</th><th>P&amp;L</th><th>P&amp;L%</th></tr>")
+            parts.append(
+                "<table><tr><th>Ticker</th><th>Shares</th><th>Cost</th><th>Value</th><th>P&amp;L</th><th>P&amp;L%</th></tr>"
+            )
             for p in positions:
                 pl = p.get("unrealized_pl", 0)
                 plpc = p.get("unrealized_plpc", 0)
@@ -387,7 +389,7 @@ footer{{text-align:center;padding:16px;font-size:.8rem;color:#999}}
         if has_context:
             parts.append(
                 '<section><h2>Radar</h2><p style="font-size:.9rem;color:#666;margin-bottom:12px">Passed Haiku screening, not yet deeply analyzed.</p>'
-                '<table><tr><th>Ticker</th><th>Haiku Rationale</th></tr>'
+                "<table><tr><th>Ticker</th><th>Haiku Rationale</th></tr>"
             )
             for s in radar_stocks:
                 reason = ctx.get(s, "")
@@ -520,9 +522,7 @@ def _html_stock_card(briefing: StockBriefing, card_type: str) -> str:
         if bear_parts:
             lines.append(
                 '<div style="background:#fff3e0;border-left:3px solid #FF9800;padding:10px 14px;'
-                'margin:12px 0;font-size:.88rem;border-radius:0 6px 6px 0">'
-                + "<br>".join(bear_parts)
-                + "</div>"
+                'margin:12px 0;font-size:.88rem;border-radius:0 6px 6px 0">' + "<br>".join(bear_parts) + "</div>"
             )
 
     # Thesis

@@ -273,8 +273,11 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
 
     # Shuffle unstudied with a deterministic campaign-based seed so each run
     # covers a different slice of the alphabet rather than always starting at 'A'.
-    _campaign_seed = int(hashlib.md5(registry.campaign["campaign_id"].encode()).hexdigest()[:8], 16)
-    _rng = random.Random(_campaign_seed)
+    _campaign_seed = int(
+        hashlib.md5(registry.campaign["campaign_id"].encode(), usedforsecurity=False).hexdigest()[:8],  # nosec B324
+        16,
+    )
+    _rng = random.Random(_campaign_seed)  # nosec B311 — non-cryptographic shuffle
     unstudied_shuffled = unstudied.copy()
     _rng.shuffle(unstudied_shuffled)
     batch_to_screen = unstudied_shuffled[:haiku_batch_size]
