@@ -24,6 +24,7 @@ def generate_html_report(
     market_temp: Optional[dict] = None,
     bubble_warnings: Optional[list] = None,
     radar_stocks: Optional[list[str]] = None,
+    radar_context: Optional[dict] = None,
     performance_metrics: Optional[dict] = None,
     benchmark_data: Optional[dict] = None,
     movements: Optional[list[WatchlistMovement]] = None,
@@ -278,6 +279,25 @@ footer{{text-align:center;padding:16px;font-size:.8rem;color:#999}}
   <div class="portfolio-stat"><div class="val {gain_class}">{gain_sign}${gain:,.0f} ({gain_sign}{gain_pct:.1%})</div><div class="lbl">Gain/Loss</div></div>
 </div>""")
 
+        positions = portfolio_summary.get("positions", [])
+        if positions:
+            parts.append('<h3 style="font-size:1rem;margin:16px 0 8px">Positions</h3>')
+            parts.append("<table><tr><th>Ticker</th><th>Shares</th><th>Cost</th><th>Value</th><th>P&amp;L</th><th>P&amp;L%</th></tr>")
+            for p in positions:
+                pl = p.get("unrealized_pl", 0)
+                plpc = p.get("unrealized_plpc", 0)
+                pl_color = "color:#4CAF50" if pl >= 0 else "color:#F44336"
+                pl_sign = "+" if pl >= 0 else ""
+                parts.append(
+                    f"<tr><td><strong>{e(p['symbol'])}</strong></td>"
+                    f"<td>{p.get('qty', 0):.1f}</td>"
+                    f"<td>${p.get('avg_entry_price', 0):.2f}</td>"
+                    f"<td>${p.get('market_value', 0):,.0f}</td>"
+                    f"<td style='{pl_color}'>{pl_sign}${abs(pl):,.0f}</td>"
+                    f"<td style='{pl_color}'>{pl_sign}{abs(plpc):.1%}</td></tr>"
+                )
+            parts.append("</table>")
+
         exposure = portfolio_summary.get("sector_exposure", {})
         if exposure:
             parts.append('<h3 style="font-size:1rem;margin-bottom:8px">Sector Exposure</h3><div class="bar-chart">')
@@ -344,27 +364,45 @@ footer{{text-align:center;padding:16px;font-size:.8rem;color:#999}}
         parts.append(
             '<p style="font-size:.9rem;color:#666;margin-bottom:12px">Good businesses to re-evaluate next cycle.</p>'
         )
-        parts.append("<table><tr><th>Stock</th><th>Moat</th><th>Conviction</th><th>Reason</th></tr>")
+        parts.append("<table><tr><th>Stock</th><th>Moat</th><th>Conviction</th><th>P/E</th><th>FCF Yield</th></tr>")
         for b in tier3:
             moat = getattr(b.analysis, "moat_rating", None)
             moat_str = moat.value.upper() if moat else "N/A"
             conv = getattr(b.analysis, "conviction_level", "N/A")
+            pe_str = f"{b.pe_ratio:.1f}" if b.pe_ratio else "—"
+            fcf_str = f"{b.fcf_yield:.1%}" if b.fcf_yield is not None else "—"
             parts.append(
                 f"<tr><td><strong>{e(b.symbol)}</strong></td>"
                 f"<td>{e(moat_str)}</td>"
                 f"<td>{e(conv)}</td>"
-                f"<td>{e(b.tier_reason[:60])}</td></tr>"
+                f"<td>{e(pe_str)}</td>"
+                f"<td>{e(fcf_str)}</td></tr>"
             )
         parts.append("</table></section>")
 
     # Radar
     if radar_stocks:
-        parts.append(
-            '<section><h2>Radar</h2><p style="font-size:.9rem;color:#666;margin-bottom:12px">Passed screening, not yet analyzed.</p><div class="radar-grid">'
-        )
-        for s in radar_stocks:
-            parts.append(f'<span class="radar-chip">{e(s)}</span>')
-        parts.append("</div></section>")
+        ctx = radar_context or {}
+        has_context = any(ctx.get(s) for s in radar_stocks)
+        if has_context:
+            parts.append(
+                '<section><h2>Radar</h2><p style="font-size:.9rem;color:#666;margin-bottom:12px">Passed Haiku screening, not yet deeply analyzed.</p>'
+                '<table><tr><th>Ticker</th><th>Haiku Rationale</th></tr>'
+            )
+            for s in radar_stocks:
+                reason = ctx.get(s, "")
+                parts.append(
+                    f"<tr><td><strong>{e(s)}</strong></td>"
+                    f"<td style='font-size:.85rem;color:#555'>{e(reason[:120]) if reason else '—'}</td></tr>"
+                )
+            parts.append("</table></section>")
+        else:
+            parts.append(
+                '<section><h2>Radar</h2><p style="font-size:.9rem;color:#666;margin-bottom:12px">Passed screening, not yet analyzed.</p><div class="radar-grid">'
+            )
+            for s in radar_stocks:
+                parts.append(f'<span class="radar-chip">{e(s)}</span>')
+            parts.append("</div></section>")
 
     # Bubble Watch
     if bubble_warnings:
@@ -469,6 +507,23 @@ def _html_stock_card(briefing: StockBriefing, card_type: str) -> str:
         for est in briefing.valuation.estimates[:6]:
             lines.append(f"<tr><td>{e(est.source)}</td><td>${est.fair_value:.2f}</td></tr>")
         lines.append("</table></details>")
+
+    # Bear case callout for Tier 2 (why you're not buying yet)
+    if card_type == "tier2":
+        moat_risks = getattr(briefing.analysis, "moat_risks", "")
+        key_risks_t2 = getattr(briefing.analysis, "key_risks", [])
+        bear_parts = []
+        if moat_risks:
+            bear_parts.append(f"<strong>Moat risk:</strong> {e(moat_risks[:120])}")
+        if key_risks_t2:
+            bear_parts.append(f"<strong>Key risk:</strong> {e(key_risks_t2[0][:120])}")
+        if bear_parts:
+            lines.append(
+                '<div style="background:#fff3e0;border-left:3px solid #FF9800;padding:10px 14px;'
+                'margin:12px 0;font-size:.88rem;border-radius:0 6px 6px 0">'
+                + "<br>".join(bear_parts)
+                + "</div>"
+            )
 
     # Thesis
     thesis = getattr(briefing.analysis, "investment_thesis", "")

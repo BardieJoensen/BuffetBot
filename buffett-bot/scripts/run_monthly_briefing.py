@@ -27,9 +27,11 @@ Run manually:  docker compose run --rm buffett-bot
 Auto-schedule: scheduler.py runs this on 1st of each month (if enabled)
 """
 
+import hashlib
 import json
 import logging
 import os
+import random
 import sys
 import tempfile
 from datetime import datetime
@@ -268,7 +270,14 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
     unstudied = registry.get_unstudied_symbols(all_screened_symbols)
     previously_passed = registry.get_unanalyzed_haiku_passed()
     haiku_batch_size = config.haiku_batch_size
-    batch_to_screen = unstudied[:haiku_batch_size]
+
+    # Shuffle unstudied with a deterministic campaign-based seed so each run
+    # covers a different slice of the alphabet rather than always starting at 'A'.
+    _campaign_seed = int(hashlib.md5(registry.campaign["campaign_id"].encode()).hexdigest()[:8], 16)
+    _rng = random.Random(_campaign_seed)
+    unstudied_shuffled = unstudied.copy()
+    _rng.shuffle(unstudied_shuffled)
+    batch_to_screen = unstudied_shuffled[:haiku_batch_size]
 
     logger.info("\n[5/11] HAIKU PRE-SCREEN...")
     logger.info(f"   Universe: {len(all_screened_symbols)}, Unstudied: {len(unstudied)}, Batch: {len(batch_to_screen)}")
@@ -709,6 +718,7 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
 
     # Radar = unanalyzed Haiku-passed stocks from registry
     radar_stocks = registry.get_unanalyzed_haiku_passed()[:30]
+    radar_context = registry.get_haiku_passed_context()
 
     # Campaign progress for briefing
     campaign_progress = registry.get_campaign_progress(len(all_screened_symbols))
@@ -732,6 +742,7 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
         market_temp=market_temp,
         bubble_warnings=bubble_warnings,
         radar_stocks=radar_stocks,
+        radar_context=radar_context,
         performance_metrics=performance_metrics,
         benchmark_data=benchmark_data,
         movements=movements,
