@@ -513,15 +513,10 @@ def step6_report(
 
         if quality_scores:
             print(f"Quality scores (would compute): {len(quality_scores)} stocks")
-            top10 = sorted(
-                quality_scores.items(),
-                key=lambda x: x[1].composite_score if hasattr(x[1], "composite_score") else x[1],
-                reverse=True,
-            )[:10]
+            top10 = sorted(quality_scores.items(), key=lambda x: x[1].score, reverse=True)[:10]
             print("\nTop 10 quality scores (projected):")
             for ticker, qs in top10:
-                score = qs.composite_score if hasattr(qs, "composite_score") else qs
-                print(f"  {ticker:8s}  {score:5.1f}")
+                print(f"  {ticker:8s}  {qs.score:5.1f}")
 
         if priority:
             print(f"\nPriority queue: {len(priority)} tickers")
