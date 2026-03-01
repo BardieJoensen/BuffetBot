@@ -1,0 +1,143 @@
+# BuffettBot Conviction List
+# Businesses you'd love to own — reviewed quarterly
+#
+# Selection criteria:
+#   - Wide or durable moat (brand, network effects, switching costs, scale, regulatory)
+#   - Consistent high ROIC / ROE over 10+ years
+#   - Proven management with shareholder-friendly capital allocation
+#   - Business you can understand and explain in one sentence
+#
+# These always get priority analysis regardless of quality score.
+# The system won't buy blindly — it still evaluates price vs. fair value.
+# This list just says: "These are wonderful businesses. Always be watching."
+
+last_reviewed: 2026-03-01
+next_review: 2026-06-01
+
+stocks:
+
+  # ── Payment Rails ──────────────────────────────────────────────
+  - ticker: V
+    notes: "Visa. Duopoly on global payments, 65%+ operating margins, asset-light"
+
+  - ticker: MA
+    notes: "Mastercard. Same duopoly, slightly more international exposure"
+
+  - ticker: AXP
+    notes: "American Express. Premium closed-loop network, high-spending customers"
+
+  # ── Data & Index Monopolies ────────────────────────────────────
+  - ticker: MSCI
+    notes: "Index and analytics monopoly, 95%+ retention, recurring revenue"
+
+  - ticker: SPGI
+    notes: "S&P Global. Credit ratings oligopoly + index business"
+
+  - ticker: MCO
+    notes: "Moody's. Other half of the ratings duopoly. Buffett's actual holding"
+
+  - ticker: FICO
+    notes: "Fair Isaac. Credit scoring monopoly, embedded in every lending decision"
+
+  # ── Consumer Brands / Compounders ──────────────────────────────
+  - ticker: COST
+    notes: "Costco. Membership model, fanatical loyalty, pricing power through scale"
+
+  - ticker: KO
+    notes: "Coca-Cola. Global distribution moat, Buffett's classic holding"
+
+  - ticker: PG
+    notes: "Procter & Gamble. Portfolio of #1/#2 brands in every category"
+
+  - ticker: PEP
+    notes: "PepsiCo. Snacks + beverages, broader portfolio than KO"
+
+  - ticker: NKE
+    notes: "Nike. Global brand dominance in athletic footwear and apparel"
+
+  - ticker: MCD
+    notes: "McDonald's. Real estate empire disguised as a restaurant franchise"
+
+  # ── Healthcare / Pharma ────────────────────────────────────────
+  - ticker: JNJ
+    notes: "Johnson & Johnson. Diversified healthcare, decades of dividend growth"
+
+  - ticker: UNH
+    notes: "UnitedHealth. Managed care + Optum data, massive scale advantages"
+
+  - ticker: TMO
+    notes: "Thermo Fisher. Life sciences tools oligopoly, high switching costs"
+
+  - ticker: ISRG
+    notes: "Intuitive Surgical. Robotic surgery monopoly, razor/blade model"
+
+  - ticker: DHR
+    notes: "Danaher. Serial acquirer with Danaher Business System, life sciences focus"
+
+  # ── Tech / Software with Moats ─────────────────────────────────
+  - ticker: AAPL
+    notes: "Apple. Ecosystem lock-in, services flywheel, $100B+ annual FCF"
+
+  - ticker: MSFT
+    notes: "Microsoft. Enterprise software monopoly + cloud + AI platform"
+
+  - ticker: ADBE
+    notes: "Adobe. Creative suite monopoly, subscription transition complete"
+
+  - ticker: INTU
+    notes: "Intuit. TurboTax + QuickBooks, switching costs in tax and accounting"
+
+  - ticker: SNPS
+    notes: "Synopsys. EDA duopoly, chips can't be designed without it"
+
+  - ticker: CDNS
+    notes: "Cadence. Other half of EDA duopoly"
+
+  # ── Industrial Compounders ─────────────────────────────────────
+  - ticker: ITW
+    notes: "Illinois Tool Works. 80/20 model, decentralized, high margins"
+
+  - ticker: SHW
+    notes: "Sherwin-Williams. Dominant paint brand, owned distribution"
+
+  - ticker: WM
+    notes: "Waste Management. Landfill permits = permanent local monopoly"
+
+  - ticker: RSG
+    notes: "Republic Services. #2 waste hauler, same moat dynamics as WM"
+
+  - ticker: GWW
+    notes: "Grainger. MRO distribution, scale + catalog breadth moat"
+
+  # ── Financial Services ─────────────────────────────────────────
+  - ticker: BRK-B
+    notes: "Berkshire Hathaway. The master portfolio. Insurance float + operating businesses"
+
+  - ticker: CME
+    notes: "CME Group. Derivatives exchange monopoly, network effects"
+
+  - ticker: ICE
+    notes: "Intercontinental Exchange. NYSE owner, data + clearing + exchanges"
+
+  - ticker: TROW
+    notes: "T. Rowe Price. Quality asset manager, no debt, high margins"
+
+  # ── Railroad / Infrastructure ──────────────────────────────────
+  - ticker: UNP
+    notes: "Union Pacific. Western US rail duopoly, irreplaceable right-of-way"
+
+  - ticker: NSC
+    notes: "Norfolk Southern. Eastern US rail network, same duopoly dynamics"
+
+  # ── Specialty / Niche Dominators ───────────────────────────────
+  - ticker: ODFL
+    notes: "Old Dominion Freight. Best-in-class LTL carrier, 25%+ operating margins"
+
+  - ticker: ROL
+    notes: "Rollins. Pest control oligopoly (Orkin), recurring revenue, recession-proof"
+
+  - ticker: ROP
+    notes: "Roper Technologies. Niche software conglomerate, asset-light"
+
+  - ticker: WST
+    notes: "West Pharmaceutical. Drug delivery components, high switching costs"

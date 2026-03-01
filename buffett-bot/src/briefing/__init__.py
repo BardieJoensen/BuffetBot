@@ -22,12 +22,13 @@ from typing import Optional
 
 from ..tier_engine import WatchlistMovement
 from ..valuation import AggregatedValuation
+from .db_briefing import generate_briefing_from_db
 from .html_formatter import generate_html_report
 from .text_formatter import generate_text_report
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["StockBriefing", "BriefingGenerator"]
+__all__ = ["StockBriefing", "BriefingGenerator", "generate_briefing_from_db"]
 
 
 @dataclass

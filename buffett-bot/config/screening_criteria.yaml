@@ -150,6 +150,22 @@ screening:
         max: 0.80            # FCF swings with oil prices
         weight: 0.8
 
+  # Cap-size scoring overrides — applied after sector overrides
+  # Only specify metrics that differ from base rules.
+  # Rationale: premium businesses (Visa, Costco, MSCI) trade at high P/E
+  # multiples that reflect durable competitive advantages, not overvaluation.
+  # Penalising them for P/E > 15 would systematically exclude the best names.
+  cap_overrides:
+    large:  # >= $10B market cap
+      pe_ratio:
+        ideal: 25          # vs base 15 — premium businesses deserve premium multiples
+        max: 80            # vs base 60 — Costco often trades >50x, still a great business
+        weight: 0.6        # vs base 0.8 — de-weight P/E even further; quality > price for large caps
+      revenue_growth:
+        ideal: 0.10        # vs base 0.15 — mature businesses grow slower; 10% is excellent at scale
+        min: 0.0
+        weight: 0.8        # unchanged
+
   # How many top-scoring stocks to keep
   top_n: 100
 
