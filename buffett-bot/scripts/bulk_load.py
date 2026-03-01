@@ -33,6 +33,7 @@ import logging
 import sys
 from datetime import date, datetime
 from pathlib import Path
+from typing import Optional
 
 # ── Bootstrap sys.path so imports work from scripts/ ───────────────────────
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -473,56 +474,102 @@ def step5_sonnet_batch(
     return len(analyses)
 
 
-def step6_report(db: Database) -> None:
-    """Print a verification report of what was loaded."""
+def step6_report(
+    db: Database,
+    *,
+    dry_run: bool = False,
+    universe_stocks: Optional[list] = None,
+    screened_stocks: Optional[list] = None,
+    quality_scores: Optional[dict] = None,
+    priority: Optional[list] = None,
+    haiku_calls: int = 0,
+    sonnet_calls: int = 0,
+    total_cost: float = 0.0,
+) -> None:
+    """Print a verification report of what was loaded (or would be in dry-run)."""
     logger.info("── Step 6: Verification report ──")
 
-    universe = db.get_universe()
-    by_source: dict[str, int] = {}
-    by_tier: dict[str, int] = {}
-
-    for stock in universe:
-        src = stock.get("source", "unknown")
-        by_source[src] = by_source.get(src, 0) + 1
-
-    # Tier distribution from deep_analyses (latest per ticker)
-    for stock in universe:
-        da = db.get_latest_deep_analysis(stock["ticker"])
-        if da:
-            tier = da.get("tier", "?")
-            by_tier[tier] = by_tier.get(tier, 0) + 1
-
     print("\n" + "=" * 60)
-    print("  BULK LOAD VERIFICATION REPORT")
+    if dry_run:
+        print("  BULK LOAD DRY-RUN REPORT (nothing was written)")
+    else:
+        print("  BULK LOAD VERIFICATION REPORT")
     print("  " + datetime.now().strftime("%Y-%m-%d %H:%M"))
     print("=" * 60)
-    print(f"\nUniverse: {len(universe)} total stocks")
-    for src, n in sorted(by_source.items()):
-        print(f"  {src:20s}: {n:4d}")
 
-    if by_tier:
-        print(f"\nTier distribution ({sum(by_tier.values())} analyzed):")
-        for tier in ["S", "A", "B", "C"]:
-            n = by_tier.get(tier, 0)
-            if n:
-                print(f"  Tier {tier}: {n:4d}")
+    if dry_run and universe_stocks is not None:
+        # Show in-memory counts — nothing in DB yet
+        by_source: dict[str, int] = {}
+        for s in universe_stocks:
+            src = getattr(s, "source", "unknown")
+            by_source[src] = by_source.get(src, 0) + 1
 
-    # Top 10 quality scores
-    scored = [s for s in universe if s.get("quality_score") is not None]
-    scored.sort(key=lambda s: s["quality_score"], reverse=True)
-    if scored:
-        print("\nTop 10 quality scores:")
-        for s in scored[:10]:
-            print(
-                f"  {s['ticker']:8s}  {s['quality_score']:5.1f}  "
-                f"{(s.get('sector') or '')[:25]:<25}  [{s.get('source', '')}]"
-            )
+        print(f"\nUniverse (would load): {len(universe_stocks)} stocks")
+        for src, n in sorted(by_source.items()):
+            print(f"  {src:20s}: {n:4d}")
 
-    # Budget status
-    for cap_type in ("weekly_news_haiku", "weekly_news_sonnet"):
-        status = db.get_budget_status(cap_type)
-        if status:
-            print(f"\n{cap_type}: {status['calls_used']}/{status['max_calls']} used")
+        screened_n = len(screened_stocks) if screened_stocks else 0
+        print(f"\nFundamentals (would fetch): {screened_n} stocks passed hard filters")
+
+        if quality_scores:
+            print(f"Quality scores (would compute): {len(quality_scores)} stocks")
+            top10 = sorted(
+                quality_scores.items(),
+                key=lambda x: x[1].composite_score if hasattr(x[1], "composite_score") else x[1],
+                reverse=True,
+            )[:10]
+            print("\nTop 10 quality scores (projected):")
+            for ticker, qs in top10:
+                score = qs.composite_score if hasattr(qs, "composite_score") else qs
+                print(f"  {ticker:8s}  {score:5.1f}")
+
+        if priority:
+            print(f"\nPriority queue: {len(priority)} tickers")
+
+        print(f"\nHaiku (would screen):  {haiku_calls} calls  (~${haiku_calls * HAIKU_COST_USD:.2f})")
+        print(f"Sonnet (would analyze): {sonnet_calls} calls  (~${sonnet_calls * SONNET_COST_USD:.2f})")
+        print(f"Estimated total cost:   ~${total_cost:.2f}")
+    else:
+        # Normal mode: read from DB
+        universe = db.get_universe()
+        by_source_db: dict[str, int] = {}
+        by_tier: dict[str, int] = {}
+
+        for stock in universe:
+            src = stock.get("source", "unknown")
+            by_source_db[src] = by_source_db.get(src, 0) + 1
+
+        for stock in universe:
+            da = db.get_latest_deep_analysis(stock["ticker"])
+            if da:
+                tier = da.get("tier", "?")
+                by_tier[tier] = by_tier.get(tier, 0) + 1
+
+        print(f"\nUniverse: {len(universe)} total stocks")
+        for src, n in sorted(by_source_db.items()):
+            print(f"  {src:20s}: {n:4d}")
+
+        if by_tier:
+            print(f"\nTier distribution ({sum(by_tier.values())} analyzed):")
+            for tier in ["S", "A", "B", "C"]:
+                n = by_tier.get(tier, 0)
+                if n:
+                    print(f"  Tier {tier}: {n:4d}")
+
+        scored = [s for s in universe if s.get("quality_score") is not None]
+        scored.sort(key=lambda s: s["quality_score"], reverse=True)
+        if scored:
+            print("\nTop 10 quality scores:")
+            for s in scored[:10]:
+                print(
+                    f"  {s['ticker']:8s}  {s['quality_score']:5.1f}  "
+                    f"{(s.get('sector') or '')[:25]:<25}  [{s.get('source', '')}]"
+                )
+
+        for cap_type in ("weekly_news_haiku", "weekly_news_sonnet"):
+            status = db.get_budget_status(cap_type)
+            if status:
+                print(f"\n{cap_type}: {status['calls_used']}/{status['max_calls']} used")
 
     print()
 
@@ -672,7 +719,17 @@ def main(argv: list[str] | None = None) -> int:
         total_cost += sonnet_calls * SONNET_COST_USD
 
     # ── Step 6: Report ─────────────────────────────────────────────────────
-    step6_report(db)
+    step6_report(
+        db,
+        dry_run=args.dry_run,
+        universe_stocks=universe,
+        screened_stocks=screened,
+        quality_scores=quality_scores,
+        priority=priority,
+        haiku_calls=haiku_calls,
+        sonnet_calls=sonnet_calls,
+        total_cost=total_cost,
+    )
 
     # ── Close run log ──────────────────────────────────────────────────────
     db.complete_run(
