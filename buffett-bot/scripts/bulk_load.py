@@ -189,8 +189,12 @@ def step2_fetch_fundamentals(
     """
     Fetch yfinance fundamentals for all universe tickers.
 
-    Conviction mega-caps (AAPL, MSFT) bypass the max_market_cap filter
-    via force_include so they're always pulled even if they exceed $500B.
+    Conviction stocks bypass ALL hard filters (industry checks, market cap
+    ceiling) so that stocks like TROW (Asset Management & Custody Banks)
+    are not accidentally excluded by the industry keyword filter.
+
+    S&P 500 constituents bypass only the max_market_cap ceiling so that
+    large caps (AAPL, MSFT, etc.) pass even though they exceed $10B.
 
     Returns list[ScreenedStock] — the screener's output (already enriched
     with historical trend metrics from multiple years of financials).
@@ -198,9 +202,14 @@ def step2_fetch_fundamentals(
     logger.info("── Step 2: Fetching fundamentals from yfinance ──")
     tickers = get_tickers(universe)
     criteria = load_criteria_from_yaml()
-    force = set(conviction_tickers)  # bypass max cap for conviction names
+    # Conviction stocks bypass ALL hard filters (including industry checks
+    # that would misclassify e.g. TROW as an "asset management vehicle").
+    force = set(conviction_tickers)
+    # S&P 500 constituents bypass only the max-market-cap ceiling so that
+    # large caps like AAPL ($3T+) are not rejected by the $10B hard limit.
+    force_large = {s.ticker for s in universe if s.source == "sp500_filter"}
 
-    screened = screener.screen_tickers(tickers, criteria, force_include=force)
+    screened = screener.screen_tickers(tickers, criteria, force_include=force, force_large_cap=force_large)
 
     logger.info(
         "Screened %d stocks from %d universe tickers (%d skipped hard filters)",

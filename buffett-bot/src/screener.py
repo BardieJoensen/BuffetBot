@@ -697,18 +697,26 @@ class StockScreener:
         tickers: list[str],
         criteria: Optional[ScreeningCriteria] = None,
         force_include: Optional[set[str]] = None,
+        force_large_cap: Optional[set[str]] = None,
     ) -> list[ScreenedStock]:
         """
         Screen an explicit list of tickers instead of the Finviz universe.
 
         Identical to screen() except the universe is provided externally.
 
-        force_include: tickers that bypass the max_market_cap filter.
-        Use this for conviction mega-caps (e.g. AAPL, MSFT) that exceed
-        the screener's market cap ceiling but must always be tracked.
+        force_include: tickers that bypass ALL hard filters (equity type,
+        industry, too-hard, market cap ceiling).  Use for conviction stocks
+        that are hand-curated and must always be tracked regardless of their
+        yfinance industry classification (e.g. TROW, BLK).
+
+        force_large_cap: tickers that bypass only the max_market_cap ceiling.
+        Use for S&P 500 constituents that are above $10B but should still be
+        analysed (AAPL, MSFT, etc.).  All other hard filters still apply.
         """
         criteria = criteria or ScreeningCriteria()
-        force = force_include or set()
+        force_all = force_include or set()
+        # Both sets bypass the upper market-cap bound
+        force_cap = force_all | (force_large_cap or set())
 
         logger.info(
             f"Running screen with criteria: market_cap={criteria.min_market_cap:,.0f}-{criteria.max_market_cap:,.0f}"
@@ -743,35 +751,38 @@ class StockScreener:
 
             # === Hard filters (must pass) ===
 
-            # Skip non-equity securities (closed-end funds, ETFs, etc.)
-            quote_type = data.get("quote_type", "EQUITY")
-            if quote_type != "EQUITY":
-                continue
-
-            # Skip closed-end funds and asset management vehicles
-            industry = (data.get("industry") or "").lower()
-            if any(
-                term in industry
-                for term in [
-                    "closed-end fund",
-                    "asset management",
-                    "shell companies",
-                    "exchange traded fund",
-                ]
-            ):
-                continue
-
-            # "Too hard" industry filter (binary-outcome businesses)
-            if criteria.too_hard_industries:
-                if any(blocked.lower() in industry for blocked in criteria.too_hard_industries):
-                    too_hard_count += 1
+            # force_include tickers skip equity-type, industry, and too-hard
+            # filters entirely — they are hand-curated and always tracked.
+            if symbol not in force_all:
+                # Skip non-equity securities (closed-end funds, ETFs, etc.)
+                quote_type = data.get("quote_type", "EQUITY")
+                if quote_type != "EQUITY":
                     continue
 
-            # Market cap filter (force_include bypasses only the upper bound)
+                # Skip closed-end funds and asset management vehicles
+                industry_lc = (data.get("industry") or "").lower()
+                if any(
+                    term in industry_lc
+                    for term in [
+                        "closed-end fund",
+                        "asset management",
+                        "shell companies",
+                        "exchange traded fund",
+                    ]
+                ):
+                    continue
+
+                # "Too hard" industry filter (binary-outcome businesses)
+                if criteria.too_hard_industries:
+                    if any(blocked.lower() in industry_lc for blocked in criteria.too_hard_industries):
+                        too_hard_count += 1
+                        continue
+
+            # Market cap filter (force_cap bypasses the upper bound)
             market_cap = data.get("market_cap", 0) or 0
             if market_cap < criteria.min_market_cap:
                 continue
-            if market_cap > criteria.max_market_cap and symbol not in force:
+            if market_cap > criteria.max_market_cap and symbol not in force_cap:
                 continue
 
             # Minimum price filter

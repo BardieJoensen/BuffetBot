@@ -414,7 +414,10 @@ def monday_maintenance():
         if tickers:
             screener = StockScreener()
             criteria = load_criteria_from_yaml()
-            screened = screener.screen_tickers(tickers, criteria, force_include=conviction_tickers)
+            sp500_tickers = {s["ticker"] for s in universe if s.get("source") == "sp500_filter"}
+            screened = screener.screen_tickers(
+                tickers, criteria, force_include=conviction_tickers, force_large_cap=sp500_tickers
+            )
 
             today = _date.today().isoformat()
             source_map = {s["ticker"]: s.get("source", "finviz_screen") for s in universe}
