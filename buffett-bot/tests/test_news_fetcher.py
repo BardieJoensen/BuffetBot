@@ -364,7 +364,7 @@ class TestTsToIso:
 
 class TestFinnhubNewsFetcher:
     def test_get_company_news_success(self):
-        fetcher = FinnhubNewsFetcher(api_key="test_key")
+        fetcher = FinnhubNewsFetcher(api_key="test_key")  # pragma: allowlist secret
         fake_data = [{"headline": "Earnings beat", "datetime": 1700000000}]
         with patch("requests.get") as mock_get:
             mock_get.return_value.raise_for_status = lambda: None
@@ -379,14 +379,14 @@ class TestFinnhubNewsFetcher:
         assert result == []
 
     def test_get_company_news_http_error(self):
-        fetcher = FinnhubNewsFetcher(api_key="test_key")
+        fetcher = FinnhubNewsFetcher(api_key="test_key")  # pragma: allowlist secret
         with patch("requests.get") as mock_get:
             mock_get.side_effect = Exception("Connection refused")
             result = fetcher.get_company_news("AAPL", "2024-01-01", "2024-01-02")
         assert result == []
 
     def test_get_company_news_non_list_response(self):
-        fetcher = FinnhubNewsFetcher(api_key="test_key")
+        fetcher = FinnhubNewsFetcher(api_key="test_key")  # pragma: allowlist secret
         with patch("requests.get") as mock_get:
             mock_get.return_value.raise_for_status = lambda: None
             mock_get.return_value.json.return_value = {"error": "not a list"}
@@ -394,19 +394,19 @@ class TestFinnhubNewsFetcher:
         assert result == []
 
     def test_get_news_for_tickers_calls_each(self):
-        fetcher = FinnhubNewsFetcher(api_key="test_key")
+        fetcher = FinnhubNewsFetcher(api_key="test_key")  # pragma: allowlist secret
         with patch.object(fetcher, "get_company_news", return_value=[]) as mock_fn:
             result = fetcher.get_news_for_tickers(["AAPL", "MSFT", "GOOG"], days_back=1)
         assert set(result.keys()) == {"AAPL", "MSFT", "GOOG"}
         assert mock_fn.call_count == 3
 
     def test_get_news_for_tickers_empty_input(self):
-        fetcher = FinnhubNewsFetcher(api_key="test_key")
+        fetcher = FinnhubNewsFetcher(api_key="test_key")  # pragma: allowlist secret
         result = fetcher.get_news_for_tickers([], days_back=1)
         assert result == {}
 
     def test_get_news_for_tickers_uses_date_range(self):
-        fetcher = FinnhubNewsFetcher(api_key="test_key")
+        fetcher = FinnhubNewsFetcher(api_key="test_key")  # pragma: allowlist secret
         captured_calls = []
 
         def fake_get(symbol, from_date, to_date):
@@ -695,7 +695,7 @@ class TestDailyNewsMonitor:
              patch("src.analyzer.CompanyAnalyzer"), \
              patch("src.news_fetcher.FinnhubNewsFetcher") as MockFetcher, \
              patch("src.news_fetcher.run_news_pipeline") as mock_pipeline:
-            MockFetcher.return_value.api_key = "test_key"
+            MockFetcher.return_value.api_key = "test_key"  # pragma: allowlist secret
             mock_pipeline.return_value = {
                 "tickers_checked": 5,
                 "news_found": 2,
