@@ -819,6 +819,7 @@ class StockScreener:
             # === Score the stock ===
             sector = data.get("sector", "Unknown")
             from .universe_builder import get_cap_category
+
             cap_cat = get_cap_category(market_cap)
             stock_score, score_confidence = score_stock(data, criteria, sector, cap_category=cap_cat)
 

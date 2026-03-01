@@ -63,8 +63,8 @@ DEFAULT_CONFIG_PATH = Path("config/screening_criteria.yaml")
 
 # Approximate Claude API costs (USD) — batch API rates (50% off real-time)
 # Real-time: Haiku ~$0.002, Sonnet ~$0.05. Batch: half price, no latency SLA.
-HAIKU_COST_USD = 0.001    # per quick-screen call (batch)
-SONNET_COST_USD = 0.025   # per deep-analysis call (batch)
+HAIKU_COST_USD = 0.001  # per quick-screen call (batch)
+SONNET_COST_USD = 0.025  # per deep-analysis call (batch)
 
 
 # ─── Utility helpers ────────────────────────────────────────────────────────
@@ -113,7 +113,7 @@ def _build_company_summary(ticker: str, data: dict, notes: str = "") -> str:
     de = data.get("debt_equity")
     if de is not None:
         # yfinance returns debt/equity as a percentage (e.g. 45 → 0.45× ratio)
-        ratio = de / 100.0 if de > 5 else de   # guard against already-ratio values
+        ratio = de / 100.0 if de > 5 else de  # guard against already-ratio values
         lines.append(f"Debt/Equity: {ratio:.2f}×")
 
     if data.get("revenue_growth") is not None:
@@ -135,7 +135,7 @@ def _build_company_summary(ticker: str, data: dict, notes: str = "") -> str:
 
 def _priority_list(
     conviction_tickers: list[str],
-    quality_scores: dict,          # {ticker: QualityScore}
+    quality_scores: dict,  # {ticker: QualityScore}
     all_tickers: list[str],
 ) -> list[str]:
     """
@@ -197,13 +197,15 @@ def step2_fetch_fundamentals(
     logger.info("── Step 2: Fetching fundamentals from yfinance ──")
     tickers = get_tickers(universe)
     criteria = load_criteria_from_yaml()
-    force = set(conviction_tickers)   # bypass max cap for conviction names
+    force = set(conviction_tickers)  # bypass max cap for conviction names
 
     screened = screener.screen_tickers(tickers, criteria, force_include=force)
 
     logger.info(
         "Screened %d stocks from %d universe tickers (%d skipped hard filters)",
-        len(screened), len(tickers), len(tickers) - len(screened),
+        len(screened),
+        len(tickers),
+        len(tickers) - len(screened),
     )
 
     if dry_run:
@@ -288,7 +290,7 @@ def step4_haiku_batch(
 
     candidates = priority[:limit]
     results: dict[str, dict] = {}
-    to_screen: list[tuple[str, str]] = []   # (ticker, summary) pairs for the batch
+    to_screen: list[tuple[str, str]] = []  # (ticker, summary) pairs for the batch
 
     for ticker in candidates:
         existing = db.get_latest_haiku(ticker)
@@ -309,7 +311,8 @@ def step4_haiku_batch(
     cached_count = len(results)
     logger.info(
         "Haiku: %d cached, %d to screen, %d no data",
-        cached_count, len(to_screen),
+        cached_count,
+        len(to_screen),
         len(candidates) - cached_count - len(to_screen),
     )
 
@@ -341,7 +344,10 @@ def step4_haiku_batch(
     passed = sum(1 for r in results.values() if r.get("worth_analysis") or r.get("passed"))
     logger.info(
         "Haiku complete: %d API calls, %d cached, %d/%d passed",
-        len(to_screen), cached_count, passed, len(results),
+        len(to_screen),
+        cached_count,
+        passed,
+        len(results),
     )
     return results
 
@@ -372,14 +378,8 @@ def step5_sonnet_batch(
     logger.info("── Step 5: Sonnet deep analysis via Batch API (limit=%d) ──", limit)
 
     conviction_set = set(conviction_tickers)
-    haiku_passes = set(
-        t for t, r in haiku_results.items()
-        if r.get("worth_analysis") or r.get("passed")
-    )
-    candidates = [
-        t for t in priority
-        if t in conviction_set or t in haiku_passes
-    ][:limit]
+    haiku_passes = set(t for t, r in haiku_results.items() if r.get("worth_analysis") or r.get("passed"))
+    candidates = [t for t in priority if t in conviction_set or t in haiku_passes][:limit]
 
     to_analyze: list[dict] = []
     skipped = 0
@@ -398,12 +398,14 @@ def step5_sonnet_batch(
             continue
 
         notes = conviction_notes.get(ticker, "")
-        to_analyze.append({
-            "symbol": ticker,
-            "company_name": data.get("name", ticker),
-            "filing_text": _build_company_summary(ticker, data, notes),
-            "sector": data.get("sector", ""),
-        })
+        to_analyze.append(
+            {
+                "symbol": ticker,
+                "company_name": data.get("name", ticker),
+                "filing_text": _build_company_summary(ticker, data, notes),
+                "sector": data.get("sector", ""),
+            }
+        )
 
     logger.info("Sonnet: %d to analyze, %d cached", len(to_analyze), skipped)
 
@@ -429,10 +431,8 @@ def step5_sonnet_batch(
             conviction=analysis.conviction,
             moat_rating=analysis.moat_rating.value.upper(),
             moat_sources=analysis.moat_sources,
-            fair_value=(
-                (analysis.estimated_fair_value_low or 0)
-                + (analysis.estimated_fair_value_high or 0)
-            ) / 2 or None,
+            fair_value=((analysis.estimated_fair_value_low or 0) + (analysis.estimated_fair_value_high or 0)) / 2
+            or None,
             target_entry=analysis.target_entry_price,
             investment_thesis=analysis.summary,
             key_risks=analysis.key_risks,
@@ -463,7 +463,9 @@ def step5_sonnet_batch(
 
         logger.info(
             "%s → Tier %s (%s conviction, gap=%.0f%%)",
-            ticker, tier_assignment.tier, analysis.conviction,
+            ticker,
+            tier_assignment.tier,
+            analysis.conviction,
             (tier_assignment.price_gap_pct or 0) * 100,
         )
 
@@ -509,7 +511,7 @@ def step6_report(db: Database) -> None:
     scored = [s for s in universe if s.get("quality_score") is not None]
     scored.sort(key=lambda s: s["quality_score"], reverse=True)
     if scored:
-        print(f"\nTop 10 quality scores:")
+        print("\nTop 10 quality scores:")
         for s in scored[:10]:
             print(
                 f"  {s['ticker']:8s}  {s['quality_score']:5.1f}  "
@@ -520,9 +522,7 @@ def step6_report(db: Database) -> None:
     for cap_type in ("weekly_news_haiku", "weekly_news_sonnet"):
         status = db.get_budget_status(cap_type)
         if status:
-            print(
-                f"\n{cap_type}: {status['calls_used']}/{status['max_calls']} used"
-            )
+            print(f"\n{cap_type}: {status['calls_used']}/{status['max_calls']} used")
 
     print()
 
@@ -580,6 +580,7 @@ def main(argv: list[str] | None = None) -> int:
     logger.info("── Building three-pool universe ──")
     if args.conviction_only:
         from src.universe_builder import _read_conviction_pool
+
         universe = _read_conviction_pool(conviction_yaml)
         logger.info("Conviction-only mode: %d stocks", len(universe))
     else:
@@ -591,6 +592,7 @@ def main(argv: list[str] | None = None) -> int:
     # Load conviction notes for LLM context
     conviction_notes: dict[str, str] = {}
     import yaml
+
     if conviction_yaml.exists():
         with open(conviction_yaml) as f:
             raw = yaml.safe_load(f)
@@ -603,9 +605,7 @@ def main(argv: list[str] | None = None) -> int:
     step1_sync_universe(db, universe, args.dry_run)
 
     # ── Step 2: Fetch fundamentals ─────────────────────────────────────────
-    screened = step2_fetch_fundamentals(
-        screener, universe, conviction_tickers, db, args.dry_run
-    )
+    screened = step2_fetch_fundamentals(screener, universe, conviction_tickers, db, args.dry_run)
 
     # Build data map for LLM steps
     data_map = _screened_to_data_map(screened)
@@ -618,7 +618,9 @@ def main(argv: list[str] | None = None) -> int:
     priority = _priority_list(conviction_tickers, quality_scores, all_tickers_screened)
     logger.info(
         "Priority queue: %d tickers (%d conviction, %d other)",
-        len(priority), len(conviction_tickers), len(priority) - len(conviction_tickers),
+        len(priority),
+        len(conviction_tickers),
+        len(priority) - len(conviction_tickers),
     )
 
     haiku_results: dict[str, dict] = {}
@@ -630,6 +632,7 @@ def main(argv: list[str] | None = None) -> int:
         # ── Step 4: Haiku batch ───────────────────────────────────────────
         try:
             from src.analyzer import CompanyAnalyzer
+
             analyzer = CompanyAnalyzer()
         except Exception as exc:
             logger.error("Could not initialise CompanyAnalyzer: %s", exc)
@@ -638,20 +641,33 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
         haiku_results = step4_haiku_batch(
-            analyzer, priority, data_map, conviction_notes,
-            db, args.dry_run, args.haiku_limit,
+            analyzer,
+            priority,
+            data_map,
+            conviction_notes,
+            db,
+            args.dry_run,
+            args.haiku_limit,
         )
         # Count only the results that came from API calls (not pre-cached)
         haiku_calls = sum(
-            1 for r in haiku_results.values()
+            1
+            for r in haiku_results.values()
             if not (r.get("expires_at") and r.get("screened_at"))  # cached rows have both
         )
         total_cost += haiku_calls * HAIKU_COST_USD
 
         # ── Step 5: Sonnet batch ──────────────────────────────────────────
         sonnet_calls = step5_sonnet_batch(
-            analyzer, haiku_results, priority, conviction_tickers,
-            data_map, conviction_notes, db, args.dry_run, args.sonnet_limit,
+            analyzer,
+            haiku_results,
+            priority,
+            conviction_tickers,
+            data_map,
+            conviction_notes,
+            db,
+            args.dry_run,
+            args.sonnet_limit,
         )
         total_cost += sonnet_calls * SONNET_COST_USD
 
@@ -669,7 +685,11 @@ def main(argv: list[str] | None = None) -> int:
 
     logger.info(
         "Bulk load complete. Estimated cost: $%.2f  (haiku=%d × $%.3f, sonnet=%d × $%.2f)",
-        total_cost, haiku_calls, HAIKU_COST_USD, sonnet_calls, SONNET_COST_USD,
+        total_cost,
+        haiku_calls,
+        HAIKU_COST_USD,
+        sonnet_calls,
+        SONNET_COST_USD,
     )
     return 0
 

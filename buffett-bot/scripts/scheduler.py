@@ -37,7 +37,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 # Approximate batch API costs (50% off real-time)
-_HAIKU_COST_USD = 0.001   # per Haiku quick-screen call
+_HAIKU_COST_USD = 0.001  # per Haiku quick-screen call
 _SONNET_COST_USD = 0.025  # per Sonnet deep-analysis call
 
 
@@ -428,9 +428,7 @@ def monday_maintenance():
                     cap_category=stock.cap_category,
                     source=source_map.get(stock.symbol, "finviz_screen"),
                 )
-            logger.info(
-                "Refreshed fundamentals for %d/%d universe stocks", len(screened), len(tickers)
-            )
+            logger.info("Refreshed fundamentals for %d/%d universe stocks", len(screened), len(tickers))
 
             # Recompute quality scores from fresh data
             compat = [{**s.to_dict(), "ticker": s.symbol} for s in screened]
@@ -549,13 +547,14 @@ def wednesday_haiku_batch():
         candidates = candidates[:allowed]
         logger.info(
             "Haiku batch: %d unscreened + %d expiring → %d candidates (%d budget-allowed)",
-            len(unscreened), len(expiring), len(seen), allowed,
+            len(unscreened),
+            len(expiring),
+            len(seen),
+            allowed,
         )
 
         # Build summaries from DB (Monday refresh provides up-to-date data)
-        to_screen: list[tuple[str, str]] = [
-            (ticker, _build_db_summary(ticker, db)) for ticker in candidates
-        ]
+        to_screen: list[tuple[str, str]] = [(ticker, _build_db_summary(ticker, db)) for ticker in candidates]
 
         run_id = db.start_run("wednesday_haiku")
         analyzer = CompanyAnalyzer()
@@ -579,9 +578,7 @@ def wednesday_haiku_batch():
             haiku_calls=len(batch_results),
             total_cost_usd=len(batch_results) * _HAIKU_COST_USD,
         )
-        logger.info(
-            "Wednesday Haiku batch complete: %d screened, %d passed", len(batch_results), passed
-        )
+        logger.info("Wednesday Haiku batch complete: %d screened, %d passed", len(batch_results), passed)
 
     except Exception as e:
         logger.error("Wednesday Haiku batch failed: %s", e)
@@ -620,19 +617,19 @@ def friday_sonnet_batch():
             return
 
         candidates = candidates[:allowed]
-        logger.info(
-            "Sonnet batch: %d candidates (%d budget-allowed)", len(candidates), allowed
-        )
+        logger.info("Sonnet batch: %d candidates (%d budget-allowed)", len(candidates), allowed)
 
         to_analyze: list[dict] = []
         for ticker in candidates:
             u = db.get_universe_stock(ticker)
-            to_analyze.append({
-                "symbol": ticker,
-                "company_name": (u or {}).get("company_name", ticker),
-                "filing_text": _build_db_summary(ticker, db),
-                "sector": (u or {}).get("sector", ""),
-            })
+            to_analyze.append(
+                {
+                    "symbol": ticker,
+                    "company_name": (u or {}).get("company_name", ticker),
+                    "filing_text": _build_db_summary(ticker, db),
+                    "sector": (u or {}).get("sector", ""),
+                }
+            )
 
         run_id = db.start_run("friday_sonnet")
         analyzer = CompanyAnalyzer()
@@ -650,10 +647,8 @@ def friday_sonnet_batch():
                 conviction=analysis.conviction,
                 moat_rating=analysis.moat_rating.value.upper(),
                 moat_sources=analysis.moat_sources,
-                fair_value=(
-                    (analysis.estimated_fair_value_low or 0)
-                    + (analysis.estimated_fair_value_high or 0)
-                ) / 2 or None,
+                fair_value=((analysis.estimated_fair_value_low or 0) + (analysis.estimated_fair_value_high or 0)) / 2
+                or None,
                 target_entry=analysis.target_entry_price,
                 investment_thesis=analysis.summary,
                 key_risks=analysis.key_risks,
@@ -669,9 +664,7 @@ def friday_sonnet_batch():
             )
 
             if tier_assignment.tier in ("S", "A", "B"):
-                entries = staged_entry_suggestion(
-                    analysis.target_entry_price, tier_assignment.tier
-                )
+                entries = staged_entry_suggestion(analysis.target_entry_price, tier_assignment.tier)
                 db.upsert_price_alert(
                     ticker,
                     tier=tier_assignment.tier,
@@ -683,7 +676,9 @@ def friday_sonnet_batch():
 
             logger.info(
                 "%s → Tier %s (%s conviction, gap=%.0f%%)",
-                ticker, tier_assignment.tier, analysis.conviction,
+                ticker,
+                tier_assignment.tier,
+                analysis.conviction,
                 (tier_assignment.price_gap_pct or 0) * 100,
             )
 
@@ -765,10 +760,14 @@ def run_scheduler():
     logger.info("  - Wednesday Haiku:     Every Wednesday at 07:00 (Haiku batch, ~$0.05/wk)")
     logger.info("  - Friday Sonnet:       Every Friday at 07:00   (Sonnet batch, ~$0.13/wk)")
     logger.info("  - Weekly screen:       Every Friday at 17:00   (yfinance, free)")
-    logger.info(f"  - Weekly auto-trade:   Every Friday at 18:00   (Haiku ~$0.10-0.20) [{'ON' if auto_trade else 'OFF'}]")
+    logger.info(
+        f"  - Weekly auto-trade:   Every Friday at 18:00   (Haiku ~$0.10-0.20) [{'ON' if auto_trade else 'OFF'}]"
+    )
     logger.info("  - Daily check:         Every day at 08:00      (yfinance, free)")
     logger.info("  - Daily news monitor:  Every day at 20:00      (Haiku+Sonnet, ~$0.30/wk max)")
-    logger.info(f"  - Monthly briefing:    1st of month at 09:00   (Sonnet ~$0.50) [{'ON' if auto_briefing else 'OFF'}]")
+    logger.info(
+        f"  - Monthly briefing:    1st of month at 09:00   (Sonnet ~$0.50) [{'ON' if auto_briefing else 'OFF'}]"
+    )
     logger.info("")
     logger.info("BUDGET CAPS (weekly, reset Monday 02:00):")
     logger.info("  weekly_haiku_screen:    50 calls/week ($0.05 max)")

@@ -21,7 +21,7 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Iterator, Optional, Union
 
 import yaml
 
@@ -199,8 +199,8 @@ CREATE INDEX IF NOT EXISTS idx_haiku_latest
 BUDGET_CAPS_DEFAULTS = [
     ("weekly_news_sonnet", 10),
     ("weekly_news_haiku", 50),
-    ("weekly_haiku_screen", 50),    # scheduled Wednesday Haiku batch
-    ("weekly_sonnet_analysis", 10), # scheduled Friday Sonnet batch
+    ("weekly_haiku_screen", 50),  # scheduled Wednesday Haiku batch
+    ("weekly_sonnet_analysis", 10),  # scheduled Friday Sonnet batch
 ]
 
 
@@ -295,7 +295,9 @@ class Database:
                 conn.execute("ROLLBACK")
                 logger.info(
                     "Budget cap exhausted for %r: %d/%d",
-                    cap_type, row["calls_used"], row["max_calls"],
+                    cap_type,
+                    row["calls_used"],
+                    row["max_calls"],
                 )
                 return False
             conn.execute(
@@ -365,7 +367,9 @@ class Database:
                 conn.execute("ROLLBACK")
                 logger.info(
                     "Budget cap exhausted for %r: %d/%d",
-                    cap_type, row["calls_used"], row["max_calls"],
+                    cap_type,
+                    row["calls_used"],
+                    row["max_calls"],
                 )
                 return 0
             conn.execute(
@@ -461,9 +465,7 @@ class Database:
     def get_universe_stock(self, ticker: str) -> Optional[dict]:
         """Return a single universe row for ticker, or None if not found."""
         with _open(self.path) as conn:
-            row = conn.execute(
-                "SELECT * FROM universe WHERE ticker = ?", (ticker,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM universe WHERE ticker = ?", (ticker,)).fetchone()
             return dict(row) if row else None
 
     # ── Fundamentals ─────────────────────────────────────────────────────────
@@ -480,7 +482,8 @@ class Database:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    ticker, as_of,
+                    ticker,
+                    as_of,
                     data.get("price"),
                     data.get("pe_ratio"),
                     data.get("roe"),
@@ -573,9 +576,15 @@ class Database:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    ticker, now.isoformat(), tier, conviction, moat_rating,
+                    ticker,
+                    now.isoformat(),
+                    tier,
+                    conviction,
+                    moat_rating,
                     json.dumps(moat_sources or []),
-                    fair_value, target_entry, investment_thesis,
+                    fair_value,
+                    target_entry,
+                    investment_thesis,
                     json.dumps(key_risks or []),
                     json.dumps(thesis_breakers or []),
                     expires,
@@ -662,7 +671,7 @@ class Database:
         *,
         tier: str,
         target_entry: Optional[float],
-        staged_entries: Optional[dict],
+        staged_entries: Optional[Union[dict, list]],
         last_price: Optional[float],
         gap_pct: Optional[float],
         alert_triggered: bool = False,
@@ -682,9 +691,13 @@ class Database:
                     alert_triggered = excluded.alert_triggered
                 """,
                 (
-                    ticker, tier, target_entry,
+                    ticker,
+                    tier,
+                    target_entry,
                     json.dumps(staged_entries) if staged_entries else None,
-                    last_price, gap_pct, int(alert_triggered),
+                    last_price,
+                    gap_pct,
+                    int(alert_triggered),
                 ),
             )
 
@@ -694,7 +707,7 @@ class Database:
             if tiers:
                 placeholders = ",".join("?" * len(tiers))
                 rows = conn.execute(
-                    f"SELECT * FROM price_alerts WHERE tier IN ({placeholders}) ORDER BY gap_pct ASC",
+                    f"SELECT * FROM price_alerts WHERE tier IN ({placeholders}) ORDER BY gap_pct ASC",  # nosec B608
                     tiers,
                 ).fetchall()
             else:
@@ -812,7 +825,11 @@ class Database:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    ticker, headline, source, published_at, event_type,
+                    ticker,
+                    headline,
+                    source,
+                    published_at,
+                    event_type,
                     None if haiku_material is None else int(haiku_material),
                     None if sonnet_triggered is None else int(sonnet_triggered),
                     summary,
@@ -856,8 +873,16 @@ class Database:
                     last_synced   = CURRENT_TIMESTAMP
                 """,
                 (
-                    ticker, tier_at_entry, entry_stage, entry_price, entry_date,
-                    shares, cost_basis, current_price, current_value, gain_loss_pct,
+                    ticker,
+                    tier_at_entry,
+                    entry_stage,
+                    entry_price,
+                    entry_date,
+                    shares,
+                    cost_basis,
+                    current_price,
+                    current_value,
+                    gain_loss_pct,
                 ),
             )
 
@@ -910,7 +935,9 @@ class Database:
 
         logger.info(
             "Retention cleanup: deleted %d fundamentals, %d haiku_screens, %d news_events",
-            deleted["fundamentals"], deleted["haiku_screens"], deleted["news_events"],
+            deleted["fundamentals"],
+            deleted["haiku_screens"],
+            deleted["news_events"],
         )
         return deleted
 
@@ -961,7 +988,6 @@ class Database:
                 )
 
                 # Save deep analysis
-                analyzed_at_str = entry.get("analyzed_at")
                 conviction = analysis.get("conviction", "LOW")
                 moat_str = analysis.get("moat_rating", "none")
                 moat_rating = moat_str.upper() if moat_str else "NONE"
@@ -1024,9 +1050,7 @@ class Database:
             ).fetchall()
             return [r["ticker"] for r in rows]
 
-    def get_expiring_haiku_tickers(
-        self, within_days: int = 30, limit: int = 20
-    ) -> list[str]:
+    def get_expiring_haiku_tickers(self, within_days: int = 30, limit: int = 20) -> list[str]:
         """
         Return tickers whose latest Haiku result expires within N days
         (but has not yet expired).  Ranked by quality score descending.

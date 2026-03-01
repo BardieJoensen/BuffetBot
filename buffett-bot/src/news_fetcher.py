@@ -412,9 +412,7 @@ def run_news_pipeline(
             continue
 
         stats["news_found"] += 1
-        logger.info(
-            "%s: %d raw → %d material news item(s)", ticker, len(raw_news), len(material)
-        )
+        logger.info("%s: %d raw → %d material news item(s)", ticker, len(raw_news), len(material))
 
         # Gather context for Haiku check
         da = db.get_latest_deep_analysis(ticker)
@@ -424,18 +422,14 @@ def run_news_pipeline(
 
         # 3. Haiku materiality check
         if not db.can_spend("weekly_news_haiku"):
-            logger.info(
-                "weekly_news_haiku budget exhausted — skipping Haiku check for %s", ticker
-            )
+            logger.info("weekly_news_haiku budget exhausted — skipping Haiku check for %s", ticker)
             continue
 
         stats["haiku_calls"] += 1
         top_item = material[0]
 
         try:
-            haiku_result = analyzer.check_news_for_red_flags(
-                ticker, thesis, thesis_breakers, formatted_news
-            )
+            haiku_result = analyzer.check_news_for_red_flags(ticker, thesis, thesis_breakers, formatted_news)
         except Exception as exc:
             logger.warning("Haiku news check failed for %s: %s", ticker, exc)
             db.log_news_event(
@@ -475,9 +469,7 @@ def run_news_pipeline(
 
         # 4. Sonnet re-analysis
         if not db.can_spend("weekly_news_sonnet"):
-            logger.info(
-                "weekly_news_sonnet budget exhausted — skipping Sonnet for %s", ticker
-            )
+            logger.info("weekly_news_sonnet budget exhausted — skipping Sonnet for %s", ticker)
             continue
 
         u = db.get_universe_stock(ticker)
@@ -503,8 +495,7 @@ def run_news_pipeline(
         tier_assignment = assign_tier(analysis)
 
         fair_value_mid = (
-            ((analysis.estimated_fair_value_low or 0) + (analysis.estimated_fair_value_high or 0))
-            / 2
+            ((analysis.estimated_fair_value_low or 0) + (analysis.estimated_fair_value_high or 0)) / 2
         ) or None
 
         db.save_deep_analysis(
@@ -533,9 +524,7 @@ def run_news_pipeline(
         # the next day's get_price_alerts(tiers=["S","A","B"]) query.
         # Without this, a B→C downgrade leaves a stale B-tier alert and the
         # stock continues to consume Haiku budget on subsequent news cycles.
-        entries = staged_entry_suggestion(
-            analysis.target_entry_price or 0, tier_assignment.tier
-        )
+        entries = staged_entry_suggestion(analysis.target_entry_price or 0, tier_assignment.tier)
         db.upsert_price_alert(
             ticker,
             tier=tier_assignment.tier,
@@ -548,10 +537,7 @@ def run_news_pipeline(
         # 5. Notify on tier change
         if old_tier != tier_assignment.tier:
             stats["tier_changes"] += 1
-            msg = (
-                f"Tier changed: {old_tier} → {tier_assignment.tier} "
-                f"(news-triggered, recommendation={recommendation})"
-            )
+            msg = f"Tier changed: {old_tier} → {tier_assignment.tier} (news-triggered, recommendation={recommendation})"
             logger.info("%s: %s", ticker, msg)
             if notifier:
                 try:

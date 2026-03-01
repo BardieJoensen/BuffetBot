@@ -71,6 +71,7 @@ def main(output_dir: str = "./data/briefings", days_back: int = 7, send_notifica
     if send_notifications:
         try:
             from src.notifications import NotificationManager
+
             notifier = NotificationManager()
             html_path = sorted(out_path.glob("briefing_*.html"), key=lambda p: p.stat().st_mtime)
             html_content = html_path[-1].read_text() if html_path else None
@@ -84,7 +85,6 @@ def main(output_dir: str = "./data/briefings", days_back: int = 7, send_notifica
         logger.info("Notifications skipped (send_notifications=False)")
 
     # Log a summary
-    from src.database import Database as _DB  # re-open for summary reads
     alerts = db.get_price_alerts()
     s_count = sum(1 for a in alerts if a["tier"] == "S")
     a_count = sum(1 for a in alerts if a["tier"] == "A")
@@ -103,8 +103,8 @@ def main(output_dir: str = "./data/briefings", days_back: int = 7, send_notifica
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate DB-driven Buffett Bot briefing")
     parser.add_argument("--output-dir", default="./data/briefings", help="Output directory for briefing files")
-    parser.add_argument("--days-back",  type=int, default=7,         help="Days back for news digest (default 7)")
-    parser.add_argument("--no-notify",  action="store_true",          help="Skip sending notifications")
+    parser.add_argument("--days-back", type=int, default=7, help="Days back for news digest (default 7)")
+    parser.add_argument("--no-notify", action="store_true", help="Skip sending notifications")
     args = parser.parse_args()
 
     main(

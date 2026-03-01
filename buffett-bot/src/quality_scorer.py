@@ -30,7 +30,7 @@ WEIGHTS = {
     "roe": 0.20,
     "fcf_yield": 0.20,
     "operating_margin": 0.15,
-    "low_debt": 0.15,   # inverted debt_equity: lower debt = higher score
+    "low_debt": 0.15,  # inverted debt_equity: lower debt = higher score
 }
 
 assert abs(sum(WEIGHTS.values()) - 1.0) < 1e-9, "Weights must sum to 1.0"
@@ -41,13 +41,13 @@ class QualityScore:
     """Quality score and component percentile ranks for a single stock."""
 
     ticker: str
-    score: float                           # 0–100 composite
-    roic_pct: Optional[float]             # Percentile rank 0–100 (or None if no data)
+    score: float  # 0–100 composite
+    roic_pct: Optional[float]  # Percentile rank 0–100 (or None if no data)
     roe_pct: Optional[float]
     fcf_yield_pct: Optional[float]
     operating_margin_pct: Optional[float]
     low_debt_pct: Optional[float]
-    data_coverage: float                   # Fraction of metrics available (0.0–1.0)
+    data_coverage: float  # Fraction of metrics available (0.0–1.0)
 
     def to_dict(self) -> dict:
         return {
@@ -57,7 +57,9 @@ class QualityScore:
                 "roic_pct": round(self.roic_pct, 1) if self.roic_pct is not None else None,
                 "roe_pct": round(self.roe_pct, 1) if self.roe_pct is not None else None,
                 "fcf_yield_pct": round(self.fcf_yield_pct, 1) if self.fcf_yield_pct is not None else None,
-                "operating_margin_pct": round(self.operating_margin_pct, 1) if self.operating_margin_pct is not None else None,
+                "operating_margin_pct": round(self.operating_margin_pct, 1)
+                if self.operating_margin_pct is not None
+                else None,
                 "low_debt_pct": round(self.low_debt_pct, 1) if self.low_debt_pct is not None else None,
             },
             "data_coverage": round(self.data_coverage, 2),
@@ -139,16 +141,12 @@ def compute_quality_scores(stocks: list) -> dict[str, "QualityScore"]:
             getattr(s, "real_fcf_yield", None) if hasattr(s, "real_fcf_yield") else s.get("real_fcf_yield")
         )
         if fcf_val is None:
-            fcf_val = _safe_float(
-                getattr(s, "fcf_yield", None) if hasattr(s, "fcf_yield") else s.get("fcf_yield")
-            )
+            fcf_val = _safe_float(getattr(s, "fcf_yield", None) if hasattr(s, "fcf_yield") else s.get("fcf_yield"))
 
         margin_val = _safe_float(
             getattr(s, "operating_margin", None) if hasattr(s, "operating_margin") else s.get("operating_margin")
         )
-        debt_val = _safe_float(
-            getattr(s, "debt_equity", None) if hasattr(s, "debt_equity") else s.get("debt_equity")
-        )
+        debt_val = _safe_float(getattr(s, "debt_equity", None) if hasattr(s, "debt_equity") else s.get("debt_equity"))
 
         roic_data.append((t, roic_val))
         roe_data.append((t, roe_val))

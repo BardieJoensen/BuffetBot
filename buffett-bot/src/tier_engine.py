@@ -72,13 +72,13 @@ class TierAssignment:
     """Result of tier assignment for a single stock."""
 
     symbol: str
-    tier: str                              # S, A, B, or C
-    quality_level: str                     # "wonderful", "good", "moderate", "low"
+    tier: str  # S, A, B, or C
+    quality_level: str  # "wonderful", "good", "moderate", "low"
     tier_reason: str
     target_entry_price: Optional[float] = None
     current_price: Optional[float] = None
     price_gap_pct: Optional[float] = None  # (current - target) / target; negative = below target
-    approaching_target: bool = False       # True when B-tier stock within proximity_alert_pct of target
+    approaching_target: bool = False  # True when B-tier stock within proximity_alert_pct of target
 
 
 @dataclass
@@ -86,7 +86,7 @@ class WatchlistMovement:
     """A tier change since the last run."""
 
     symbol: str
-    change_type: str            # "new", "removed", "tier_up", "tier_down", "approaching"
+    change_type: str  # "new", "removed", "tier_up", "tier_down", "approaching"
     detail: str
     previous_tier: Optional[str] = None
     current_tier: Optional[str] = None
@@ -116,7 +116,7 @@ def assign_tier(
     When no price data is available, quality stocks default to B (can't
     confirm the price is right, but worth watching).
     """
-    moat = analysis.moat_rating.value      # "wide", "narrow", "none"
+    moat = analysis.moat_rating.value  # "wide", "narrow", "none"
     conviction = analysis.conviction_level  # "HIGH", "MEDIUM", "LOW"
     symbol = analysis.symbol
 
@@ -219,9 +219,7 @@ def assign_tier(
             symbol=symbol,
             tier="B",
             quality_level=quality,
-            tier_reason=(
-                f"{quality.title()} quality but {gap:+.0%} above target ${target:,.0f} — watching"
-            ),
+            tier_reason=(f"{quality.title()} quality but {gap:+.0%} above target ${target:,.0f} — watching"),
             target_entry_price=target,
             current_price=current,
             price_gap_pct=gap,
@@ -233,9 +231,7 @@ def assign_tier(
         symbol=symbol,
         tier="C",
         quality_level=quality,
-        tier_reason=(
-            f"{quality.title()} quality but {gap:+.0%} above target — extreme premium, monitor passively"
-        ),
+        tier_reason=(f"{quality.title()} quality but {gap:+.0%} above target — extreme premium, monitor passively"),
         target_entry_price=target,
         current_price=current,
         price_gap_pct=gap,

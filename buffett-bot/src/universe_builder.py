@@ -30,7 +30,7 @@ Usage:
 
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -40,8 +40,8 @@ import yaml
 logger = logging.getLogger(__name__)
 
 # Market-cap boundaries
-LARGE_CAP_THRESHOLD = 10_000_000_000   # $10B
-MID_CAP_THRESHOLD = 2_000_000_000      # $2B
+LARGE_CAP_THRESHOLD = 10_000_000_000  # $10B
+MID_CAP_THRESHOLD = 2_000_000_000  # $2B
 
 # Cache TTL for the S&P 500 constituent list
 SP500_CACHE_DAYS = 7
@@ -62,8 +62,8 @@ class UniverseStock:
     """A single stock entry in the merged universe."""
 
     ticker: str
-    source: str        # 'conviction', 'sp500_filter', 'finviz_screen'
-    notes: str = ""    # human notes from conviction list, empty for other pools
+    source: str  # 'conviction', 'sp500_filter', 'finviz_screen'
+    notes: str = ""  # human notes from conviction list, empty for other pools
 
     def __eq__(self, other) -> bool:
         return isinstance(other, UniverseStock) and self.ticker == other.ticker
@@ -118,11 +118,13 @@ def _read_conviction_pool(yaml_path: Path) -> list[UniverseStock]:
         ticker = entry.get("ticker", "").strip().upper()
         if not ticker:
             continue
-        stocks.append(UniverseStock(
-            ticker=ticker,
-            source="conviction",
-            notes=entry.get("notes", ""),
-        ))
+        stocks.append(
+            UniverseStock(
+                ticker=ticker,
+                source="conviction",
+                notes=entry.get("notes", ""),
+            )
+        )
 
     logger.info("Conviction pool: %d stocks loaded from %s", len(stocks), yaml_path)
     return stocks
@@ -208,19 +210,53 @@ def _sp500_curated_fallback() -> list[UniverseStock]:
     """
     tickers = [
         # Tech platform moats
-        "GOOGL", "META", "AMZN", "CRM", "NOW", "WDAY",
+        "GOOGL",
+        "META",
+        "AMZN",
+        "CRM",
+        "NOW",
+        "WDAY",
         # Healthcare / Life Sciences
-        "ABT", "MDT", "BSX", "SYK", "EW", "IDXX", "A", "BIO",
+        "ABT",
+        "MDT",
+        "BSX",
+        "SYK",
+        "EW",
+        "IDXX",
+        "A",
+        "BIO",
         # Consumer staples
-        "CL", "CHD", "CLX", "K", "GIS", "CAG",
+        "CL",
+        "CHD",
+        "CLX",
+        "K",
+        "GIS",
+        "CAG",
         # Financials / Insurance
-        "CB", "TRV", "AFL", "PRU", "MET", "ALL",
+        "CB",
+        "TRV",
+        "AFL",
+        "PRU",
+        "MET",
+        "ALL",
         # Industrials
-        "HON", "MMM", "EMR", "ROK", "DOV", "PH", "FAST",
+        "HON",
+        "MMM",
+        "EMR",
+        "ROK",
+        "DOV",
+        "PH",
+        "FAST",
         # Materials
-        "APD", "SHW", "ECL", "PPG",
+        "APD",
+        "SHW",
+        "ECL",
+        "PPG",
         # REITs / Infrastructure (quality)
-        "PLD", "AMT", "CCI", "EQIX",
+        "PLD",
+        "AMT",
+        "CCI",
+        "EQIX",
     ]
     return [UniverseStock(ticker=t, source="sp500_filter") for t in tickers]
 
@@ -236,8 +272,7 @@ def _load_sp500_cache(cache_file: Path) -> Optional[list[UniverseStock]]:
             logger.info("S&P 500 cache expired — will refresh")
             return None
         tickers = data.get("tickers", [])
-        logger.info("S&P 500 pool: %d stocks from cache (%s)", len(tickers),
-                    cached_at.strftime("%Y-%m-%d"))
+        logger.info("S&P 500 pool: %d stocks from cache (%s)", len(tickers), cached_at.strftime("%Y-%m-%d"))
         return [UniverseStock(ticker=t, source="sp500_filter") for t in tickers]
     except Exception as exc:
         logger.warning("Failed to load S&P 500 cache: %s", exc)
@@ -248,12 +283,17 @@ def _save_sp500_cache(cache_file: Path, tickers: list[str]) -> None:
     """Save S&P 500 tickers to cache."""
     try:
         cache_file.parent.mkdir(parents=True, exist_ok=True)
-        cache_file.write_text(json.dumps({
-            "tickers": tickers,
-            "cached_at": datetime.now().isoformat(),
-            "count": len(tickers),
-            "source": "wikipedia",
-        }, indent=2))
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "tickers": tickers,
+                    "cached_at": datetime.now().isoformat(),
+                    "count": len(tickers),
+                    "source": "wikipedia",
+                },
+                indent=2,
+            )
+        )
     except Exception as exc:
         logger.warning("Failed to save S&P 500 cache: %s", exc)
 
@@ -270,6 +310,7 @@ def _fetch_finviz_pool(cache_dir: Path) -> list[UniverseStock]:
     """
     try:
         from src.universe import get_stock_universe, set_cache_dir
+
         set_cache_dir(cache_dir)
         tickers = get_stock_universe()
         stocks = [UniverseStock(ticker=t, source="finviz_screen") for t in tickers]
