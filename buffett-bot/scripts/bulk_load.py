@@ -209,9 +209,7 @@ def step2_fetch_fundamentals(
     # large caps like AAPL ($3T+) are not rejected by the $10B hard limit.
     force_large = {s.ticker for s in universe if s.source == "sp500_filter"}
 
-    screened = screener.screen_tickers(
-        tickers, criteria, force_include=force, force_large_cap=force_large
-    )
+    screened = screener.screen_tickers(tickers, criteria, force_include=force, force_large_cap=force_large)
 
     logger.info(
         "Screened %d stocks from %d universe tickers (%d skipped hard filters)",
