@@ -200,7 +200,7 @@ class TestFullWeeklyCycle:
         ]
 
         fetcher = MagicMock(spec=FinnhubNewsFetcher)
-        fetcher.api_key = "test_key"
+        fetcher.api_key = "test_key"  # pragma: allowlist secret
         fetcher.get_news_for_tickers.return_value = {"ORCL": news_items}
 
         # Haiku: REVIEW — not a red flag, but warrants re-examination

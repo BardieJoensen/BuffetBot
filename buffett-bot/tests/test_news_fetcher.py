@@ -99,7 +99,7 @@ def _exhaust_budget(db, cap_type):
 def _make_fetcher(news_map: dict) -> MagicMock:
     """Return a FinnhubNewsFetcher mock whose get_news_for_tickers returns news_map."""
     fetcher = MagicMock(spec=FinnhubNewsFetcher)
-    fetcher.api_key = "test_key"
+    fetcher.api_key = "test_key"  # pragma: allowlist secret
     fetcher.get_news_for_tickers.return_value = news_map
     return fetcher
 
