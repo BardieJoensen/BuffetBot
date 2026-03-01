@@ -168,11 +168,15 @@ def _fetch_sp500_from_wikipedia() -> Optional[list[str]]:
     """Fetch S&P 500 constituent tickers from Wikipedia table."""
     try:
         import pandas as pd
+        import requests
 
         url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-        tables = pd.read_html(url, attrs={"id": "constituents"})
+        headers = {"User-Agent": "BuffettBot/1.0 (https://github.com/BardieJoensen/BuffetBot; investment research bot)"}
+        resp = requests.get(url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        tables = pd.read_html(resp.text, attrs={"id": "constituents"})
         if not tables:
-            tables = pd.read_html(url)
+            tables = pd.read_html(resp.text)
         df = tables[0]
 
         # Find the ticker column — Wikipedia uses 'Symbol' or 'Ticker symbol'
@@ -204,42 +208,102 @@ def _fetch_sp500_from_wikipedia() -> Optional[list[str]]:
 
 def _sp500_curated_fallback() -> list[UniverseStock]:
     """
-    Curated list of high-quality S&P 500 large caps.
+    Curated list of high-quality S&P 500 large caps (~105 names).
     Used only when Wikipedia is unreachable.
-    These supplement (not replace) the conviction list.
+    Broad sector coverage so the fallback is a credible standalone source.
     """
     tickers = [
-        # Tech platform moats
+        # Mega-cap tech
+        "MSFT",
+        "AAPL",
+        "NVDA",
         "GOOGL",
         "META",
         "AMZN",
+        # Software / SaaS
+        "ADBE",
         "CRM",
         "NOW",
         "WDAY",
-        # Healthcare / Life Sciences
+        "ANSS",
+        "CDNS",
+        "MSCI",
+        "INTU",
+        # Semiconductors
+        "AVGO",
+        "TXN",
+        "AMAT",
+        "KLAC",
+        "LRCX",
+        "MCHP",
+        # Healthcare — pharma / biotech
+        "LLY",
+        "JNJ",
+        "MRK",
+        "PFE",
+        "ABBV",
+        "AMGN",
+        "GILD",
+        "REGN",
+        # Healthcare — devices / tools
         "ABT",
         "MDT",
         "BSX",
         "SYK",
         "EW",
         "IDXX",
+        "DHR",
+        "TMO",
         "A",
-        "BIO",
+        "ZBH",
+        "HOLX",
         # Consumer staples
+        "PG",
+        "KO",
+        "PEP",
+        "PM",
+        "MO",
+        "KMB",
+        "WMT",
+        "COST",
         "CL",
         "CHD",
         "CLX",
         "K",
         "GIS",
         "CAG",
-        # Financials / Insurance
+        # Consumer discretionary
+        "MCD",
+        "SBUX",
+        "NKE",
+        "ORLY",
+        "AZO",
+        "BKNG",
+        # Financials — banks / payments
+        "JPM",
+        "BAC",
+        "WFC",
+        "V",
+        "MA",
+        # Financials — data / exchanges
+        "SPGI",
+        "MCO",
+        "ICE",
+        "CME",
+        "BLK",
+        # Financials — insurance
         "CB",
         "TRV",
         "AFL",
         "PRU",
         "MET",
         "ALL",
-        # Industrials
+        # Industrials — defence
+        "LMT",
+        "RTX",
+        "NOC",
+        "GD",
+        # Industrials — diversified
         "HON",
         "MMM",
         "EMR",
@@ -247,12 +311,26 @@ def _sp500_curated_fallback() -> list[UniverseStock]:
         "DOV",
         "PH",
         "FAST",
+        "UPS",
+        "CSX",
+        "NSC",
+        # Energy
+        "XOM",
+        "CVX",
+        "COP",
+        # Utilities
+        "NEE",
+        "AEP",
+        "SO",
         # Materials
         "APD",
         "SHW",
         "ECL",
         "PPG",
-        # REITs / Infrastructure (quality)
+        # Communication services
+        "NFLX",
+        "DIS",
+        # REITs / Infrastructure
         "PLD",
         "AMT",
         "CCI",
