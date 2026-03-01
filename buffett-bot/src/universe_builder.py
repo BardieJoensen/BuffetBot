@@ -167,6 +167,8 @@ def _fetch_sp500_pool(cache_dir: Path) -> list[UniverseStock]:
 def _fetch_sp500_from_wikipedia() -> Optional[list[str]]:
     """Fetch S&P 500 constituent tickers from Wikipedia table."""
     try:
+        import io
+
         import pandas as pd
         import requests
 
@@ -174,9 +176,10 @@ def _fetch_sp500_from_wikipedia() -> Optional[list[str]]:
         headers = {"User-Agent": "BuffettBot/1.0 (https://github.com/BardieJoensen/BuffetBot; investment research bot)"}
         resp = requests.get(url, headers=headers, timeout=15)
         resp.raise_for_status()
-        tables = pd.read_html(resp.text, attrs={"id": "constituents"})
+        html = io.StringIO(resp.text)
+        tables = pd.read_html(html, attrs={"id": "constituents"})
         if not tables:
-            tables = pd.read_html(resp.text)
+            tables = pd.read_html(io.StringIO(resp.text))
         df = tables[0]
 
         # Find the ticker column — Wikipedia uses 'Symbol' or 'Ticker symbol'
