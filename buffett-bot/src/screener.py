@@ -57,6 +57,7 @@ class ScreeningCriteria:
     too_hard_industries: list[str] = field(default_factory=list)
     scoring: dict[str, ScoringRule] = field(default_factory=dict)
     sector_overrides: dict[str, dict[str, ScoringRule]] = field(default_factory=dict)
+    cap_overrides: dict[str, dict[str, ScoringRule]] = field(default_factory=dict)
     top_n: int = 100  # How many top-scoring stocks to keep
 
 
@@ -85,19 +86,24 @@ def load_criteria_from_yaml(config_path: Optional[Path] = None) -> ScreeningCrit
                 max=float(rule_data["max"]) if "max" in rule_data else None,
             )
 
-        # Parse sector overrides — each override inherits from base scoring
-        sector_overrides: dict[str, dict[str, ScoringRule]] = {}
-        overrides_raw = screening.get("sector_overrides", {})
-        for sector_name, sector_rules in overrides_raw.items():
-            sector_scoring = {}
-            for metric, rule_data in sector_rules.items():
-                sector_scoring[metric] = ScoringRule(
-                    ideal=float(rule_data.get("ideal", 0)),
-                    weight=float(rule_data.get("weight", 1.0)),
-                    min=float(rule_data["min"]) if "min" in rule_data else None,
-                    max=float(rule_data["max"]) if "max" in rule_data else None,
-                )
-            sector_overrides[sector_name] = sector_scoring
+        def _parse_override_group(raw: dict) -> dict[str, dict[str, ScoringRule]]:
+            """Parse a sector_overrides or cap_overrides block from YAML."""
+            result: dict[str, dict[str, ScoringRule]] = {}
+            for group_name, group_rules in raw.items():
+                group_scoring = {}
+                for metric, rule_data in group_rules.items():
+                    group_scoring[metric] = ScoringRule(
+                        ideal=float(rule_data.get("ideal", 0)),
+                        weight=float(rule_data.get("weight", 1.0)),
+                        min=float(rule_data["min"]) if "min" in rule_data else None,
+                        max=float(rule_data["max"]) if "max" in rule_data else None,
+                    )
+                result[group_name] = group_scoring
+            return result
+
+        # Parse sector overrides and cap overrides using the same logic
+        sector_overrides = _parse_override_group(screening.get("sector_overrides", {}))
+        cap_overrides = _parse_override_group(screening.get("cap_overrides", {}))
 
         # Parse "too hard" industry blocklist
         too_hard = screening.get("too_hard_industries", [])
@@ -111,6 +117,7 @@ def load_criteria_from_yaml(config_path: Optional[Path] = None) -> ScreeningCrit
             too_hard_industries=[str(i) for i in too_hard],
             scoring=scoring,
             sector_overrides=sector_overrides,
+            cap_overrides=cap_overrides,
             top_n=int(screening.get("top_n", defaults.top_n)),
         )
 
@@ -122,21 +129,36 @@ def load_criteria_from_yaml(config_path: Optional[Path] = None) -> ScreeningCrit
         return ScreeningCriteria()
 
 
-def score_stock(data: dict, criteria: ScreeningCriteria, sector: str = "") -> tuple[float, float]:
+def score_stock(
+    data: dict,
+    criteria: ScreeningCriteria,
+    sector: str = "",
+    cap_category: str = "",
+) -> tuple[float, float]:
     """
     Score a stock based on how close each metric is to the ideal value.
 
     Each metric gets a 0-1 score, multiplied by its weight.
     Returns (total_score, score_confidence) where confidence =
     scored_weight / total_possible_weight.
+
+    Override precedence (later wins):
+        base scoring → sector_overrides → cap_overrides
+
+    Cap overrides intentionally stack on top of sector overrides so that
+    a large-cap Financial Services stock gets both the sector debt relaxation
+    AND the large-cap P/E relaxation.
     """
     if not criteria.scoring:
         return 0.0, 0.0
 
-    # Merge base scoring with sector overrides
+    # Merge base → sector overrides → cap overrides
     effective_scoring = dict(criteria.scoring)
     if sector and sector in criteria.sector_overrides:
         for metric, rule in criteria.sector_overrides[sector].items():
+            effective_scoring[metric] = rule
+    if cap_category and cap_category in criteria.cap_overrides:
+        for metric, rule in criteria.cap_overrides[cap_category].items():
             effective_scoring[metric] = rule
 
     total_score = 0.0
@@ -252,6 +274,7 @@ class ScreenedStock:
     current_ratio: Optional[float] = None
     real_fcf_yield: Optional[float] = None
     sbc_ratio: Optional[float] = None
+    cap_category: str = ""  # 'large', 'mid', 'small', or '' if unknown
 
     @property
     def effective_score(self) -> float:
@@ -286,6 +309,7 @@ class ScreenedStock:
             "current_ratio": self.current_ratio,
             "real_fcf_yield": self.real_fcf_yield,
             "sbc_ratio": self.sbc_ratio,
+            "cap_category": self.cap_category,
         }
 
 
@@ -665,14 +689,31 @@ class StockScreener:
         Hard filters: market cap, price, quote_type, industry.
         Scoring: all passing stocks are scored and sorted; top N returned.
         """
-        criteria = criteria or ScreeningCriteria()
-
         universe = get_stock_universe()
+        return self.screen_tickers(universe, criteria)
+
+    def screen_tickers(
+        self,
+        tickers: list[str],
+        criteria: Optional[ScreeningCriteria] = None,
+        force_include: Optional[set[str]] = None,
+    ) -> list[ScreenedStock]:
+        """
+        Screen an explicit list of tickers instead of the Finviz universe.
+
+        Identical to screen() except the universe is provided externally.
+
+        force_include: tickers that bypass the max_market_cap filter.
+        Use this for conviction mega-caps (e.g. AAPL, MSFT) that exceed
+        the screener's market cap ceiling but must always be tracked.
+        """
+        criteria = criteria or ScreeningCriteria()
+        force = force_include or set()
 
         logger.info(
             f"Running screen with criteria: market_cap={criteria.min_market_cap:,.0f}-{criteria.max_market_cap:,.0f}"
         )
-        logger.info(f"Stock universe: {len(universe)} stocks")
+        logger.info(f"Stock universe: {len(tickers)} stocks")
         logger.info("Fetching data from yfinance (free, no API key)...")
 
         candidates = []
@@ -681,11 +722,11 @@ class StockScreener:
         too_hard_count = 0
         adtv_rejected = 0
 
-        for symbol in universe:
+        for symbol in tickers:
             processed += 1
 
             if processed % 20 == 0:
-                logger.info(f"Progress: {processed}/{len(universe)} stocks processed...")
+                logger.info(f"Progress: {processed}/{len(tickers)} stocks processed...")
 
             cached = self._get_cached_data(symbol)
             data: Optional[dict] = None
@@ -726,9 +767,11 @@ class StockScreener:
                     too_hard_count += 1
                     continue
 
-            # Market cap filter
+            # Market cap filter (force_include bypasses only the upper bound)
             market_cap = data.get("market_cap", 0) or 0
-            if market_cap < criteria.min_market_cap or market_cap > criteria.max_market_cap:
+            if market_cap < criteria.min_market_cap:
+                continue
+            if market_cap > criteria.max_market_cap and symbol not in force:
                 continue
 
             # Minimum price filter
@@ -775,7 +818,10 @@ class StockScreener:
 
             # === Score the stock ===
             sector = data.get("sector", "Unknown")
-            stock_score, score_confidence = score_stock(data, criteria, sector)
+            from .universe_builder import get_cap_category
+
+            cap_cat = get_cap_category(market_cap)
+            stock_score, score_confidence = score_stock(data, criteria, sector, cap_category=cap_cat)
 
             de = data.get("debt_equity")
 
@@ -807,6 +853,7 @@ class StockScreener:
                     current_ratio=data.get("current_ratio"),
                     real_fcf_yield=data.get("real_fcf_yield"),
                     sbc_ratio=data.get("sbc_ratio"),
+                    cap_category=cap_cat,
                 )
             )
 

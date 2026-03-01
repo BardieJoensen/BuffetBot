@@ -651,7 +651,7 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
             revenue_growth=sc.revenue_growth if sc else None,
             valuation=ext_val,
             analysis=analysis,
-            tier=tier.tier,
+            tier=tier.tier,  # type: ignore[arg-type]
             tier_reason=tier.tier_reason,
             target_entry_price=tier.target_entry_price,
             price_gap_pct=tier.price_gap_pct,
@@ -710,7 +710,7 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
             revenue_growth=None,
             valuation=ext_val,
             analysis=mock_analysis,
-            tier=tier_info.tier,
+            tier=tier_info.tier,  # type: ignore[arg-type]
             tier_reason=tier_info.tier_reason,
             target_entry_price=tier_info.target_entry_price,
             price_gap_pct=tier_info.price_gap_pct,
