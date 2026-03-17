@@ -100,6 +100,7 @@ def assign_tier(
     screener_score: float = 0.0,
     external_valuation=None,
     proximity_alert_pct: float = DEFAULT_PROXIMITY_ALERT_PCT,
+    quality_score: Optional[float] = None,
 ) -> TierAssignment:
     """
     Assign S/A/B/C tier based on moat quality and price vs. target entry.
@@ -212,6 +213,24 @@ def assign_tier(
                 price_gap_pct=gap,
                 approaching_target=False,
             )
+
+    # Fair price exception: wonderful business within 10% of target, top-quintile quality.
+    # Buffett's evolved principle: moat itself provides margin of safety.
+    # Promotes B → A when Wide moat + HIGH conviction + quality_score ≥ 80 + gap ≤ 10%.
+    if quality == "wonderful" and 0 < gap <= 0.10 and quality_score is not None and quality_score >= 80:
+        return TierAssignment(
+            symbol=symbol,
+            tier="A",
+            quality_level=quality,
+            tier_reason=(
+                f"Fair price exception: wonderful business {gap:+.1%} above target "
+                f"${target:,.0f} (quality score: {quality_score:.0f}) — moat = margin of safety"
+            ),
+            target_entry_price=target,
+            current_price=current,
+            price_gap_pct=gap,
+            approaching_target=True,
+        )
 
     # Above target but within 50% — watch
     if gap < EXTREME_PREMIUM_THRESHOLD:
