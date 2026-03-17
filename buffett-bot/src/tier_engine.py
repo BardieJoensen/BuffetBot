@@ -217,12 +217,7 @@ def assign_tier(
     # Fair price exception: wonderful business within 10% of target, top-quintile quality.
     # Buffett's evolved principle: moat itself provides margin of safety.
     # Promotes B → A when Wide moat + HIGH conviction + quality_score ≥ 80 + gap ≤ 10%.
-    if (
-        quality == "wonderful"
-        and 0 < gap <= 0.10
-        and quality_score is not None
-        and quality_score >= 80
-    ):
+    if quality == "wonderful" and 0 < gap <= 0.10 and quality_score is not None and quality_score >= 80:
         return TierAssignment(
             symbol=symbol,
             tier="A",

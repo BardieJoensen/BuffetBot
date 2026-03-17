@@ -45,14 +45,8 @@ class AggregatedValuation:
         if not self.estimates:
             return None
         weight_map = {"high": 1.5, "medium": 1.0, "low": 0.5}
-        total_weighted = sum(
-            e.fair_value * weight_map.get(e.confidence, 1.0)
-            for e in self.estimates
-        )
-        total_weight = sum(
-            weight_map.get(e.confidence, 1.0)
-            for e in self.estimates
-        )
+        total_weighted = sum(e.fair_value * weight_map.get(e.confidence, 1.0) for e in self.estimates)
+        total_weight = sum(weight_map.get(e.confidence, 1.0) for e in self.estimates)
         return total_weighted / total_weight if total_weight > 0 else None
 
     @property
@@ -260,7 +254,6 @@ class ValuationAggregator:
 
         return None
 
-
     def _calculate_dcf_fair_value(self, info: dict, ticker: yf.Ticker) -> Optional[ValuationEstimate]:
         """
         Simple 10-year two-phase DCF using Real FCF (OCF − CapEx − SBC).
@@ -370,7 +363,7 @@ class ValuationAggregator:
 
             for year in range(1, 11):
                 growth = phase1_growth if year <= 5 else phase2_growth
-                projected_fcf *= (1 + growth)
+                projected_fcf *= 1 + growth
                 total_pv += projected_fcf / ((1 + discount_rate) ** year)
 
             terminal_pv = (projected_fcf * terminal_multiple) / ((1 + discount_rate) ** 10)
@@ -380,7 +373,7 @@ class ValuationAggregator:
                 return None
 
             methodology = (
-                f"10yr DCF: Real FCF ${real_fcf/1e9:.1f}B, "
+                f"10yr DCF: Real FCF ${real_fcf / 1e9:.1f}B, "
                 f"g={phase1_growth:.0%}/{phase2_growth:.0%}, "
                 f"10% discount, 12× terminal"
             )
