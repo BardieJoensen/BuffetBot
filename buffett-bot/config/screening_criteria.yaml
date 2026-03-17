@@ -29,9 +29,9 @@ screening:
   scoring:
     # === Snapshot valuation (de-weighted) ===
     pe_ratio:
-      ideal: 15
-      max: 60            # Was 30 — let quality compounders in
-      weight: 0.8         # Was 2.0 — valuation de-weighted
+      ideal: 18           # Was 15 — 18x reflects Buffett's evolved "fair value" baseline
+      max: 60            # Let quality compounders in
+      weight: 0.8         # Valuation de-weighted
     debt_equity:
       ideal: 0.0
       max: 1.5            # Was 1.0 — more forgiving
@@ -40,7 +40,7 @@ screening:
     # === Snapshot quality metrics ===
     roe:
       ideal: 0.20
-      min: 0.05
+      min: 0.10           # Was 0.05 — 5% ROE barely covers cost of equity; raise floor to 10%
       weight: 2.0
     revenue_growth:
       ideal: 0.15
@@ -71,6 +71,10 @@ screening:
       min: 0.0
       max: 0.80
       weight: 0.5
+    net_share_change:    # Annualized share count change (negative = buybacks, positive = dilution)
+      ideal: -0.03        # -3%/yr: meaningful buyback program
+      max: 0.03           # +3%/yr: heavy dilution scores 0
+      weight: 1.0
 
     # === Trend-based quality metrics (new) ===
     roe_consistency:

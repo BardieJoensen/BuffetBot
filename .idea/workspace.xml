@@ -4,8 +4,10 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="67024cd5-752f-4978-9b32-8258632ce793" name="Changes" comment="">
-      <change beforePath="$PROJECT_DIR$/buffett-bot/src/valuation.py" beforeDir="false" afterPath="$PROJECT_DIR$/buffett-bot/src/valuation.py" afterDir="false" />
+    <list default="true" id="67024cd5-752f-4978-9b32-8258632ce793" name="Changes" comment="Add IntelliJ project files and implement enhancements to tier &amp; valuation engines  &#10;&#10;- Integrate fair price exception logic for &quot;wonderful&quot; businesses within 10% of target, considering a quality score threshold (B → A promotion with moat as margin of safety).  &#10;- Refactor valuation to use weighted fair value averaging based on confidence levels.  &#10;- Introduce a DCF-based fair value estimate and adjust P/E multiple valuation logic (18× fair P/E).  &#10;- Improve Graham Number confidence scaling for asset-light businesses (adjust based on P/B ratio).">
+      <change beforePath="$PROJECT_DIR$/buffett-bot/config/screening_criteria.yaml" beforeDir="false" afterPath="$PROJECT_DIR$/buffett-bot/config/screening_criteria.yaml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/buffett-bot/src/screener.py" beforeDir="false" afterPath="$PROJECT_DIR$/buffett-bot/src/screener.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/buffett-bot/src/tier_engine.py" beforeDir="false" afterPath="$PROJECT_DIR$/buffett-bot/src/tier_engine.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -40,6 +42,9 @@
     <commands />
     <urls />
   </component>
+  <component name="ProblemsViewState">
+    <option name="selectedTabId" value="CurrentFile" />
+  </component>
   <component name="ProjectColorInfo"><![CDATA[{
   "associatedIndex": 3
 }]]></component>
@@ -58,7 +63,6 @@
     "RunOnceActivity.ShowReadmeOnStart": "true",
     "RunOnceActivity.git.unshallow": "true",
     "RunOnceActivity.typescript.service.memoryLimit.init": "true",
-    "SHARE_PROJECT_CONFIGURATION_FILES": "true",
     "com.intellij.ml.llm.matterhorn.ej.ui.settings.DefaultModelSelectionForGA.v1": "true",
     "git-widget-placeholder": "main",
     "junie.onboarding.icon.badge.shown": "true",
@@ -91,11 +95,24 @@
       <option name="number" value="Default" />
       <option name="presentableId" value="Default" />
       <updated>1773740723113</updated>
-      <workItem from="1773740725874" duration="735000" />
+      <workItem from="1773740725874" duration="1152000" />
     </task>
+    <task id="LOCAL-00001" summary="Add IntelliJ project files and implement enhancements to tier &amp; valuation engines  &#10;&#10;- Integrate fair price exception logic for &quot;wonderful&quot; businesses within 10% of target, considering a quality score threshold (B → A promotion with moat as margin of safety).  &#10;- Refactor valuation to use weighted fair value averaging based on confidence levels.  &#10;- Introduce a DCF-based fair value estimate and adjust P/E multiple valuation logic (18× fair P/E).  &#10;- Improve Graham Number confidence scaling for asset-light businesses (adjust based on P/B ratio).">
+      <option name="closed" value="true" />
+      <created>1773741478996</created>
+      <option name="number" value="00001" />
+      <option name="presentableId" value="LOCAL-00001" />
+      <option name="project" value="LOCAL" />
+      <updated>1773741478996</updated>
+    </task>
+    <option name="localTasksCounter" value="2" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
     <option name="version" value="3" />
+  </component>
+  <component name="VcsManagerConfiguration">
+    <MESSAGE value="Add IntelliJ project files and implement enhancements to tier &amp; valuation engines  &#10;&#10;- Integrate fair price exception logic for &quot;wonderful&quot; businesses within 10% of target, considering a quality score threshold (B → A promotion with moat as margin of safety).  &#10;- Refactor valuation to use weighted fair value averaging based on confidence levels.  &#10;- Introduce a DCF-based fair value estimate and adjust P/E multiple valuation logic (18× fair P/E).  &#10;- Improve Graham Number confidence scaling for asset-light businesses (adjust based on P/B ratio)." />
+    <option name="LAST_COMMIT_MESSAGE" value="Add IntelliJ project files and implement enhancements to tier &amp; valuation engines  &#10;&#10;- Integrate fair price exception logic for &quot;wonderful&quot; businesses within 10% of target, considering a quality score threshold (B → A promotion with moat as margin of safety).  &#10;- Refactor valuation to use weighted fair value averaging based on confidence levels.  &#10;- Introduce a DCF-based fair value estimate and adjust P/E multiple valuation logic (18× fair P/E).  &#10;- Improve Graham Number confidence scaling for asset-light businesses (adjust based on P/B ratio)." />
   </component>
 </project>
