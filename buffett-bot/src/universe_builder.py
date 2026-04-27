@@ -488,7 +488,7 @@ def build_universe(
     if db is not None:
         try:
             for stock in conviction_pool:
-                db.upsert_universe_stock(stock.ticker, source="conviction", notes=stock.notes)
+                db.upsert_universe_stock(stock.ticker, source="conviction")
             logger.info("Synced %d conviction tickers into database", len(conviction_pool))
         except Exception as exc:
             logger.warning("Failed to sync conviction tickers to database: %s", exc)

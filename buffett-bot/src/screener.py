@@ -12,6 +12,7 @@ financials, and sector-specific scoring overrides.
 
 import json
 import logging
+import math
 import random
 import tempfile
 import time
@@ -28,6 +29,66 @@ from src.universe import get_stock_universe
 from src.universe import set_cache_dir as set_universe_cache_dir
 
 logger = logging.getLogger(__name__)
+
+_INVALID_FLOATS = {"infinity", "-infinity", "nan", "inf", "-inf"}
+
+
+def _safe_num(value) -> Optional[float]:
+    """Coerce a value to float, returning None for strings and non-finite floats.
+
+    yfinance can return 'Infinity', 'NaN', etc. as literal strings for edge-case
+    stocks. This guard prevents TypeError when those values reach numeric comparisons.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        if value.lower() in _INVALID_FLOATS:
+            return None
+        try:
+            value = float(value)
+        except ValueError:
+            return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return None if not math.isfinite(f) else f
+
+
+# Numeric fields stored in the stock data cache that must never be strings.
+_NUMERIC_CACHE_FIELDS = {
+    "price",
+    "market_cap",
+    "pe_ratio",
+    "debt_equity",
+    "roe",
+    "revenue_growth",
+    "current_ratio",
+    "beta",
+    "dividend_yield",
+    "profit_margin",
+    "52_week_high",
+    "52_week_low",
+    "free_cashflow",
+    "operating_cashflow",
+    "net_income",
+    "payout_ratio",
+    "operating_margin",
+    "avg_volume",
+    "fcf_yield",
+    "earnings_quality",
+    "real_fcf_yield",
+    "sbc_ratio",
+}
+
+
+def _sanitize_numeric_fields(data: dict) -> dict:
+    """Apply _safe_num() to all known numeric fields in a stock data dict."""
+    for key in _NUMERIC_CACHE_FIELDS:
+        if key in data:
+            data[key] = _safe_num(data[key])
+    return data
+
 
 # Cache directory for stock data
 CACHE_DIR = Path(__file__).parent.parent / "data" / "cache"
@@ -354,7 +415,8 @@ class StockScreener:
 
         try:
             with open(cache_file) as f:
-                return json.load(f)
+                data = json.load(f)
+            return _sanitize_numeric_fields(data)
         except Exception:
             return None
 
@@ -428,7 +490,10 @@ class StockScreener:
             if data["real_fcf_yield"] is None:
                 data["real_fcf_yield"] = data.get("fcf_yield")
 
-            # Cache the data
+            # Sanitize numeric fields before caching — yfinance can return
+            # 'Infinity', 'NaN', etc. as strings for edge-case stocks.
+            data = _sanitize_numeric_fields(data)
+
             self._save_cached_data(symbol, data)
 
             return data
