@@ -243,6 +243,7 @@ def score_stock(
         "revenue_cagr",
         "fcf_consistency",
         "real_fcf_yield",
+        "net_share_change",
     }
 
     for metric_name, rule in effective_scoring.items():
@@ -335,6 +336,7 @@ class ScreenedStock:
     current_ratio: Optional[float] = None
     real_fcf_yield: Optional[float] = None
     sbc_ratio: Optional[float] = None
+    net_share_change: Optional[float] = None  # Annualized share count change; negative = buybacks
     cap_category: str = ""  # 'large', 'mid', 'small', or '' if unknown
 
     @property
@@ -370,6 +372,7 @@ class ScreenedStock:
             "current_ratio": self.current_ratio,
             "real_fcf_yield": self.real_fcf_yield,
             "sbc_ratio": self.sbc_ratio,
+            "net_share_change": self.net_share_change,
             "cap_category": self.cap_category,
         }
 
@@ -745,6 +748,26 @@ class StockScreener:
         except Exception as e:
             logger.debug(f"{symbol} fcf_consistency failed: {e}")
 
+        # --- Net Share Change: annualized share count change (negative = buybacks) ---
+        try:
+            if balance_sheet is not None and not balance_sheet.empty:
+                shares_row = None
+                for label in ["Share Issued", "Ordinary Shares Number", "Diluted Average Shares"]:
+                    if label in balance_sheet.index:
+                        shares_row = balance_sheet.loc[label].dropna()
+                        break
+
+                if shares_row is not None and len(shares_row) >= 2:
+                    current_shares = float(shares_row.iloc[0])
+                    historical_shares = float(shares_row.iloc[-1])
+                    dates = shares_row.index
+                    years_diff = abs((dates[0] - dates[-1]).days / 365.25)
+
+                    if years_diff >= 1.0 and current_shares > 0 and historical_shares > 0:
+                        result["net_share_change"] = (current_shares / historical_shares) ** (1.0 / years_diff) - 1.0
+        except Exception as e:
+            logger.debug(f"{symbol} net_share_change failed: {e}")
+
         return result
 
     def screen(self, criteria: Optional[ScreeningCriteria] = None) -> list[ScreenedStock]:
@@ -888,6 +911,7 @@ class StockScreener:
                 "earnings_consistency",
                 "revenue_cagr",
                 "fcf_consistency",
+                "net_share_change",
             ]:
                 if metric not in data and metric in historical:
                     data[metric] = historical[metric]
@@ -929,6 +953,7 @@ class StockScreener:
                     current_ratio=data.get("current_ratio"),
                     real_fcf_yield=data.get("real_fcf_yield"),
                     sbc_ratio=data.get("sbc_ratio"),
+                    net_share_change=data.get("net_share_change"),
                     cap_category=cap_cat,
                 )
             )

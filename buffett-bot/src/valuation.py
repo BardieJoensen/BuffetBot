@@ -44,7 +44,10 @@ class AggregatedValuation:
     def average_fair_value(self) -> Optional[float]:
         if not self.estimates:
             return None
-        return sum(e.fair_value for e in self.estimates) / len(self.estimates)
+        weight_map = {"high": 1.5, "medium": 1.0, "low": 0.5}
+        total_weighted = sum(e.fair_value * weight_map.get(e.confidence, 1.0) for e in self.estimates)
+        total_weight = sum(weight_map.get(e.confidence, 1.0) for e in self.estimates)
+        return total_weighted / total_weight if total_weight > 0 else None
 
     @property
     def margin_of_safety(self) -> Optional[float]:
@@ -128,6 +131,11 @@ class ValuationAggregator:
         if graham_estimate:
             estimates.append(graham_estimate)
 
+        # 5. DCF (10yr two-phase, forward-looking)
+        dcf_estimate = self._calculate_dcf_fair_value(info, ticker)
+        if dcf_estimate:
+            estimates.append(dcf_estimate)
+
         valuation.estimates = estimates
 
         if current_price > 0:
@@ -190,22 +198,22 @@ class ValuationAggregator:
         """
         Simple P/E based fair value calculation.
 
-        Fair Value = EPS × Fair P/E (using 15 as market average)
+        Fair Value = EPS × Fair P/E (using 18 as adjusted market average)
         """
         eps = info.get("trailingEps") or info.get("forwardEps")
 
         if not eps or eps <= 0:
             return None
 
-        # Use a conservative "fair" P/E of 15 (market historical average)
-        fair_pe = 15
+        # Use an 18x fair P/E — better reflects quality businesses (was 15, Graham-era)
+        fair_pe = 18
         fair_value = eps * fair_pe
 
         if fair_value > 0:
             return ValuationEstimate(
                 source="P/E Multiple (Conservative)",
                 fair_value=fair_value,
-                methodology=f"EPS (${eps:.2f}) × Fair P/E (15)",
+                methodology=f"EPS (${eps:.2f}) × Fair P/E (18)",
                 date=datetime.now(),
                 confidence="low",
             )
@@ -229,15 +237,157 @@ class ValuationAggregator:
         graham_number = math.sqrt(22.5 * eps * book_value)
 
         if graham_number > 0:
+            # Downgrade confidence for asset-light companies: high P/B means book value
+            # is disconnected from business value (e.g. Visa, MSFT trade at 10-40x book).
+            # Graham Number systematically undervalues these — reduce its weight.
+            price = info.get("currentPrice") or info.get("regularMarketPrice")
+            pb_ratio = price / book_value if (price and book_value > 0) else None
+            confidence = "low" if (pb_ratio is not None and pb_ratio > 5.0) else "medium"
+
             return ValuationEstimate(
                 source="Graham Number",
                 fair_value=graham_number,
                 methodology="√(22.5 × EPS × Book Value)",
                 date=datetime.now(),
-                confidence="medium",  # Time-tested conservative formula
+                confidence=confidence,
             )
 
         return None
+
+    def _calculate_dcf_fair_value(self, info: dict, ticker: yf.Ticker) -> Optional[ValuationEstimate]:
+        """
+        Simple 10-year two-phase DCF using Real FCF (OCF − CapEx − SBC).
+
+        Phase 1 (years 1–5): base growth capped at 15%
+        Phase 2 (years 6–10): base growth capped at 8%
+        Terminal: 12× Year-10 FCF
+        Discount rate: 10% flat
+
+        Growth rate = min(FCF CAGR, Revenue CAGR) — conservative anchor.
+        Falls back to 0% growth if neither is available.
+        """
+        shares = info.get("sharesOutstanding")
+        if not shares or shares <= 0:
+            return None
+
+        try:
+            cashflow = ticker.cashflow
+            if cashflow is None or cashflow.empty:
+                return None
+
+            # --- Real FCF (latest year): OCF − CapEx − SBC ---
+            ocf = None
+            for label in ["Operating Cash Flow", "Cash Flow From Continuing Operating Activities"]:
+                if label in cashflow.index:
+                    ocf = float(cashflow.loc[label].iloc[0])
+                    break
+
+            if ocf is None:
+                return None
+
+            capex = 0.0
+            for label in ["Capital Expenditure", "Capital Expenditures"]:
+                if label in cashflow.index:
+                    capex = abs(float(cashflow.loc[label].iloc[0]))
+                    break
+
+            sbc = 0.0
+            for label in ["Stock Based Compensation", "Share Based Compensation", "ShareBasedCompensation"]:
+                if label in cashflow.index:
+                    sbc = abs(float(cashflow.loc[label].iloc[0]))
+                    break
+
+            real_fcf = ocf - capex - sbc
+            if real_fcf <= 0:
+                return None  # No DCF for loss-making or FCF-negative companies
+
+            # --- FCF CAGR from cashflow history ---
+            fcf_cagr: Optional[float] = None
+            try:
+                n_cols = len(cashflow.columns)
+                if n_cols >= 2:
+                    ocf_row = None
+                    for label in ["Operating Cash Flow", "Cash Flow From Continuing Operating Activities"]:
+                        if label in cashflow.index:
+                            ocf_row = cashflow.loc[label].dropna()
+                            break
+
+                    capex_row = None
+                    for label in ["Capital Expenditure", "Capital Expenditures"]:
+                        if label in cashflow.index:
+                            capex_row = cashflow.loc[label].dropna()
+                            break
+
+                    if ocf_row is not None and capex_row is not None:
+                        common = ocf_row.index.intersection(capex_row.index)
+                        if len(common) >= 2:
+                            latest = float(ocf_row[common[0]]) - abs(float(capex_row[common[0]]))
+                            earliest = float(ocf_row[common[-1]]) - abs(float(capex_row[common[-1]]))
+                            years = len(common) - 1
+                            if earliest > 0 and latest > 0 and years > 0:
+                                fcf_cagr = (latest / earliest) ** (1.0 / years) - 1.0
+            except Exception:
+                pass
+
+            # --- Revenue CAGR from financials ---
+            revenue_cagr: Optional[float] = None
+            try:
+                financials = ticker.financials
+                if financials is not None and not financials.empty and len(financials.columns) >= 2:
+                    rev_row = None
+                    for label in ["Total Revenue", "Revenue"]:
+                        if label in financials.index:
+                            rev_row = financials.loc[label].astype(float)
+                            break
+                    if rev_row is not None:
+                        latest_rev = rev_row.iloc[0]
+                        earliest_rev = rev_row.iloc[-1]
+                        years = len(rev_row) - 1
+                        if earliest_rev > 0 and latest_rev > 0 and years > 0:
+                            revenue_cagr = (latest_rev / earliest_rev) ** (1.0 / years) - 1.0
+            except Exception:
+                pass
+
+            # --- Growth rate: conservative (lower of the two) ---
+            candidates = [g for g in [fcf_cagr, revenue_cagr] if g is not None]
+            base_growth = min(candidates) if candidates else 0.0
+
+            phase1_growth = max(0.0, min(base_growth, 0.15))
+            phase2_growth = max(0.0, min(base_growth, 0.08))
+
+            # --- Project and discount ---
+            total_pv = 0.0
+            projected_fcf = real_fcf
+            discount_rate = 0.10
+            terminal_multiple = 12
+
+            for year in range(1, 11):
+                growth = phase1_growth if year <= 5 else phase2_growth
+                projected_fcf *= 1 + growth
+                total_pv += projected_fcf / ((1 + discount_rate) ** year)
+
+            terminal_pv = (projected_fcf * terminal_multiple) / ((1 + discount_rate) ** 10)
+            fair_value_per_share = (total_pv + terminal_pv) / shares
+
+            if fair_value_per_share <= 0:
+                return None
+
+            methodology = (
+                f"10yr DCF: Real FCF ${real_fcf / 1e9:.1f}B, "
+                f"g={phase1_growth:.0%}/{phase2_growth:.0%}, "
+                f"10% discount, 12× terminal"
+            )
+            return ValuationEstimate(
+                source="DCF (10yr Owner Earnings)",
+                fair_value=fair_value_per_share,
+                methodology=methodology,
+                date=datetime.now(),
+                confidence="medium",
+            )
+
+        except Exception as e:
+            logger.debug(f"DCF calculation failed: {e}")
+            return None
 
 
 def get_valuation(symbol: str) -> AggregatedValuation:
