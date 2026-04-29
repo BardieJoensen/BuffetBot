@@ -606,6 +606,7 @@ def friday_sonnet_batch():
         from src.analyzer import CompanyAnalyzer
         from src.database import Database
         from src.tier_engine import assign_tier, staged_entry_suggestion
+        from src.valuation import ValuationAggregator
 
         db = Database()
 
@@ -638,11 +639,23 @@ def friday_sonnet_batch():
         analyzer = CompanyAnalyzer()
         analyses = analyzer.batch_analyze_companies(to_analyze)
 
+        aggregator = ValuationAggregator()
+
         for analysis in analyses:
             ticker = analysis.symbol
             old_da = db.get_latest_deep_analysis(ticker)
             old_tier = old_da.get("tier") if old_da else None
-            tier_assignment = assign_tier(analysis)
+
+            external_val = None
+            if analysis.target_entry_price is None:
+                try:
+                    external_val = aggregator.get_valuation(ticker)
+                except Exception as exc:
+                    logger.debug("External valuation failed for %s: %s", ticker, exc)
+
+            tier_assignment = assign_tier(analysis, external_valuation=external_val)
+            resolved_target = tier_assignment.target_entry_price
+            resolved_price = tier_assignment.current_price or analysis.current_price
 
             db.save_deep_analysis(
                 ticker,
@@ -652,7 +665,7 @@ def friday_sonnet_batch():
                 moat_sources=analysis.moat_sources,
                 fair_value=((analysis.estimated_fair_value_low or 0) + (analysis.estimated_fair_value_high or 0)) / 2
                 or None,
-                target_entry=analysis.target_entry_price,
+                target_entry=resolved_target,
                 investment_thesis=analysis.summary,
                 key_risks=analysis.key_risks,
                 thesis_breakers=analysis.thesis_risks,
@@ -667,13 +680,13 @@ def friday_sonnet_batch():
             )
 
             if tier_assignment.tier in ("S", "A", "B"):
-                entries = staged_entry_suggestion(analysis.target_entry_price, tier_assignment.tier)
+                entries = staged_entry_suggestion(resolved_target, tier_assignment.tier) if resolved_target else []
                 db.upsert_price_alert(
                     ticker,
                     tier=tier_assignment.tier,
-                    target_entry=analysis.target_entry_price,
+                    target_entry=resolved_target,
                     staged_entries=entries,
-                    last_price=analysis.current_price,
+                    last_price=resolved_price,
                     gap_pct=tier_assignment.price_gap_pct,
                 )
 
