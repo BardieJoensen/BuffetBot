@@ -206,6 +206,25 @@ CREATE TABLE IF NOT EXISTS closed_trades (
     reasoning_sound   INTEGER,          -- BOOLEAN (nullable): did the original reasoning hold up?
     notes             TEXT
 );
+
+-- Point-in-time fundamentals from SEC EDGAR companyfacts (Phase 2.5). Each XBRL
+-- fact carries the date it was FILED (became public) — exactly what a look-ahead-
+-- free backtest needs. One row per (ticker, concept, period, form), holding the
+-- ORIGINALLY-FILED value (earliest filed_date) so a later restatement can't leak
+-- backward in time.
+CREATE TABLE IF NOT EXISTS pit_fundamentals (
+    ticker        TEXT NOT NULL,
+    cik           TEXT,
+    concept       TEXT NOT NULL,      -- canonical field name (see edgar_fundamentals.CONCEPT_MAP)
+    period_end    TEXT NOT NULL,      -- ISO date (XBRL 'end')
+    fiscal_year   INTEGER,
+    fiscal_period TEXT,               -- 'FY', 'Q1', 'Q2', 'Q3'
+    form          TEXT,               -- '10-K', '10-Q'
+    value         REAL,
+    filed_date    TEXT NOT NULL,      -- when it became public (XBRL 'filed')
+    accession     TEXT,
+    PRIMARY KEY (ticker, concept, period_end, form)
+);
 """
 
 INDEXES_SQL = """
@@ -250,6 +269,10 @@ CREATE INDEX IF NOT EXISTS idx_closed_trades_ticker
     ON closed_trades(ticker, exit_date DESC);
 CREATE INDEX IF NOT EXISTS idx_closed_trades_entry
     ON closed_trades(entry_decision_id);
+
+-- Point-in-time as-of lookups: latest filed value per (ticker, concept) at a date
+CREATE INDEX IF NOT EXISTS idx_pit_asof
+    ON pit_fundamentals(ticker, concept, filed_date);
 """
 
 BUDGET_CAPS_DEFAULTS = [
@@ -1233,6 +1256,83 @@ class Database:
                 """
             ).fetchall()
             return [dict(r) for r in rows]
+
+    # ── Point-in-Time Fundamentals (EDGAR companyfacts) ───────────────────────
+
+    def save_pit_fundamentals(self, records: list[dict]) -> int:
+        """
+        Bulk-insert originally-filed fundamental facts. Each record needs:
+        ticker, cik, concept, period_end, fiscal_year, fiscal_period, form,
+        value, filed_date, accession.
+
+        Uses INSERT OR IGNORE against the (ticker, concept, period_end, form)
+        primary key — callers should pass originally-filed values (the caller
+        dedupes restatements to the earliest filed_date). Returns rows inserted.
+        """
+        if not records:
+            return 0
+        with _open(self.path) as conn:
+            before = conn.total_changes
+            conn.executemany(
+                """
+                INSERT OR IGNORE INTO pit_fundamentals
+                    (ticker, cik, concept, period_end, fiscal_year, fiscal_period,
+                     form, value, filed_date, accession)
+                VALUES (:ticker, :cik, :concept, :period_end, :fiscal_year,
+                        :fiscal_period, :form, :value, :filed_date, :accession)
+                """,
+                records,
+            )
+            return conn.total_changes - before
+
+    def get_pit_fundamentals_asof(
+        self, ticker: str, as_of_date: str, *, annual_only: bool = True
+    ) -> dict[str, float]:
+        """
+        Fundamentals for a ticker **as known at `as_of_date`**: for each concept,
+        the value from the most recent period whose filing was public by that date
+        (filed_date <= as_of_date). This is the look-ahead-free read the backtest
+        uses. `annual_only` restricts to 10-K figures (consistent annual basis).
+        """
+        with _open(self.path) as conn:
+            sql = """
+                SELECT concept, value, period_end, filed_date FROM pit_fundamentals
+                WHERE ticker = ? AND filed_date <= ?
+            """
+            params: list = [ticker, as_of_date]
+            if annual_only:
+                sql += " AND form = '10-K'"
+            rows = conn.execute(sql, params).fetchall()
+
+        # Per concept, keep the value from the latest period_end (tie-break: latest
+        # filed_date) — i.e. the freshest figure that was public by as_of_date.
+        best: dict[str, tuple] = {}
+        for r in rows:
+            if r["value"] is None:
+                continue
+            key = (r["period_end"], r["filed_date"])
+            if r["concept"] not in best or key > best[r["concept"]][0]:
+                best[r["concept"]] = (key, r["value"])
+        return {concept: val for concept, (_, val) in best.items()}
+
+    def get_pit_concept_series(self, ticker: str, concept: str) -> list[dict]:
+        """Return the originally-filed time series for one (ticker, concept), oldest first."""
+        with _open(self.path) as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM pit_fundamentals
+                WHERE ticker = ? AND concept = ?
+                ORDER BY period_end ASC, filed_date ASC
+                """,
+                (ticker, concept),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_pit_tickers(self) -> list[str]:
+        """Distinct tickers present in pit_fundamentals."""
+        with _open(self.path) as conn:
+            rows = conn.execute("SELECT DISTINCT ticker FROM pit_fundamentals ORDER BY ticker").fetchall()
+            return [r["ticker"] for r in rows]
 
     # ── Data Retention ────────────────────────────────────────────────────────
 

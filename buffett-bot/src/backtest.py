@@ -16,12 +16,22 @@ Two modes:
    - On subsequent runs, compare current prices to snapshot
    - Builds a real track record over time (6-12 month horizon)
 
-Limitations:
-- yfinance provides current financials, not point-in-time historical data
-- This is NOT a true backtest — it's a quality-return correlation study
-- A proper backtest requires a dedicated data provider (SimFin, Sharadar)
+3. **Point-in-time backtest (Phase 2.5):**
+   - run_point_in_time_backtest() scores each historical rebalance date on
+     fundamentals **as known at that date** (SEC EDGAR companyfacts, originally
+     filed), removing the look-ahead bias of mode 1. Prices stay on yfinance
+     (prices aren't restated). Requires pit_fundamentals populated first via
+     edgar_fundamentals.load_universe_fundamentals().
 
-Data: yfinance history() for price data (reliable), current financials for scoring
+Limitations:
+- Modes 1–2 score on yfinance *current* financials → look-ahead biased; they are
+  quality-return correlation studies, not true backtests.
+- Mode 3 fixes the financials look-ahead via EDGAR point-in-time data, but XBRL
+  coverage begins ~2009 and v1 uses the *current* universe, so universe-level
+  survivorship bias remains (a delisted-filer reconstruction is future work).
+
+Data: yfinance history() for prices; EDGAR companyfacts for point-in-time
+fundamentals (mode 3) or yfinance current financials (modes 1–2).
 Cache: data/backtest/
 
 Run independently: python -m src.backtest
@@ -33,6 +43,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+import pandas as pd
 import yfinance as yf
 
 logger = logging.getLogger(__name__)
@@ -125,6 +136,177 @@ def run_quality_return_correlation(
     _save_correlation_results(results, summary)
 
     return {"stocks": results, "summary": summary}
+
+
+# ─────────────────────────────────────────────────────────────
+# 1b. Point-in-Time Backtest (EDGAR companyfacts) — look-ahead free
+# ─────────────────────────────────────────────────────────────
+
+
+def run_point_in_time_backtest(
+    tickers: list[str],
+    db,
+    rebalance_dates: list[str],
+    *,
+    forward_months: int = 12,
+    annual_only: bool = True,
+) -> dict:
+    """
+    Look-ahead-free quality→return study using EDGAR point-in-time fundamentals.
+
+    Unlike run_quality_return_correlation (which scores on *current* financials —
+    hindsight-tainted), this reads each stock's fundamentals **as known at each
+    rebalance date** from pit_fundamentals, scores the cross-section on those
+    as-known numbers, then measures the realized forward price return. Prices
+    come from yfinance (prices aren't restated, so they're point-in-time safe).
+
+    Requires pit_fundamentals to be populated first (edgar_fundamentals
+    .load_universe_fundamentals). v1 caveat: it studies the *current* universe's
+    filings, so universe-level survivorship bias remains — stated in the summary.
+
+    Returns {observations, summary}; each observation is one (ticker, date) with
+    its as-known score and forward return.
+    """
+    observations: list[dict] = []
+    price_cache: dict[str, Optional[pd.Series]] = {}
+
+    for date_str in rebalance_dates:
+        compat: list[dict] = []
+        price_at_d: dict[str, float] = {}
+        for ticker in tickers:
+            known = db.get_pit_fundamentals_asof(ticker, date_str, annual_only=annual_only)
+            if not known:
+                continue
+            price = _price_on_or_before(ticker, date_str, price_cache)
+            if price is None:
+                continue
+            metrics = _derive_quality_metrics(known, price)
+            if metrics is None:
+                continue
+            metrics["ticker"] = ticker
+            compat.append(metrics)
+            price_at_d[ticker] = price
+
+        # Need a cross-section to percentile-rank against.
+        if len(compat) < 5:
+            logger.debug(f"PIT backtest {date_str}: only {len(compat)} stocks with data — skipping")
+            continue
+
+        from src.quality_scorer import compute_quality_scores
+
+        scores = compute_quality_scores(compat)
+        for ticker, qs in scores.items():
+            fwd = _forward_return(ticker, date_str, forward_months, price_cache, price_at_d[ticker])
+            if fwd is None:
+                continue
+            observations.append(
+                {
+                    "symbol": ticker,
+                    "rebalance_date": date_str,
+                    "score": qs.score,
+                    "return_1y": fwd,
+                }
+            )
+
+    if not observations:
+        return {"error": "No point-in-time observations", "observations": [], "summary": {}}
+
+    correlation = _compute_rank_correlation(observations)
+    summary = {
+        "basis": "point-in-time (EDGAR companyfacts, originally-filed)",
+        "total_observations": len(observations),
+        "rebalance_dates": len(rebalance_dates),
+        "forward_months": forward_months,
+        "rank_correlation_1y": correlation.get("return_1y"),
+        "avg_fwd_return_top_20pct": _avg_return(observations, top_pct=0.2),
+        "avg_fwd_return_bottom_20pct": _avg_return(observations, top_pct=0.2, bottom=True),
+        "quintiles": _quintile_analysis(observations),
+        "limitations": [
+            "XBRL coverage begins ~2009 (~15y of history).",
+            "Studies the current universe's filings → universe-level survivorship bias remains.",
+            "Foreign filers (20-F) / non-XBRL gaps appear as missing data, never fabricated.",
+        ],
+        "generated_at": datetime.now().isoformat(),
+    }
+    summary["quality_premium"] = (summary["avg_fwd_return_top_20pct"] or 0) - (
+        summary["avg_fwd_return_bottom_20pct"] or 0
+    )
+    _save_correlation_results(observations, summary, filename="pit_backtest.json")
+    return {"observations": observations, "summary": summary}
+
+
+def _derive_quality_metrics(known: dict, price: float) -> Optional[dict]:
+    """
+    Derive the quality-scorer's input metrics from as-known raw XBRL concepts and
+    the as-known price. Returns a dict with whatever could be computed (the scorer
+    handles partial data), or None if nothing could be derived.
+
+    Approximations (documented, v1): ROIC uses net income / (equity + total debt)
+    rather than NOPAT / invested capital — a pragmatic proxy from the mapped set.
+    """
+    eq = known.get("equity")
+    ni = known.get("net_income")
+    rev = known.get("revenue")
+    oi = known.get("operating_income")
+    ocf = known.get("ocf")
+    capex = known.get("capex")
+    shares = known.get("shares_diluted") or known.get("shares_outstanding")
+    total_debt = (known.get("long_term_debt") or 0.0) + (known.get("short_term_debt") or 0.0)
+
+    metrics: dict[str, float] = {}
+    if ni is not None and eq and eq > 0:
+        metrics["roe"] = ni / eq
+        if (eq + total_debt) > 0:
+            metrics["roic"] = ni / (eq + total_debt)
+        if total_debt >= 0:
+            metrics["debt_equity"] = total_debt / eq
+    if oi is not None and rev and rev > 0:
+        metrics["operating_margin"] = oi / rev
+    if ocf is not None and capex is not None and shares and price > 0:
+        market_cap = price * shares
+        if market_cap > 0:
+            metrics["real_fcf_yield"] = (ocf - abs(capex)) / market_cap
+
+    return metrics or None
+
+
+def _load_prices(symbol: str, cache: dict) -> Optional[pd.Series]:
+    """Load (and cache) a symbol's full daily close history, tz-naive index."""
+    if symbol not in cache:
+        try:
+            hist = yf.Ticker(symbol).history(period="max")
+            if hist.empty:
+                cache[symbol] = None
+            else:
+                closes = hist["Close"]
+                if closes.index.tz is not None:
+                    closes.index = closes.index.tz_localize(None)
+                cache[symbol] = closes
+        except Exception as e:
+            logger.debug(f"PIT price load failed for {symbol}: {e}")
+            cache[symbol] = None
+    return cache[symbol]
+
+
+def _price_on_or_before(symbol: str, date_str: str, cache: dict) -> Optional[float]:
+    """Most recent close at or before date_str."""
+    closes = _load_prices(symbol, cache)
+    if closes is None:
+        return None
+    sub = closes[closes.index <= pd.Timestamp(date_str)]
+    return float(sub.iloc[-1]) if len(sub) else None
+
+
+def _forward_return(symbol: str, date_str: str, months: int, cache: dict, price_at_d: float) -> Optional[float]:
+    """Total price return from date_str to ~`months` later (close on or before target)."""
+    closes = _load_prices(symbol, cache)
+    if closes is None or price_at_d <= 0:
+        return None
+    target = pd.Timestamp(date_str) + pd.DateOffset(months=months)
+    sub = closes[(closes.index > pd.Timestamp(date_str)) & (closes.index <= target)]
+    if len(sub) == 0:
+        return None
+    return (float(sub.iloc[-1]) - price_at_d) / price_at_d
 
 
 def _fetch_historical_returns(symbol: str, years: int = 3) -> Optional[dict]:
@@ -260,11 +442,12 @@ def _avg_return(results: list[dict], top_pct: float = 0.2, bottom: bool = False)
     return round(sum(returns) / len(returns), 4) if returns else None
 
 
-def _save_correlation_results(results: list[dict], summary: dict):
+def _save_correlation_results(results: list[dict], summary: dict, filename: Optional[str] = None):
     """Save correlation results to disk."""
     try:
         _backtest_dir.mkdir(parents=True, exist_ok=True)
-        path = _backtest_dir / f"correlation_{datetime.now().strftime('%Y_%m')}.json"
+        name = filename or f"correlation_{datetime.now().strftime('%Y_%m')}.json"
+        path = _backtest_dir / name
         data = {"results": results, "summary": summary}
         path.write_text(json.dumps(data, indent=2, default=str))
         logger.info(f"Saved correlation results to {path}")

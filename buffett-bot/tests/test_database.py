@@ -13,7 +13,6 @@ Also tests:
 
 import json
 import sqlite3
-import tempfile
 import threading
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -21,7 +20,6 @@ from pathlib import Path
 import pytest
 
 from src.database import Database, _apply_pragmas
-
 
 # ─── Fixtures ─────────────────────────────────────────────────────────────
 
@@ -83,6 +81,7 @@ class TestSchema:
             "paper_positions",
             "decision_log",
             "closed_trades",
+            "pit_fundamentals",
         }
         assert expected.issubset(tables)
 
