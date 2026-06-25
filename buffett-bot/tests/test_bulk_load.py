@@ -166,6 +166,7 @@ class TestPriorityList:
             score=score,
             roic_pct=None, roe_pct=None, fcf_yield_pct=None,
             operating_margin_pct=None, low_debt_pct=None,
+            insider_buying_pct=None,
             data_coverage=1.0,
         )
 

@@ -525,6 +525,31 @@ def monday_maintenance():
             # Recompute quality scores from fresh data
             compat = [{**s.to_dict(), "ticker": s.symbol} for s in screened]
             scores = compute_quality_scores(compat)
+
+            # Phase 3: layer in an insider-buying tilt for the top candidates
+            # only (Finnhub free tier is rate-limited; cluster buying matters
+            # most among the names we'd actually consider). Others keep None and
+            # are unaffected by the new component.
+            try:
+                from src.insider import DEFAULT_FETCH_LIMIT, fetch_insider_signals
+
+                top_syms = [
+                    qs.ticker
+                    for qs in sorted(scores.values(), key=lambda q: q.score, reverse=True)[
+                        :DEFAULT_FETCH_LIMIT
+                    ]
+                ]
+                signals = fetch_insider_signals(top_syms)
+                if signals:
+                    by_ticker = {d["ticker"]: d for d in compat}
+                    for sym, sig in signals.items():
+                        if sym in by_ticker:
+                            by_ticker[sym]["insider_buying"] = sig
+                    scores = compute_quality_scores(compat)  # recompute with tilt
+                    logger.info("Applied insider-buying tilt to %d stocks", len(signals))
+            except Exception as e:
+                logger.warning(f"Insider-buying tilt skipped: {e}")
+
             for sym, qs in scores.items():
                 db.update_quality_score(sym, qs.score)
             logger.info("Recomputed quality scores for %d stocks", len(scores))

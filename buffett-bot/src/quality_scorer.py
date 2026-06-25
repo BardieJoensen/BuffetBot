@@ -24,14 +24,24 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Metric weights — must sum to 1.0
-WEIGHTS = {
+# Insider-buying tilt (Phase 3): a small skin-in-the-game signal layered on top
+# of the fundamental quality metrics. It's a tilt, not a driver — tunable here.
+INSIDER_WEIGHT = 0.05
+
+# Base fundamental weights (sum to 1.0 on their own). The insider tilt is added
+# by scaling these down by (1 - INSIDER_WEIGHT) so the full set still sums to
+# 1.0. A stock with no insider coverage is excluded from that one ranking and
+# its score reduces exactly to the original fundamental-only composite.
+_BASE_WEIGHTS = {
     "roic": 0.30,
     "roe": 0.20,
     "fcf_yield": 0.20,
     "operating_margin": 0.15,
     "low_debt": 0.15,  # inverted debt_equity: lower debt = higher score
 }
+
+WEIGHTS = {k: v * (1 - INSIDER_WEIGHT) for k, v in _BASE_WEIGHTS.items()}
+WEIGHTS["insider_buying"] = INSIDER_WEIGHT
 
 assert abs(sum(WEIGHTS.values()) - 1.0) < 1e-9, "Weights must sum to 1.0"
 
@@ -47,6 +57,7 @@ class QualityScore:
     fcf_yield_pct: Optional[float]
     operating_margin_pct: Optional[float]
     low_debt_pct: Optional[float]
+    insider_buying_pct: Optional[float]  # None if no insider coverage
     data_coverage: float  # Fraction of metrics available (0.0–1.0)
 
     def to_dict(self) -> dict:
@@ -61,6 +72,9 @@ class QualityScore:
                 if self.operating_margin_pct is not None
                 else None,
                 "low_debt_pct": round(self.low_debt_pct, 1) if self.low_debt_pct is not None else None,
+                "insider_buying_pct": round(self.insider_buying_pct, 1)
+                if self.insider_buying_pct is not None
+                else None,
             },
             "data_coverage": round(self.data_coverage, 2),
         }
@@ -129,6 +143,7 @@ def compute_quality_scores(stocks: list) -> dict[str, "QualityScore"]:
     fcf_data: list[tuple[str, Optional[float]]] = []
     margin_data: list[tuple[str, Optional[float]]] = []
     debt_data: list[tuple[str, Optional[float]]] = []  # will be inverted
+    insider_data: list[tuple[str, Optional[float]]] = []
 
     for s in stocks:
         t = s.ticker if hasattr(s, "ticker") else s.get("ticker", "UNKNOWN")
@@ -148,11 +163,15 @@ def compute_quality_scores(stocks: list) -> dict[str, "QualityScore"]:
         )
         debt_val = _safe_float(getattr(s, "debt_equity", None) if hasattr(s, "debt_equity") else s.get("debt_equity"))
 
+        # insider_buying may be absent entirely (older stock objects) → None.
+        insider_val = _safe_float(_field(s, "insider_buying"))
+
         roic_data.append((t, roic_val))
         roe_data.append((t, roe_val))
         fcf_data.append((t, fcf_val))
         margin_data.append((t, margin_val))
         debt_data.append((t, debt_val))
+        insider_data.append((t, insider_val))
 
     # Compute percentile ranks — debt uses ascending=False (less = better)
     roic_ranks = _percentile_ranks(roic_data, ascending=True)
@@ -160,6 +179,7 @@ def compute_quality_scores(stocks: list) -> dict[str, "QualityScore"]:
     fcf_ranks = _percentile_ranks(fcf_data, ascending=True)
     margin_ranks = _percentile_ranks(margin_data, ascending=True)
     low_debt_ranks = _percentile_ranks(debt_data, ascending=False)  # inverted!
+    insider_ranks = _percentile_ranks(insider_data, ascending=True)  # more net buyers = better
 
     # Assemble per-stock scores
     results: dict[str, QualityScore] = {}
@@ -171,6 +191,7 @@ def compute_quality_scores(stocks: list) -> dict[str, "QualityScore"]:
         fcf_pct = fcf_ranks.get(t)
         margin_pct = margin_ranks.get(t)
         low_debt_pct = low_debt_ranks.get(t)
+        insider_pct = insider_ranks.get(t)
 
         components = {
             "roic": roic_pct,
@@ -178,6 +199,7 @@ def compute_quality_scores(stocks: list) -> dict[str, "QualityScore"]:
             "fcf_yield": fcf_pct,
             "operating_margin": margin_pct,
             "low_debt": low_debt_pct,
+            "insider_buying": insider_pct,
         }
 
         # Weighted sum — skip missing metrics but scale weights to available ones
@@ -209,6 +231,7 @@ def compute_quality_scores(stocks: list) -> dict[str, "QualityScore"]:
             fcf_yield_pct=fcf_pct,
             operating_margin_pct=margin_pct,
             low_debt_pct=low_debt_pct,
+            insider_buying_pct=insider_pct,
             data_coverage=data_coverage,
         )
 
@@ -243,6 +266,20 @@ def rank_by_quality(stocks: list) -> list:
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────
+
+
+def _field(s, name: str):
+    """Read a field from either an object (attribute) or a dict, else None.
+
+    Unlike the inline `getattr(...) if hasattr(...) else s.get(...)` pattern, this
+    is safe when the field is entirely absent from an object (no .get to fall
+    back to) — needed for insider_buying, which older stock objects don't carry.
+    """
+    if hasattr(s, name):
+        return getattr(s, name)
+    if isinstance(s, dict):
+        return s.get(name)
+    return None
 
 
 def _safe_float(value) -> Optional[float]:
