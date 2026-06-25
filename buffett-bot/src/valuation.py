@@ -131,10 +131,8 @@ class ValuationAggregator:
         if graham_estimate:
             estimates.append(graham_estimate)
 
-        # 5. DCF (10yr two-phase, forward-looking)
-        dcf_estimate = self._calculate_dcf_fair_value(info, ticker)
-        if dcf_estimate:
-            estimates.append(dcf_estimate)
+        # 5. DCF (10yr two-phase, forward-looking) — Real FCF + Owner Earnings
+        estimates.extend(self._calculate_dcf_estimates(info, ticker))
 
         valuation.estimates = estimates
 
@@ -254,36 +252,63 @@ class ValuationAggregator:
 
         return None
 
-    def _calculate_dcf_fair_value(self, info: dict, ticker: yf.Ticker) -> Optional[ValuationEstimate]:
+    # 10-year two-phase DCF constants
+    _DCF_DISCOUNT_RATE = 0.10
+    _DCF_TERMINAL_MULTIPLE = 12
+
+    def _project_dcf(
+        self, base_fcf: float, phase1_growth: float, phase2_growth: float, shares: float
+    ) -> Optional[float]:
         """
-        Simple 10-year two-phase DCF using Real FCF (OCF − CapEx − SBC).
+        Project `base_fcf` over 10 years (phase-1 growth years 1–5, phase-2 years
+        6–10), discount at 10%, add a 12× terminal, and return per-share value.
+        """
+        total_pv = 0.0
+        projected = base_fcf
+        for year in range(1, 11):
+            growth = phase1_growth if year <= 5 else phase2_growth
+            projected *= 1 + growth
+            total_pv += projected / ((1 + self._DCF_DISCOUNT_RATE) ** year)
+        terminal_pv = (projected * self._DCF_TERMINAL_MULTIPLE) / ((1 + self._DCF_DISCOUNT_RATE) ** 10)
+        fair_value_per_share = (total_pv + terminal_pv) / shares
+        return fair_value_per_share if fair_value_per_share > 0 else None
 
-        Phase 1 (years 1–5): base growth capped at 15%
-        Phase 2 (years 6–10): base growth capped at 8%
-        Terminal: 12× Year-10 FCF
-        Discount rate: 10% flat
+    def _calculate_dcf_estimates(self, info: dict, ticker: yf.Ticker) -> list[ValuationEstimate]:
+        """
+        10-year two-phase DCF, returned for two cash-flow bases:
 
-        Growth rate = min(FCF CAGR, Revenue CAGR) — conservative anchor.
-        Falls back to 0% growth if neither is available.
+          - Real FCF       = OCF − CapEx − SBC   (subtracts ALL capex — conservative)
+          - Owner Earnings = OCF − maintenance capex − SBC, with
+                             maintenance capex = min(CapEx, D&A)
+
+        True owner earnings expense only the capex needed to sustain the business
+        (maintenance), treating growth capex as investment. Because
+        min(CapEx, D&A) ≤ CapEx, owner earnings ≥ Real FCF, so its DCF is the more
+        bullish read. We keep BOTH as separate medium-confidence estimates: the
+        aggregator's weighted mean drifts up modestly while the conservative
+        Real-FCF anchor is preserved. The owner-earnings estimate is omitted when
+        D&A ≥ CapEx (the two bases are then identical — no new information).
+
+        Growth (shared by both): min(FCF CAGR, Revenue CAGR), 0% if unavailable.
+        Phase 1 capped at 15%, phase 2 at 8%. Returns 0–2 estimates.
         """
         shares = info.get("sharesOutstanding")
         if not shares or shares <= 0:
-            return None
+            return []
 
         try:
             cashflow = ticker.cashflow
             if cashflow is None or cashflow.empty:
-                return None
+                return []
 
-            # --- Real FCF (latest year): OCF − CapEx − SBC ---
+            # --- Latest-year cash-flow components ---
             ocf = None
             for label in ["Operating Cash Flow", "Cash Flow From Continuing Operating Activities"]:
                 if label in cashflow.index:
                     ocf = float(cashflow.loc[label].iloc[0])
                     break
-
             if ocf is None:
-                return None
+                return []
 
             capex = 0.0
             for label in ["Capital Expenditure", "Capital Expenditures"]:
@@ -297,9 +322,20 @@ class ValuationAggregator:
                     sbc = abs(float(cashflow.loc[label].iloc[0]))
                     break
 
+            depreciation = None
+            for label in [
+                "Depreciation And Amortization",
+                "Depreciation Amortization Depletion",
+                "Depreciation & Amortization",
+                "Depreciation",
+            ]:
+                if label in cashflow.index:
+                    depreciation = abs(float(cashflow.loc[label].iloc[0]))
+                    break
+
             real_fcf = ocf - capex - sbc
             if real_fcf <= 0:
-                return None  # No DCF for loss-making or FCF-negative companies
+                return []  # No DCF for loss-making or FCF-negative companies
 
             # --- FCF CAGR from cashflow history ---
             fcf_cagr: Optional[float] = None
@@ -351,39 +387,50 @@ class ValuationAggregator:
             # --- Growth rate: conservative (lower of the two) ---
             candidates = [g for g in [fcf_cagr, revenue_cagr] if g is not None]
             base_growth = min(candidates) if candidates else 0.0
-
             phase1_growth = max(0.0, min(base_growth, 0.15))
             phase2_growth = max(0.0, min(base_growth, 0.08))
 
-            # --- Project and discount ---
-            total_pv = 0.0
-            projected_fcf = real_fcf
-            discount_rate = 0.10
-            terminal_multiple = 12
+            estimates: list[ValuationEstimate] = []
 
-            for year in range(1, 11):
-                growth = phase1_growth if year <= 5 else phase2_growth
-                projected_fcf *= 1 + growth
-                total_pv += projected_fcf / ((1 + discount_rate) ** year)
+            # Conservative anchor: Real FCF (subtracts all capex)
+            real_fv = self._project_dcf(real_fcf, phase1_growth, phase2_growth, shares)
+            if real_fv:
+                estimates.append(
+                    ValuationEstimate(
+                        source="DCF (10yr Real FCF)",
+                        fair_value=real_fv,
+                        methodology=(
+                            f"10yr DCF: Real FCF ${real_fcf / 1e9:.1f}B, "
+                            f"g={phase1_growth:.0%}/{phase2_growth:.0%}, 10% discount, 12× terminal"
+                        ),
+                        date=datetime.now(),
+                        confidence="medium",
+                    )
+                )
 
-            terminal_pv = (projected_fcf * terminal_multiple) / ((1 + discount_rate) ** 10)
-            fair_value_per_share = (total_pv + terminal_pv) / shares
+            # Secondary: Owner Earnings (maintenance capex only) — added only when
+            # D&A is available and strictly below capex, so it's genuinely distinct.
+            if depreciation is not None:
+                maintenance_capex = min(capex, depreciation)
+                if maintenance_capex < capex:
+                    owner_earnings = ocf - maintenance_capex - sbc
+                    owner_fv = self._project_dcf(owner_earnings, phase1_growth, phase2_growth, shares)
+                    if owner_fv:
+                        estimates.append(
+                            ValuationEstimate(
+                                source="DCF (10yr Owner Earnings)",
+                                fair_value=owner_fv,
+                                methodology=(
+                                    f"10yr DCF: Owner Earnings ${owner_earnings / 1e9:.1f}B "
+                                    f"(maint. capex ${maintenance_capex / 1e9:.1f}B = min(capex, D&A)), "
+                                    f"g={phase1_growth:.0%}/{phase2_growth:.0%}, 10% discount, 12× terminal"
+                                ),
+                                date=datetime.now(),
+                                confidence="medium",
+                            )
+                        )
 
-            if fair_value_per_share <= 0:
-                return None
-
-            methodology = (
-                f"10yr DCF: Real FCF ${real_fcf / 1e9:.1f}B, "
-                f"g={phase1_growth:.0%}/{phase2_growth:.0%}, "
-                f"10% discount, 12× terminal"
-            )
-            return ValuationEstimate(
-                source="DCF (10yr Owner Earnings)",
-                fair_value=fair_value_per_share,
-                methodology=methodology,
-                date=datetime.now(),
-                confidence="medium",
-            )
+            return estimates
 
         except Exception as e:
             logger.debug(f"DCF calculation failed: {e}")
