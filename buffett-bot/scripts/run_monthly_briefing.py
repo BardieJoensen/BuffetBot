@@ -47,6 +47,7 @@ from src.benchmark import fetch_benchmark_data, set_benchmark_cache_dir
 from src.briefing import BriefingGenerator, StockBriefing
 from src.bubble_detector import BubbleDetector, get_market_temperature
 from src.config import config
+from src.edgar_fetcher import augment_filing_text
 from src.notifications import NotificationManager
 from src.portfolio import PortfolioTracker, calculate_position_size
 from src.registry import Registry
@@ -370,7 +371,7 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
         logger.info("   Using Batch API (50% discount)...")
         stocks_for_analysis = []
         for sym in top_for_analysis:
-            filing_text = fetch_company_summary(sym)
+            filing_text = augment_filing_text(sym, fetch_company_summary(sym))
             sc = screened_lookup.get(sym)
             company_name = sc.name if sc else sym
             sector = sc.sector if sc and hasattr(sc, "sector") else ""
@@ -391,7 +392,7 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
         for sym in top_for_analysis:
             try:
                 logger.info(f"Analyzing {sym}...")
-                filing_text = fetch_company_summary(sym)
+                filing_text = augment_filing_text(sym, fetch_company_summary(sym))
                 sc = screened_lookup.get(sym)
                 company_name = sc.name if sc else sym
                 sector = sc.sector if sc and hasattr(sc, "sector") else ""

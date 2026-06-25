@@ -19,6 +19,7 @@ buffett-bot/data/briefings/
 buffett-bot/data/cache/
 buffett-bot/data/benchmark/
 buffett-bot/data/backtest/
+buffett-bot/data/edgar/
 buffett-bot/data/watchlist.json
 buffett-bot/data/watchlist_cache.json
 buffett-bot/data/watchlist_history.json

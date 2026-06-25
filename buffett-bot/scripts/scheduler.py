@@ -711,14 +711,19 @@ def friday_sonnet_batch():
         candidates = candidates[:allowed]
         logger.info("Sonnet batch: %d candidates (%d budget-allowed)", len(candidates), allowed)
 
+        from src.edgar_fetcher import augment_filing_text
+
         to_analyze: list[dict] = []
         for ticker in candidates:
             u = db.get_universe_stock(ticker)
+            # Deep-analysis tier only: append the real 10-K to the numeric summary
+            # (falls back to the summary alone if EDGAR is unavailable).
+            filing_text = augment_filing_text(ticker, _build_db_summary(ticker, db))
             to_analyze.append(
                 {
                     "symbol": ticker,
                     "company_name": (u or {}).get("company_name", ticker),
-                    "filing_text": _build_db_summary(ticker, db),
+                    "filing_text": filing_text,
                     "sector": (u or {}).get("sector", ""),
                 }
             )

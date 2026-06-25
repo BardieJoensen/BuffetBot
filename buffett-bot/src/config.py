@@ -31,6 +31,11 @@ class Config:
     benchmark_symbol: str = os.getenv("BENCHMARK_SYMBOL", "SPY")
     max_deep_analyses: int = int(os.getenv("MAX_DEEP_ANALYSES", "10"))
 
+    # SEC EDGAR 10-K ingestion (Phase 2). SEC fair-access requires a descriptive
+    # User-Agent with a contact email or requests are blocked. Empty → EDGAR is
+    # skipped and deep analyses fall back to the yfinance-derived summary.
+    edgar_user_agent: str = os.getenv("EDGAR_USER_AGENT", "")
+
     # Coverage campaign
     haiku_batch_size: int = int(os.getenv("HAIKU_BATCH_SIZE", "100"))
     haiku_min_score: int = int(os.getenv("HAIKU_MIN_SCORE", "5"))
