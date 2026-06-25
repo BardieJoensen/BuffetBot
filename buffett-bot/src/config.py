@@ -7,6 +7,17 @@ API keys/credentials stay in their respective modules.
 
 import os
 from dataclasses import dataclass
+from typing import Optional
+
+
+def _optional_float(name: str) -> Optional[float]:
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
 
 
 @dataclass(frozen=True)
@@ -35,6 +46,10 @@ class Config:
     # User-Agent with a contact email or requests are blocked. Empty → EDGAR is
     # skipped and deep analyses fall back to the yfinance-derived summary.
     edgar_user_agent: str = os.getenv("EDGAR_USER_AGENT", "")
+
+    # FX bridge (Phase 5). Manual USD→DKK rate (DKK per 1 USD) for offline use
+    # and tests; unset → live daily fetch via yfinance.
+    usddkk_override: Optional[float] = _optional_float("USDDKK_OVERRIDE")
 
     # Coverage campaign
     haiku_batch_size: int = int(os.getenv("HAIKU_BATCH_SIZE", "100"))

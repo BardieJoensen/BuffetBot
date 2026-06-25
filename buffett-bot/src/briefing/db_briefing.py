@@ -271,6 +271,19 @@ def _text_briefing(
         out.append(f"  Total cost basis: ${total_cost_basis:,.0f}")
         out.append(f"  Total value:      ${total_value:,.0f}")
         out.append(f"  Total P&L:        {pl_sign}${abs(total_pl):,.0f}  ({pl_sign}{abs(total_pl_pct):.1%})")
+
+        # DKK bridge: the figures as they land in the ASK (DKK primary). Per-stock
+        # entry/current prices above stay USD (US-listed instruments).
+        from .. import fx
+
+        rate = fx.get_cached_usd_dkk_rate()  # cache-only: briefing stays offline
+        if rate is not None:
+            value_dkk = total_value * rate
+            pl_dkk = total_pl * rate
+            out.append("")
+            out.append(f"  In DKK (USD/DKK {rate:.2f}):")
+            out.append(f"    Total value:    kr {value_dkk:,.0f}")
+            out.append(f"    Total P&L:      {pl_sign}kr {abs(pl_dkk):,.0f}")
         out.append("")
         out.append("  Note: Benchmark comparison auto-updates on Monday maintenance.")
         out.append("")

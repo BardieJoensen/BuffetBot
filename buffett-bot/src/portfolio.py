@@ -26,6 +26,7 @@ from typing import Optional
 
 import yfinance as yf
 
+from . import fx
 from .config import config
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,7 @@ logger = logging.getLogger(__name__)
 MAX_POSITIONS = config.max_positions
 MAX_SINGLE_POSITION_PCT = 0.25  # Never >25% in one stock
 ASK_CONTRIBUTION_LIMIT_DKK = config.ask_contribution_limit_dkk
+ASK_DIVIDEND_TAX_RATE = 0.17  # ASK dividend tax
 
 
 @dataclass
@@ -411,9 +413,19 @@ class PortfolioTracker:
         """Summarize dividend yield across portfolio."""
         self.update_prices()
 
+        rate = fx.get_usd_dkk_rate()
+
         total_value = sum(p.current_value or 0 for p in self.positions)
         if total_value == 0:
-            return {"weighted_yield": 0, "estimated_annual_dkk": 0, "positions": []}
+            return {
+                "weighted_yield": 0,
+                "estimated_annual_usd": 0,
+                "estimated_annual_dkk": 0,
+                "estimated_annual_dkk_after_tax": 0,
+                "ask_tax_rate": ASK_DIVIDEND_TAX_RATE,
+                "usd_dkk_rate": rate,
+                "positions": [],
+            }
 
         weighted_yield = 0.0
         position_dividends = []
@@ -428,13 +440,24 @@ class PortfolioTracker:
                         "symbol": p.symbol,
                         "yield": p.dividend_yield,
                         "est_annual_usd": est_annual,
+                        "est_annual_dkk": fx.usd_to_dkk(est_annual, rate),
                     }
                 )
 
+        est_annual_usd = total_value * weighted_yield
+        est_annual_dkk = fx.usd_to_dkk(est_annual_usd, rate)
+        # ASK taxes dividends at 17% — report the DKK figure net of that.
+        est_annual_dkk_after_tax = (
+            est_annual_dkk * (1 - ASK_DIVIDEND_TAX_RATE) if est_annual_dkk is not None else None
+        )
+
         return {
             "weighted_yield": weighted_yield,
-            "estimated_annual_usd": total_value * weighted_yield,
-            "ask_tax_rate": 0.17,
+            "estimated_annual_usd": est_annual_usd,
+            "estimated_annual_dkk": est_annual_dkk,
+            "estimated_annual_dkk_after_tax": est_annual_dkk_after_tax,
+            "ask_tax_rate": ASK_DIVIDEND_TAX_RATE,
+            "usd_dkk_rate": rate,
             "positions": position_dividends,
         }
 
@@ -594,6 +617,11 @@ class PortfolioTracker:
         dividends = self.get_dividend_summary()
         contribution = self.get_contribution_status()
 
+        # DKK conversion of portfolio values/returns (USD retained). Per-stock
+        # fair values stay USD (US-listed instruments); only portfolio-level
+        # figures are bridged — the numbers that land in the ASK.
+        rate = fx.get_usd_dkk_rate()
+
         return {
             "positions": [p.to_dict() for p in self.positions],
             "position_count": len(self.positions),
@@ -601,6 +629,10 @@ class PortfolioTracker:
             "current_value": metrics.current_value,
             "total_gain_loss": metrics.total_gain_loss,
             "total_gain_loss_pct": metrics.total_gain_loss_pct,
+            "usd_dkk_rate": rate,
+            "total_invested_dkk": fx.usd_to_dkk(metrics.total_invested, rate),
+            "current_value_dkk": fx.usd_to_dkk(metrics.current_value, rate),
+            "total_gain_loss_dkk": fx.usd_to_dkk(metrics.total_gain_loss, rate),
             "sector_exposure": exposure,
             "sector_warnings": warnings,
             "concentration": concentration,
