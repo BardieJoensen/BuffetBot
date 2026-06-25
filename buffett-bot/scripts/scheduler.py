@@ -50,6 +50,34 @@ def _moat_label(moat_hint: int) -> str:
     return "NONE"
 
 
+def _build_reasoning_snapshot(db, symbol: str, val) -> tuple[dict, "str | None"]:
+    """
+    Assemble the reasoning context captured with a buy decision: the valuation
+    used to decide (fair value + margin of safety) plus the latest stored deep
+    analysis and the universe quality score, if any. Returns (snapshot, tier).
+    """
+    snapshot: dict = {
+        "fair_value": getattr(val, "average_fair_value", None),
+        "margin_of_safety": getattr(val, "margin_of_safety", None),
+    }
+    tier = None
+    da = db.get_latest_deep_analysis(symbol)
+    if da:
+        tier = da.get("tier")
+        snapshot.update(
+            {
+                "thesis": da.get("investment_thesis"),
+                "target_entry": da.get("target_entry"),
+                "moat_rating": da.get("moat_rating"),
+                "conviction": da.get("conviction"),
+            }
+        )
+    u = db.get_universe_stock(symbol)
+    if u:
+        snapshot["quality_score"] = u.get("quality_score")
+    return snapshot, tier
+
+
 def _build_db_summary(ticker: str, db) -> str:
     """
     Build a company summary from DB universe + fundamentals data.
@@ -240,9 +268,24 @@ def weekly_auto_trade():
             return
 
         import json
+        from datetime import date
 
         from src.analyzer import CompanyAnalyzer
+        from src.benchmark import fetch_benchmark_return
+        from src.database import Database
         from src.valuation import ValuationAggregator, screen_for_undervalued
+
+        # Decision journal: persists every buy/sell with reasoning + realized outcome.
+        db = Database()
+
+        # Market regime at decision time (best-effort; never block trading on it).
+        regime_label = None
+        try:
+            from src.bubble_detector import classify_market_regime
+
+            regime_label = classify_market_regime().regime
+        except Exception as e:
+            logger.warning(f"Could not classify market regime: {e}")
 
         # Load watchlist from weekly_screen
         watchlist_path = Path("./data/watchlist.json")
@@ -305,6 +348,20 @@ def weekly_auto_trade():
             if order:
                 current_positions += 1
                 logger.info(f"Bought {val.symbol}: ${amount:,.0f}")
+                try:
+                    snapshot, tier = _build_reasoning_snapshot(db, val.symbol, val)
+                    db.log_decision(
+                        val.symbol,
+                        "buy",
+                        tier=tier,
+                        notional=amount,
+                        order_id=order.get("order_id"),
+                        reason="Weekly auto-trade: undervalued (Haiku-screened)",
+                        regime=regime_label,
+                        reasoning_snapshot=snapshot,
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to journal buy for {val.symbol}: {e}")
 
         # Check existing positions for take-profit sells.
         # Margin of safety = (fair_value - price) / fair_value.
@@ -320,11 +377,43 @@ def weekly_auto_trade():
                 try:
                     val = aggregator.get_valuation(symbol)
                     if val and val.margin_of_safety is not None and val.margin_of_safety < 0.05:
-                        trader.sell(
-                            symbol,
-                            reason=f"Take profit: margin of safety {val.margin_of_safety:.1%} "
-                            f"(stock near fair value ${val.average_fair_value:.2f})",
+                        reason = (
+                            f"Take profit: margin of safety {val.margin_of_safety:.1%} "
+                            f"(stock near fair value ${val.average_fair_value:.2f})"
                         )
+                        sell_order = trader.sell(symbol, reason=reason)
+                        if sell_order:
+                            try:
+                                exit_id = db.log_decision(
+                                    symbol,
+                                    "sell",
+                                    price=pos.get("current_price"),
+                                    shares=pos.get("qty"),
+                                    notional=pos.get("market_value"),
+                                    order_id=sell_order.get("order_id"),
+                                    reason=reason,
+                                    regime=regime_label,
+                                )
+                                # Benchmark return over the exact hold window (fetched
+                                # here, not in the DB layer, to keep that module offline).
+                                open_buy = db.get_open_buy(symbol)
+                                bench = None
+                                if open_buy and open_buy.get("decided_at"):
+                                    bench = fetch_benchmark_return(
+                                        open_buy["decided_at"],
+                                        date.today().isoformat(),
+                                        symbol=config.benchmark_symbol,
+                                    )
+                                db.close_trade(
+                                    symbol,
+                                    exit_decision_id=exit_id,
+                                    entry_price=pos.get("avg_entry_price"),
+                                    exit_price=pos.get("current_price"),
+                                    shares=pos.get("qty"),
+                                    benchmark_return=bench,
+                                )
+                            except Exception as e:
+                                logger.warning(f"Failed to journal sell for {symbol}: {e}")
                 except Exception as e:
                     logger.warning(f"Error checking {symbol}: {e}")
 

@@ -94,6 +94,36 @@ def fetch_benchmark_data(symbol: str = "SPY") -> dict:
         }
 
 
+def fetch_benchmark_return(start_date: str, end_date: Optional[str] = None, symbol: str = "SPY") -> Optional[float]:
+    """
+    Total price return of the benchmark over [start_date, end_date].
+
+    Used by the decision journal to compute alpha over a position's exact hold
+    window. Dates are ISO strings (YYYY-MM-DD); end_date defaults to today.
+    Returns the fractional return (e.g. 0.08 for +8%), or None if price history
+    is unavailable.
+    """
+    import yfinance as yf
+
+    if not start_date:
+        return None
+    start = start_date[:10]
+    end = (end_date or datetime.now().strftime("%Y-%m-%d"))[:10]
+    try:
+        ticker = yf.Ticker(symbol)
+        # end is exclusive in yfinance; nudge it out a day so a same-day window
+        # still returns the bracketing closes.
+        hist = ticker.history(start=start, end=end)
+        if len(hist) >= 2:
+            first_close = hist["Close"].iloc[0]
+            last_close = hist["Close"].iloc[-1]
+            if first_close > 0:
+                return (last_close - first_close) / first_close
+    except Exception as e:
+        logger.warning(f"Error calculating benchmark return for {symbol} [{start}..{end}]: {e}")
+    return None
+
+
 def _calculate_ytd_return(ticker) -> Optional[float]:
     """Calculate year-to-date return from price history."""
     try:

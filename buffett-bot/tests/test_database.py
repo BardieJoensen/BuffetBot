@@ -71,9 +71,18 @@ class TestSchema:
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
         conn.close()
         expected = {
-            "universe", "fundamentals", "haiku_screens", "deep_analyses",
-            "price_alerts", "run_log", "news_events", "tier_history",
-            "budget_caps", "paper_positions",
+            "universe",
+            "fundamentals",
+            "haiku_screens",
+            "deep_analyses",
+            "price_alerts",
+            "run_log",
+            "news_events",
+            "tier_history",
+            "budget_caps",
+            "paper_positions",
+            "decision_log",
+            "closed_trades",
         }
         assert expected.issubset(tables)
 
@@ -149,15 +158,12 @@ class TestCanSpend:
             t.join()
 
         allowed_count = sum(1 for r in results if r)
-        assert allowed_count == max_calls, (
-            f"Expected exactly {max_calls} allowed, got {allowed_count}"
-        )
+        assert allowed_count == max_calls, f"Expected exactly {max_calls} allowed, got {allowed_count}"
 
     def test_counter_at_limit_after_concurrent_calls(self, tmp_db_path):
         """After concurrent exhaustion, counter must equal max_calls (not more)."""
         db = Database(db_path=tmp_db_path)
-        threads = [threading.Thread(target=lambda: db.can_spend("weekly_news_haiku"))
-                   for _ in range(100)]
+        threads = [threading.Thread(target=lambda: db.can_spend("weekly_news_haiku")) for _ in range(100)]
         for t in threads:
             t.start()
         for t in threads:
@@ -297,7 +303,7 @@ class TestTierHistory:
         db.log_tier_change("AAPL", new_tier="B", trigger="bulk_load")
         db.log_tier_change("AAPL", new_tier="A", old_tier="B", trigger="price_move")
         history = db.get_tier_history("AAPL")
-        assert history[0]["new_tier"] == "A"   # most recent first
+        assert history[0]["new_tier"] == "A"  # most recent first
         assert history[0]["old_tier"] == "B"
 
     def test_history_is_immutable_append_only(self, db):
@@ -347,9 +353,7 @@ class TestRetention:
 
         # Verify the recent record still exists by checking it's not in expiring
         conn = sqlite3.connect(str(db.path))
-        count = conn.execute(
-            "SELECT COUNT(*) FROM fundamentals WHERE ticker = 'KEEP'"
-        ).fetchone()[0]
+        count = conn.execute("SELECT COUNT(*) FROM fundamentals WHERE ticker = 'KEEP'").fetchone()[0]
         conn.close()
         assert count == 1
 

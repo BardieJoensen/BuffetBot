@@ -4,6 +4,10 @@ __pycache__/
 .claude/
 .idea/
 
+# Virtualenvs
+.venv/
+venv/
+
 # Tool caches
 .mypy_cache/
 .ruff_cache/
@@ -22,3 +26,6 @@ buffett-bot/data/trade_log.json
 buffett-bot/data/portfolio.json
 buffett-bot/data/trades.json
 buffett-bot/data/contributions.json
+
+# Implementation planning docs (local, not tracked)
+buffettbot-v3-implementation-plan*.md

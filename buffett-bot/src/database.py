@@ -160,6 +160,52 @@ CREATE TABLE IF NOT EXISTS paper_positions (
     gain_loss_pct   REAL,
     last_synced     TIMESTAMP
 );
+
+-- Append-only event log of every buy/sell decision with full reasoning context.
+-- Unlike paper_positions (open positions only, overwritten on sync), this is
+-- never mutated — it is the permanent record of what was decided and why.
+CREATE TABLE IF NOT EXISTS decision_log (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker          TEXT NOT NULL,
+    action          TEXT NOT NULL,      -- 'buy' / 'sell'
+    decided_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    tier            TEXT,               -- tier at decision time, if known
+    price           REAL,               -- fill price if known (NULL for queued notional buys)
+    shares          REAL,
+    notional        REAL,               -- dollar amount (known at buy time even when price isn't)
+    order_id        TEXT,
+    reason          TEXT,               -- trigger string (e.g. "Take profit: ...")
+    regime          TEXT,               -- market regime at decision time
+    reasoning_snapshot TEXT             -- JSON: thesis, fair_value, target_entry, margin_of_safety,
+                                        --       moat_rating, conviction, quality_score
+);
+
+-- One row per closed (sold) position, written on sell. Holds the realized
+-- outcome and a verdict on whether the original reasoning held up.
+CREATE TABLE IF NOT EXISTS closed_trades (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker            TEXT NOT NULL,
+    entry_decision_id INTEGER REFERENCES decision_log(id),
+    exit_decision_id  INTEGER REFERENCES decision_log(id),
+    tier_at_entry     TEXT,
+    entry_date        TEXT,
+    exit_date         TEXT,
+    hold_days         INTEGER,
+    entry_price       REAL,
+    exit_price        REAL,
+    shares            REAL,
+    cost_basis        REAL,
+    proceeds          REAL,
+    realized_pl       REAL,
+    realized_pl_pct   REAL,
+    benchmark_return  REAL,             -- benchmark total return over the same hold window
+    alpha             REAL,             -- realized_pl_pct - benchmark_return
+    entry_fair_value  REAL,
+    converged         INTEGER,          -- BOOLEAN (nullable): did price move toward entry fair value?
+    sell_category     TEXT,             -- 'take_profit'/'thesis_breaker'/'stop'/'manual'/'other'
+    reasoning_sound   INTEGER,          -- BOOLEAN (nullable): did the original reasoning hold up?
+    notes             TEXT
+);
 """
 
 INDEXES_SQL = """
@@ -194,6 +240,16 @@ CREATE INDEX IF NOT EXISTS idx_haiku_expiry
 -- Latest Haiku result per ticker
 CREATE INDEX IF NOT EXISTS idx_haiku_latest
     ON haiku_screens(ticker, screened_at DESC);
+
+-- Decision journal: recent decisions per ticker, and open-buy lookup on close
+CREATE INDEX IF NOT EXISTS idx_decision_log_ticker
+    ON decision_log(ticker, decided_at DESC);
+
+-- Track record: closed trades per ticker, and entry-decision back-reference
+CREATE INDEX IF NOT EXISTS idx_closed_trades_ticker
+    ON closed_trades(ticker, exit_date DESC);
+CREATE INDEX IF NOT EXISTS idx_closed_trades_entry
+    ON closed_trades(entry_decision_id);
 """
 
 BUDGET_CAPS_DEFAULTS = [
@@ -229,6 +285,47 @@ def _open(db_path: Path) -> Iterator[sqlite3.Connection]:
         raise
     finally:
         conn.close()
+
+
+# ─── Decision Journal Helpers ──────────────────────────────────────────────
+
+
+def _classify_sell_reason(reason: str) -> str:
+    """
+    Map a free-text sell reason to a category. Order matters: the most specific
+    phrases are checked first.
+    """
+    r = (reason or "").lower()
+    if "take profit" in r or "take-profit" in r or "fair value" in r:
+        return "take_profit"
+    if "thesis" in r or "breaker" in r or "broke" in r:
+        return "thesis_breaker"
+    if "stop" in r:
+        return "stop"
+    if "manual" in r:
+        return "manual"
+    return "other"
+
+
+def _score_reasoning_soundness(category: str, alpha: Optional[float], converged: Optional[int]) -> Optional[int]:
+    """
+    Verdict on whether the original buy reasoning held up, given the realized
+    outcome. Default rubric (tunable; recorded in the Phase 1 commit):
+
+      - take_profit  → sound iff the stock converged toward our entry fair value
+                       AND we beat the benchmark (alpha > 0). This is the case we
+                       can fully judge at close: we predicted it would rise to
+                       fair value, and it did, better than the market.
+      - thesis_breaker / stop / manual / other → None (unknown at close time).
+        A thesis-breaker's soundness ("did selling avoid a larger drawdown than
+        holding?") needs forward prices after the exit, so it is left for a
+        later post-hoc pass rather than guessed now.
+    """
+    if category == "take_profit":
+        if alpha is None or converged is None:
+            return None
+        return 1 if (alpha > 0 and converged == 1) else 0
+    return None
 
 
 # ─── Database Class ────────────────────────────────────────────────────────
@@ -889,6 +986,252 @@ class Database:
     def get_paper_positions(self) -> list[dict]:
         with _open(self.path) as conn:
             rows = conn.execute("SELECT * FROM paper_positions ORDER BY ticker").fetchall()
+            return [dict(r) for r in rows]
+
+    # ── Decision Journal & Track Record ───────────────────────────────────────
+
+    def log_decision(
+        self,
+        ticker: str,
+        action: str,
+        *,
+        tier: Optional[str] = None,
+        price: Optional[float] = None,
+        shares: Optional[float] = None,
+        notional: Optional[float] = None,
+        order_id: Optional[str] = None,
+        reason: str = "",
+        regime: Optional[str] = None,
+        reasoning_snapshot: Optional[dict] = None,
+    ) -> int:
+        """
+        Append a buy/sell decision to the permanent journal.
+
+        Returns the new decision_log row id (used as entry/exit reference in
+        closed_trades). `reasoning_snapshot` is stored as JSON.
+        """
+        if action not in ("buy", "sell"):
+            raise ValueError(f"action must be 'buy' or 'sell', got {action!r}")
+        with _open(self.path) as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO decision_log
+                    (ticker, action, tier, price, shares, notional, order_id,
+                     reason, regime, reasoning_snapshot)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    ticker,
+                    action,
+                    tier,
+                    price,
+                    shares,
+                    notional,
+                    order_id,
+                    reason,
+                    regime,
+                    json.dumps(reasoning_snapshot) if reasoning_snapshot is not None else None,
+                ),
+            )
+            return int(cur.lastrowid)
+
+    def get_open_buy(self, ticker: str) -> Optional[dict]:
+        """
+        Return the most recent 'buy' decision for a ticker that has not yet been
+        matched to a closed trade, or None. This is the entry that a subsequent
+        sell closes against.
+        """
+        with _open(self.path) as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM decision_log
+                WHERE ticker = ? AND action = 'buy'
+                  AND id NOT IN (
+                      SELECT entry_decision_id FROM closed_trades
+                      WHERE entry_decision_id IS NOT NULL
+                  )
+                ORDER BY decided_at DESC, id DESC
+                LIMIT 1
+                """,
+                (ticker,),
+            ).fetchone()
+            if not row:
+                return None
+            d = dict(row)
+            d["reasoning_snapshot"] = json.loads(d["reasoning_snapshot"]) if d["reasoning_snapshot"] else None
+            return d
+
+    def close_trade(
+        self,
+        ticker: str,
+        *,
+        exit_decision_id: int,
+        entry_price: float,
+        exit_price: float,
+        shares: float,
+        exit_date: Optional[str] = None,
+        sell_category: Optional[str] = None,
+        benchmark_return: Optional[float] = None,
+        notes: str = "",
+    ) -> Optional[int]:
+        """
+        Record a closed trade: match the open buy for `ticker`, compute the
+        realized outcome (P&L, alpha, convergence) and a soundness verdict, and
+        insert one closed_trades row.
+
+        entry/exit prices and shares come from the broker position (Alpaca's
+        avg_entry_price / current_price), not the queued order — a notional buy
+        has no fill price at decision time. `benchmark_return` is fetched by the
+        caller over the hold window (kept out of the DB layer so this module
+        stays network-free and unit-testable offline). Returns the new
+        closed_trades id, or None if no matching open buy exists.
+        """
+        open_buy = self.get_open_buy(ticker)
+        if open_buy is None:
+            logger.warning(f"close_trade: no open buy found for {ticker} — skipping")
+            return None
+
+        exit_date = exit_date or date.today().isoformat()
+        entry_date = (open_buy.get("decided_at") or "")[:10] or None
+        snapshot = open_buy.get("reasoning_snapshot") or {}
+        entry_fair_value = snapshot.get("fair_value")
+        tier_at_entry = open_buy.get("tier")
+
+        cost_basis = entry_price * shares
+        proceeds = exit_price * shares
+        realized_pl = proceeds - cost_basis
+        realized_pl_pct = (realized_pl / cost_basis) if cost_basis else None
+
+        hold_days = None
+        if entry_date:
+            try:
+                hold_days = (date.fromisoformat(exit_date) - date.fromisoformat(entry_date)).days
+            except ValueError:
+                hold_days = None
+
+        alpha = None
+        if realized_pl_pct is not None and benchmark_return is not None:
+            alpha = realized_pl_pct - benchmark_return
+
+        converged = None
+        if entry_fair_value is not None:
+            predicted_up = entry_fair_value > entry_price
+            moved_up = exit_price > entry_price
+            converged = 1 if predicted_up == moved_up else 0
+
+        # Category comes from the *sell* reason, not the buy's. Look it up from
+        # the exit decision unless the caller passed one explicitly.
+        if sell_category is None:
+            with _open(self.path) as conn:
+                exit_row = conn.execute("SELECT reason FROM decision_log WHERE id = ?", (exit_decision_id,)).fetchone()
+            exit_reason = (exit_row["reason"] if exit_row else "") or ""
+            category = _classify_sell_reason(exit_reason)
+        else:
+            category = sell_category
+        reasoning_sound = _score_reasoning_soundness(category, alpha, converged)
+
+        with _open(self.path) as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO closed_trades
+                    (ticker, entry_decision_id, exit_decision_id, tier_at_entry,
+                     entry_date, exit_date, hold_days, entry_price, exit_price,
+                     shares, cost_basis, proceeds, realized_pl, realized_pl_pct,
+                     benchmark_return, alpha, entry_fair_value, converged,
+                     sell_category, reasoning_sound, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    ticker,
+                    open_buy["id"],
+                    exit_decision_id,
+                    tier_at_entry,
+                    entry_date,
+                    exit_date,
+                    hold_days,
+                    entry_price,
+                    exit_price,
+                    shares,
+                    cost_basis,
+                    proceeds,
+                    realized_pl,
+                    realized_pl_pct,
+                    benchmark_return,
+                    alpha,
+                    entry_fair_value,
+                    converged,
+                    category,
+                    reasoning_sound,
+                    notes,
+                ),
+            )
+            return int(cur.lastrowid)
+
+    def get_decision_log(self, ticker: Optional[str] = None, limit: int = 100) -> list[dict]:
+        """Return recent decisions (all tickers, or one), newest first."""
+        with _open(self.path) as conn:
+            if ticker:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM decision_log WHERE ticker = ?
+                    ORDER BY decided_at DESC, id DESC LIMIT ?
+                    """,
+                    (ticker, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM decision_log ORDER BY decided_at DESC, id DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            out = []
+            for r in rows:
+                d = dict(r)
+                d["reasoning_snapshot"] = json.loads(d["reasoning_snapshot"]) if d["reasoning_snapshot"] else None
+                out.append(d)
+            return out
+
+    def get_closed_trades(self, ticker: Optional[str] = None, limit: int = 100) -> list[dict]:
+        """Return closed trades (all tickers, or one), most recently closed first."""
+        with _open(self.path) as conn:
+            if ticker:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM closed_trades WHERE ticker = ?
+                    ORDER BY exit_date DESC, id DESC LIMIT ?
+                    """,
+                    (ticker, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM closed_trades ORDER BY exit_date DESC, id DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            return [dict(r) for r in rows]
+
+    def tier_performance(self) -> list[dict]:
+        """
+        Per-tier aggregates over closed trades: count, avg realized %, hit rate,
+        avg hold days, avg alpha, and soundness rate. Tiers with no closed trades
+        do not appear. soundness_rate is computed only over trades that have a
+        non-null verdict.
+        """
+        with _open(self.path) as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    COALESCE(tier_at_entry, '?')                         AS tier,
+                    COUNT(*)                                             AS n,
+                    AVG(realized_pl_pct)                                 AS avg_realized_pct,
+                    AVG(CASE WHEN realized_pl > 0 THEN 1.0 ELSE 0.0 END) AS hit_rate,
+                    AVG(hold_days)                                       AS avg_hold_days,
+                    AVG(alpha)                                           AS avg_alpha,
+                    AVG(CASE WHEN reasoning_sound IS NOT NULL
+                             THEN CAST(reasoning_sound AS REAL) END)     AS soundness_rate
+                FROM closed_trades
+                GROUP BY COALESCE(tier_at_entry, '?')
+                ORDER BY tier
+                """
+            ).fetchall()
             return [dict(r) for r in rows]
 
     # ── Data Retention ────────────────────────────────────────────────────────

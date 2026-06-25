@@ -278,6 +278,28 @@ def _text_briefing(
         out.append("  No paper positions open.")
         out.append("")
 
+    # ── Track Record (realized performance by tier) ───────────────────────────
+    perf = db.tier_performance()
+    if perf:
+        out.append("-" * 70)
+        out.append("## TRACK RECORD (closed trades, by tier)")
+        out.append("")
+        out.append(f"  {'Tier':<5} {'N':>3}  {'Avg P&L':>9}  {'Hit':>5}  {'Avg Hold':>9}  {'Sound':>6}")
+        out.append(f"  {'----':<5} {'---':>3}  {'---------':>9}  {'-----':>5}  {'---------':>9}  {'------':>6}")
+        for r in perf:
+            avg = r.get("avg_realized_pct")
+            hit = r.get("hit_rate")
+            hold = r.get("avg_hold_days")
+            sound = r.get("soundness_rate")
+            avg_s = f"{avg:+.1%}" if avg is not None else "—"
+            hit_s = f"{hit:.0%}" if hit is not None else "—"
+            hold_s = f"{hold:.0f}d" if hold is not None else "—"
+            sound_s = f"{sound:.0%}" if sound is not None else "—"
+            out.append(f"  {r['tier']:<5} {r['n']:>3}  {avg_s:>9}  {hit_s:>5}  {hold_s:>9}  {sound_s:>6}")
+        out.append("")
+        out.append("  Sound = share of judgeable closes whose original reasoning held up.")
+        out.append("")
+
     # ── B-Tier Watch (farther from target) ────────────────────────────────────
     if b_watch:
         out.append("-" * 70)
