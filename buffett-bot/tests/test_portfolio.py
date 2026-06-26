@@ -9,7 +9,21 @@ from datetime import date
 import pytest
 
 import src.portfolio as portfolio
-from src.portfolio import PortfolioTracker, Position
+from src.portfolio import SECTOR_OVERRIDES, PortfolioTracker, Position, _resolve_sector
+
+
+class TestResolveSector:
+    def test_prefers_sector_then_disp_then_key(self):
+        assert _resolve_sector({"sector": "Technology"}) == "Technology"
+        assert _resolve_sector({"sectorDisp": "Healthcare"}) == "Healthcare"
+        assert _resolve_sector({"sectorKey": "financial-services"}) == "Financial Services"
+
+    def test_manual_override_when_yfinance_empty(self):
+        # AL (Air Lease) 404s on Yahoo → empty info → override fills it.
+        assert _resolve_sector({}, "AL") == SECTOR_OVERRIDES["AL"] == "Industrials"
+
+    def test_none_when_nothing_resolves(self):
+        assert _resolve_sector({}, "ZZZ") is None
 
 
 @pytest.fixture

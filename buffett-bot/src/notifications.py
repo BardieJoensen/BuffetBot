@@ -14,6 +14,7 @@ v2.0 additions:
 Configure your preferred method in .env
 """
 
+import json
 import logging
 import os
 import smtplib
@@ -329,14 +330,23 @@ class DiscordNotifier:
         self.configured = bool(self.webhook_url)
 
     def send_briefing(self, briefing_text: str) -> bool:
-        """Send monthly briefing via Discord"""
-
+        """
+        Send the monthly briefing as a SINGLE Discord message with the full
+        report attached as a markdown file (Discord caps a message at 2000 chars,
+        so inline text would otherwise be split across many messages). Falls back
+        to chunked embeds only if the file upload fails.
+        """
         if not self.configured:
             logger.warning("Discord not configured. Skipping.")
             return False
 
-        chunks = self._split_message(briefing_text, 1900)
+        filename = f"briefing_{datetime.now():%Y_%m}.md"
+        if self._send_file(filename, briefing_text, message="📊 **Monthly briefing** — full report attached."):
+            return True
 
+        # Fallback: chunked embeds (kept so the briefing still gets through).
+        logger.warning("Discord file upload failed — falling back to chunked messages")
+        chunks = self._split_message(briefing_text, 1900)
         success = True
         for i, chunk in enumerate(chunks):
             embed = {
@@ -344,11 +354,25 @@ class DiscordNotifier:
                 "description": f"```\n{chunk}\n```",
                 "color": 3066993,
             }
-
             if not self._send(embed=embed):
                 success = False
-
         return success
+
+    def _send_file(self, filename: str, content: str, *, message: str = "") -> bool:
+        """Upload a text file to the Discord webhook as one message + attachment."""
+        if not self.webhook_url:
+            return False
+        try:
+            files = {"file": (filename, content.encode("utf-8"), "text/markdown")}
+            data = {"payload_json": json.dumps({"content": message} if message else {})}
+            response = requests.post(self.webhook_url, data=data, files=files, timeout=30)
+            if response.status_code in [200, 204]:
+                return True
+            logger.error(f"Discord file upload error: {response.status_code} - {response.text}")
+            return False
+        except Exception as e:
+            logger.error(f"Discord file upload failed: {e}")
+            return False
 
     def send_alert(self, symbol: str, message: str) -> bool:
         """Send urgent alert"""

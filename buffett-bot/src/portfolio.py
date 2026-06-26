@@ -37,6 +37,25 @@ MAX_SINGLE_POSITION_PCT = 0.25  # Never >25% in one stock
 ASK_CONTRIBUTION_LIMIT_DKK = config.ask_contribution_limit_dkk
 ASK_DIVIDEND_TAX_RATE = 0.17  # ASK dividend tax
 
+# Manual sector fallback for tickers Yahoo/yfinance can't resolve (e.g. AL =
+# Air Lease 404s on Yahoo's quoteSummary despite being an active NYSE stock).
+SECTOR_OVERRIDES = {
+    "AL": "Industrials",  # Air Lease Corp — aircraft leasing
+}
+
+
+def _resolve_sector(info: dict, symbol: str = "") -> Optional[str]:
+    """Best-effort sector from yfinance, trying its several field names, then a
+    manual override. Returns None if nothing resolves (caller keeps last-known)."""
+    for key in ("sector", "sectorDisp"):
+        v = info.get(key)
+        if v:
+            return v
+    sk = info.get("sectorKey")  # e.g. "financial-services"
+    if sk:
+        return sk.replace("-", " ").title()
+    return SECTOR_OVERRIDES.get(symbol.upper())
+
 
 @dataclass
 class Position:
@@ -320,11 +339,22 @@ class PortfolioTracker:
                     position.current_value = price * position.shares
                     position.gain_loss = position.current_value - (position.cost_basis * position.shares)
                     position.gain_loss_pct = (price - position.cost_basis) / position.cost_basis
-                    position.sector = info.get("sector", "Unknown")
                     position.dividend_yield = info.get("dividendYield")
+
+                # Resolve sector even if price was missing; never clobber a
+                # known sector with "Unknown" on a failed/sparse fetch.
+                resolved = _resolve_sector(info, position.symbol)
+                if resolved:
+                    position.sector = resolved
+                elif position.sector is None:
+                    position.sector = SECTOR_OVERRIDES.get(position.symbol.upper())
 
             except Exception as e:
                 logger.error(f"Error fetching price for {position.symbol}: {e}")
+                # yfinance can raise on unresolvable symbols (e.g. AL 404s) —
+                # still apply the manual sector fallback so exposure isn't "Unknown".
+                if position.sector is None:
+                    position.sector = SECTOR_OVERRIDES.get(position.symbol.upper())
 
         self._save()
 
