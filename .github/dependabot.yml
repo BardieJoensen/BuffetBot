@@ -1,0 +1,24 @@
+version: 2
+updates:
+  # Keep GitHub Actions versions current.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # Python dependencies (runtime + dev/CI tooling).
+  - package-ecosystem: pip
+    directory: "/buffett-bot"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      dev-tooling:
+        patterns:
+          - "ruff"
+          - "mypy"
+          - "types-*"
+          - "bandit"
+          - "detect-secrets"
+          - "pytest"
