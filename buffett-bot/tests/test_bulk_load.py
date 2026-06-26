@@ -13,18 +13,10 @@ We test the pure-Python helpers that contain logic:
 No yfinance or Anthropic API calls are made.
 """
 
-import sys
-from pathlib import Path
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
-# ── Bootstrap path ──────────────────────────────────────────────────────────
-_PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(_PROJECT_ROOT))
-sys.path.insert(0, str(_PROJECT_ROOT / "scripts"))
-
-from datetime import datetime
-
-from bulk_load import (
+from scripts.bulk_load import (
     _build_company_summary,
     _moat_hint_to_label,
     _priority_list,
@@ -34,7 +26,6 @@ from bulk_load import (
     step4_haiku_batch,
     step6_report,
 )
-
 from src.database import Database
 from src.quality_scorer import QualityScore
 from src.screener import ScreenedStock, ScreeningCriteria, StockScreener

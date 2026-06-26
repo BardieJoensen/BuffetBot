@@ -22,9 +22,5 @@ schedule>=1.2.0
 # Trading (Alpaca)
 alpaca-py>=0.13.0
 
-# Testing
-pytest>=7.4.0
-
-# Dev tools
-pre-commit>=3.6.0
-detect-secrets>=1.5.0
+# Dev & CI tooling lives in requirements-dev.txt (kept out of the runtime
+# install / [project.dependencies]).

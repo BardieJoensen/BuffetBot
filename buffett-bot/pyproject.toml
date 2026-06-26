@@ -1,3 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "buffettbot"
+version = "2.0.0"
+description = "Buffett-style automated value-investing research bot"
+requires-python = ">=3.11"
+dynamic = ["dependencies", "optional-dependencies"]
+
+# `src` and `scripts` are the importable packages. Installing the project
+# (pip install -e .) makes `from src.x import y` / `from scripts.x import y`
+# resolve everywhere — no sys.path bootstrapping, and IDEs/type-checkers find
+# them without manually marking source roots.
+[tool.setuptools.packages.find]
+include = ["src*", "scripts*"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+optional-dependencies = { dev = { file = ["requirements-dev.txt"] } }
+
 [tool.ruff]
 target-version = "py311"
 line-length = 120

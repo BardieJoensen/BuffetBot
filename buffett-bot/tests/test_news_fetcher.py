@@ -17,15 +17,9 @@ External dependencies (Anthropic API, Finnhub HTTP, Alpaca) are always mocked.
 
 import sqlite3
 import sys
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-# ── Bootstrap path ────────────────────────────────────────────────────────────
-_PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(_PROJECT_ROOT))
-sys.path.insert(0, str(_PROJECT_ROOT / "scripts"))
 
 # Stub container-only packages so scheduler.py and src.analyzer can be
 # imported on the host test runner.
@@ -686,7 +680,7 @@ class TestRunNewsPipeline:
 class TestDailyNewsMonitor:
     def test_skips_when_no_api_key(self, tmp_path):
         """Job exits early and does not call run_news_pipeline when key is missing."""
-        from scheduler import daily_news_monitor
+        from scripts.scheduler import daily_news_monitor
 
         db = Database(tmp_path / "test.db")
         with (
@@ -700,7 +694,7 @@ class TestDailyNewsMonitor:
 
     def test_runs_pipeline_when_key_set(self, tmp_path):
         """Job calls run_news_pipeline when FINNHUB_API_KEY is present."""
-        from scheduler import daily_news_monitor
+        from scripts.scheduler import daily_news_monitor
 
         db = Database(tmp_path / "test.db")
         with (
@@ -722,7 +716,7 @@ class TestDailyNewsMonitor:
 
     def test_does_not_raise_on_db_error(self):
         """Exceptions inside the job must be caught and logged, not propagated."""
-        from scheduler import daily_news_monitor
+        from scripts.scheduler import daily_news_monitor
 
         with patch("src.database.Database", side_effect=RuntimeError("DB unavailable")):
             daily_news_monitor()  # must not raise

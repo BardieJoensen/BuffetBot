@@ -21,15 +21,9 @@ check_news_for_red_flags, analyze_company) and Finnhub HTTP are mocked.
 
 import sqlite3
 import sys
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-# ── Bootstrap path ────────────────────────────────────────────────────────────
-_PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(_PROJECT_ROOT))
-sys.path.insert(0, str(_PROJECT_ROOT / "scripts"))
 
 # Stub container-only packages before any scheduler/analyzer import
 _anthropic_mock = MagicMock()
@@ -117,7 +111,7 @@ class TestFullWeeklyCycle:
 
         Assertions cover every table touched by the write path.
         """
-        from scheduler import friday_sonnet_batch, wednesday_haiku_batch
+        from scripts.scheduler import friday_sonnet_batch, wednesday_haiku_batch
 
         db = Database(tmp_path / "test.db")
 

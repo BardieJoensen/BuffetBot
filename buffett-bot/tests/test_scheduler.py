@@ -15,15 +15,9 @@ External dependencies (yfinance, Anthropic API, Alpaca) are always mocked.
 
 import sys
 from datetime import datetime, timedelta
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-# ── Bootstrap path ──────────────────────────────────────────────────────────
-_PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(_PROJECT_ROOT))
-sys.path.insert(0, str(_PROJECT_ROOT / "scripts"))
 
 # Stub container-only packages so scheduler.py and src.analyzer can be
 # imported on the host test runner.  These live in the Docker image but
@@ -295,18 +289,18 @@ class TestGetHaikuPassesWithoutAnalysis:
 
 class TestMoatLabel:
     def test_wide(self):
-        from scheduler import _moat_label
+        from scripts.scheduler import _moat_label
 
         assert _moat_label(4) == "WIDE"
         assert _moat_label(5) == "WIDE"
 
     def test_narrow(self):
-        from scheduler import _moat_label
+        from scripts.scheduler import _moat_label
 
         assert _moat_label(3) == "NARROW"
 
     def test_none(self):
-        from scheduler import _moat_label
+        from scripts.scheduler import _moat_label
 
         assert _moat_label(2) == "NONE"
         assert _moat_label(0) == "NONE"
@@ -314,7 +308,7 @@ class TestMoatLabel:
 
 class TestBuildDbSummary:
     def test_returns_nonempty_string_with_data(self, db):
-        from scheduler import _build_db_summary
+        from scripts.scheduler import _build_db_summary
 
         _upsert_stock(db, "AAPL", quality_score=90.0)
         db.upsert_universe_stock(
@@ -332,14 +326,14 @@ class TestBuildDbSummary:
         assert "195" in summary
 
     def test_returns_ticker_line_when_no_fundamentals(self, db):
-        from scheduler import _build_db_summary
+        from scripts.scheduler import _build_db_summary
 
         _upsert_stock(db, "AAPL")
         summary = _build_db_summary("AAPL", db)
         assert "AAPL" in summary
 
     def test_returns_ticker_line_for_unknown_stock(self, db):
-        from scheduler import _build_db_summary
+        from scripts.scheduler import _build_db_summary
 
         summary = _build_db_summary("ZZZZ", db)
         assert "ZZZZ" in summary
@@ -351,7 +345,7 @@ class TestBuildDbSummary:
 class TestMondayMaintenance:
     def test_resets_weekly_budget_caps(self, tmp_path):
         """After maintenance, budget caps should be reset to 0."""
-        from scheduler import monday_maintenance
+        from scripts.scheduler import monday_maintenance
 
         db = Database(tmp_path / "test.db")
         # Spend some budget to simulate prior usage
@@ -373,7 +367,7 @@ class TestMondayMaintenance:
 
     def test_syncs_paper_positions_when_alpaca_enabled(self, tmp_path):
         """Paper positions should be upserted when Alpaca is configured."""
-        from scheduler import monday_maintenance
+        from scripts.scheduler import monday_maintenance
 
         db = Database(tmp_path / "test.db")
         _upsert_stock(db, "AAPL")
@@ -404,7 +398,7 @@ class TestMondayMaintenance:
 
     def test_skips_position_sync_when_alpaca_disabled(self, tmp_path):
         """No paper_positions rows should be written when Alpaca is off."""
-        from scheduler import monday_maintenance
+        from scripts.scheduler import monday_maintenance
 
         db = Database(tmp_path / "test.db")
 
@@ -423,7 +417,7 @@ class TestMondayMaintenance:
 
     def test_does_not_raise_on_empty_universe(self, tmp_path):
         """maintenance should succeed even if the universe is empty."""
-        from scheduler import monday_maintenance
+        from scripts.scheduler import monday_maintenance
 
         db = Database(tmp_path / "test.db")
 
@@ -445,7 +439,7 @@ class TestMondayMaintenance:
 class TestWednesdayHaikuBatch:
     def test_skips_when_budget_exhausted(self, tmp_path):
         """batch_quick_screen must NOT be called when budget is at max."""
-        from scheduler import wednesday_haiku_batch
+        from scripts.scheduler import wednesday_haiku_batch
 
         db = Database(tmp_path / "test.db")
         _upsert_stock(db, "AAPL")
@@ -458,7 +452,7 @@ class TestWednesdayHaikuBatch:
 
     def test_skips_when_no_candidates(self, tmp_path):
         """If all universe stocks have valid Haiku results, nothing is submitted."""
-        from scheduler import wednesday_haiku_batch
+        from scripts.scheduler import wednesday_haiku_batch
 
         db = Database(tmp_path / "test.db")
         _upsert_stock(db, "AAPL")
@@ -470,7 +464,7 @@ class TestWednesdayHaikuBatch:
 
     def test_submits_batch_and_saves_results(self, tmp_path):
         """Unscreened ticker → batch submitted → result saved to haiku_screens."""
-        from scheduler import wednesday_haiku_batch
+        from scripts.scheduler import wednesday_haiku_batch
 
         db = Database(tmp_path / "test.db")
         _upsert_stock(db, "AAPL", quality_score=85.0)
@@ -489,7 +483,7 @@ class TestWednesdayHaikuBatch:
 
     def test_budget_is_consumed_by_batch_count(self, tmp_path):
         """Exactly N slots should be consumed for an N-ticker batch."""
-        from scheduler import wednesday_haiku_batch
+        from scripts.scheduler import wednesday_haiku_batch
 
         db = Database(tmp_path / "test.db")
         for sym in ["AAPL", "MSFT", "GOOG"]:
@@ -509,7 +503,7 @@ class TestWednesdayHaikuBatch:
 
     def test_does_not_raise_on_api_error(self, tmp_path):
         """Job must not propagate exceptions; it logs and returns."""
-        from scheduler import wednesday_haiku_batch
+        from scripts.scheduler import wednesday_haiku_batch
 
         db = Database(tmp_path / "test.db")
         _upsert_stock(db, "AAPL")
@@ -524,7 +518,7 @@ class TestWednesdayHaikuBatch:
 
 class TestFridaySonnetBatch:
     def test_skips_when_budget_exhausted(self, tmp_path):
-        from scheduler import friday_sonnet_batch
+        from scripts.scheduler import friday_sonnet_batch
 
         db = Database(tmp_path / "test.db")
         _upsert_stock(db, "AAPL")
@@ -536,7 +530,7 @@ class TestFridaySonnetBatch:
             MockAnalyzer.return_value.batch_analyze_companies.assert_not_called()
 
     def test_skips_when_no_haiku_passes(self, tmp_path):
-        from scheduler import friday_sonnet_batch
+        from scripts.scheduler import friday_sonnet_batch
 
         db = Database(tmp_path / "test.db")
         _upsert_stock(db, "AAPL")
@@ -548,7 +542,7 @@ class TestFridaySonnetBatch:
 
     def test_submits_batch_and_saves_tier(self, tmp_path):
         """Haiku pass → batch_analyze_companies called → tier saved."""
-        from scheduler import friday_sonnet_batch
+        from scripts.scheduler import friday_sonnet_batch
 
         db = Database(tmp_path / "test.db")
         db.upsert_universe_stock(
@@ -603,7 +597,7 @@ class TestFridaySonnetBatch:
         assert any(a["ticker"] == "AAPL" for a in alerts)
 
     def test_does_not_raise_on_api_error(self, tmp_path):
-        from scheduler import friday_sonnet_batch
+        from scripts.scheduler import friday_sonnet_batch
 
         db = Database(tmp_path / "test.db")
         _upsert_stock(db, "AAPL")
@@ -615,7 +609,7 @@ class TestFridaySonnetBatch:
 
     def test_budget_consumed_by_actual_analyses(self, tmp_path):
         """Slots reserved == number of candidates submitted (up to limit=5)."""
-        from scheduler import friday_sonnet_batch
+        from scripts.scheduler import friday_sonnet_batch
 
         db = Database(tmp_path / "test.db")
         for sym in ["AAPL", "MSFT"]:

@@ -8,6 +8,11 @@ __pycache__/
 .venv/
 venv/
 
+# Build / packaging artifacts
+*.egg-info/
+build/
+dist/
+
 # Tool caches
 .mypy_cache/
 .ruff_cache/

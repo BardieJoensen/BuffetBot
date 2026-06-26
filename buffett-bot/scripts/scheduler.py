@@ -20,7 +20,6 @@ Set MONTHLY_BRIEFING_ENABLED=false to disable auto-briefing
 """
 
 import logging
-import sys
 import tempfile
 import time
 from datetime import datetime
@@ -28,8 +27,6 @@ from pathlib import Path
 
 import schedule
 from dotenv import load_dotenv
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.config import config
 

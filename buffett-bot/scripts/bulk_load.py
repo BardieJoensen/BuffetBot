@@ -35,9 +35,6 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 
-# ── Bootstrap sys.path so imports work from scripts/ ───────────────────────
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 from src.database import Database
 from src.quality_scorer import compute_quality_scores
 from src.screener import StockScreener, load_criteria_from_yaml

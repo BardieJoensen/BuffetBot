@@ -42,8 +42,10 @@ jobs:
           cache-dependency-path: |
             buffett-bot/requirements.txt
             buffett-bot/requirements-dev.txt
-      # Runtime deps + pinned mypy & type stubs → CI matches local exactly.
-      - run: pip install -r requirements.txt -r requirements-dev.txt
+            buffett-bot/pyproject.toml
+      # Editable install: runtime deps + pinned mypy & type stubs (the [dev]
+      # extra) → CI matches local exactly, and `src`/`scripts` resolve as packages.
+      - run: pip install -e ".[dev]"
       - run: mypy src/ scripts/
 
   test:
@@ -58,7 +60,8 @@ jobs:
           cache-dependency-path: |
             buffett-bot/requirements.txt
             buffett-bot/requirements-dev.txt
-      - run: pip install -r requirements.txt -r requirements-dev.txt
+            buffett-bot/pyproject.toml
+      - run: pip install -e ".[dev]"
       - run: pytest tests/ -q
 
   bandit:

@@ -15,13 +15,10 @@ Output:
 
 import argparse
 import logging
-import sys
 import tempfile
 from pathlib import Path
 
 from dotenv import load_dotenv
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.briefing.db_briefing import generate_briefing_from_db
 from src.database import Database
