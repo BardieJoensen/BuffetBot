@@ -575,6 +575,8 @@ class TestFridaySonnetBatch:
         mock_tier_assignment.tier = "A"
         mock_tier_assignment.tier_reason = "High quality, priced reasonably"
         mock_tier_assignment.price_gap_pct = -0.05
+        mock_tier_assignment.target_entry_price = 190.0
+        mock_tier_assignment.current_price = 180.0
 
         with (
             patch("src.database.Database", return_value=db),
