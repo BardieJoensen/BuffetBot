@@ -52,7 +52,6 @@ from src.news_fetcher import (
     run_news_pipeline,
 )
 
-
 # ─── Fixtures ─────────────────────────────────────────────────────────────────
 
 
@@ -89,9 +88,7 @@ def _setup_watched_ticker(db, ticker, tier="A"):
 def _exhaust_budget(db, cap_type):
     """Drive a budget cap to its maximum."""
     conn = sqlite3.connect(str(db.path))
-    conn.execute(
-        "UPDATE budget_caps SET calls_used = max_calls WHERE cap_type = ?", (cap_type,)
-    )
+    conn.execute("UPDATE budget_caps SET calls_used = max_calls WHERE cap_type = ?", (cap_type,))
     conn.commit()
     conn.close()
 
@@ -487,8 +484,10 @@ class TestRunNewsPipeline:
         mock_analysis = _make_sonnet_analysis("AAPL", "C")
         analyzer.analyze_company.return_value = mock_analysis
 
-        with patch("src.news_fetcher.assign_tier") as mock_tier, \
-             patch("src.news_fetcher.staged_entry_suggestion", return_value=None):
+        with (
+            patch("src.news_fetcher.assign_tier") as mock_tier,
+            patch("src.news_fetcher.staged_entry_suggestion", return_value=None),
+        ):
             mock_tier.return_value = MagicMock(tier="C", tier_reason="Risk", price_gap_pct=None)
             stats = run_news_pipeline(db, analyzer, fetcher)
 
@@ -502,8 +501,10 @@ class TestRunNewsPipeline:
         mock_analysis = _make_sonnet_analysis("META")
         analyzer.analyze_company.return_value = mock_analysis
 
-        with patch("src.news_fetcher.assign_tier") as mock_tier, \
-             patch("src.news_fetcher.staged_entry_suggestion", return_value=None):
+        with (
+            patch("src.news_fetcher.assign_tier") as mock_tier,
+            patch("src.news_fetcher.staged_entry_suggestion", return_value=None),
+        ):
             mock_tier.return_value = MagicMock(tier="B", tier_reason="Monitor", price_gap_pct=0.1)
             run_news_pipeline(db, analyzer, fetcher)
 
@@ -529,8 +530,7 @@ class TestRunNewsPipeline:
     def test_news_event_logged_to_db(self, db):
         _setup_watched_ticker(db, "META")
         fetcher = _make_fetcher(
-            {"META": [{"headline": "Meta CEO steps down", "source": "Reuters",
-                       "datetime": 1700000000, "summary": ""}]}
+            {"META": [{"headline": "Meta CEO steps down", "source": "Reuters", "datetime": 1700000000, "summary": ""}]}
         )
         analyzer = _make_analyzer(has_red_flags=False, recommendation="HOLD")
         run_news_pipeline(db, analyzer, fetcher)
@@ -550,8 +550,10 @@ class TestRunNewsPipeline:
         analyzer = _make_analyzer(has_red_flags=True, recommendation="SELL")
         analyzer.analyze_company.return_value = _make_sonnet_analysis("TSLA")
 
-        with patch("src.news_fetcher.assign_tier") as mock_tier, \
-             patch("src.news_fetcher.staged_entry_suggestion", return_value=None):
+        with (
+            patch("src.news_fetcher.assign_tier") as mock_tier,
+            patch("src.news_fetcher.staged_entry_suggestion", return_value=None),
+        ):
             mock_tier.return_value = MagicMock(tier="C", tier_reason="Sell", price_gap_pct=None)
             run_news_pipeline(db, analyzer, fetcher)
 
@@ -565,8 +567,10 @@ class TestRunNewsPipeline:
         analyzer.analyze_company.return_value = _make_sonnet_analysis("TSLA")
         notifier = MagicMock()
 
-        with patch("src.news_fetcher.assign_tier") as mock_tier, \
-             patch("src.news_fetcher.staged_entry_suggestion", return_value=None):
+        with (
+            patch("src.news_fetcher.assign_tier") as mock_tier,
+            patch("src.news_fetcher.staged_entry_suggestion", return_value=None),
+        ):
             mock_tier.return_value = MagicMock(tier="C", tier_reason="Sell", price_gap_pct=None)
             run_news_pipeline(db, analyzer, fetcher, notifier=notifier)
 
@@ -582,8 +586,10 @@ class TestRunNewsPipeline:
         analyzer.analyze_company.return_value = _make_sonnet_analysis("NVDA")
         notifier = MagicMock()
 
-        with patch("src.news_fetcher.assign_tier") as mock_tier, \
-             patch("src.news_fetcher.staged_entry_suggestion", return_value=None):
+        with (
+            patch("src.news_fetcher.assign_tier") as mock_tier,
+            patch("src.news_fetcher.staged_entry_suggestion", return_value=None),
+        ):
             # Same tier as before ("A")
             mock_tier.return_value = MagicMock(tier="A", tier_reason="Hold", price_gap_pct=0.1)
             run_news_pipeline(db, analyzer, fetcher, notifier=notifier)
@@ -631,8 +637,10 @@ class TestRunNewsPipeline:
         analyzer = _make_analyzer(has_red_flags=True, recommendation="SELL")
         analyzer.analyze_company.return_value = _make_sonnet_analysis("AAPL")
 
-        with patch("src.news_fetcher.assign_tier") as mock_tier, \
-             patch("src.news_fetcher.staged_entry_suggestion", return_value=None):
+        with (
+            patch("src.news_fetcher.assign_tier") as mock_tier,
+            patch("src.news_fetcher.staged_entry_suggestion", return_value=None),
+        ):
             mock_tier.return_value = MagicMock(tier="C", tier_reason="Downgrade", price_gap_pct=None)
             run_news_pipeline(db, analyzer, fetcher)
 
@@ -652,8 +660,10 @@ class TestRunNewsPipeline:
         analyzer = _make_analyzer(has_red_flags=True, recommendation="SELL")
         analyzer.analyze_company.return_value = _make_sonnet_analysis("COIN")
 
-        with patch("src.news_fetcher.assign_tier") as mock_tier, \
-             patch("src.news_fetcher.staged_entry_suggestion", return_value=[]):
+        with (
+            patch("src.news_fetcher.assign_tier") as mock_tier,
+            patch("src.news_fetcher.staged_entry_suggestion", return_value=[]),
+        ):
             mock_tier.return_value = MagicMock(tier="C", tier_reason="No moat", price_gap_pct=None)
             run_news_pipeline(db, analyzer, fetcher)
 
@@ -679,9 +689,11 @@ class TestDailyNewsMonitor:
         from scheduler import daily_news_monitor
 
         db = Database(tmp_path / "test.db")
-        with patch("src.database.Database", return_value=db), \
-             patch("src.news_fetcher.FinnhubNewsFetcher") as MockFetcher, \
-             patch("src.news_fetcher.run_news_pipeline") as mock_pipeline:
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.news_fetcher.FinnhubNewsFetcher") as MockFetcher,
+            patch("src.news_fetcher.run_news_pipeline") as mock_pipeline,
+        ):
             MockFetcher.return_value.api_key = ""
             daily_news_monitor()
         mock_pipeline.assert_not_called()
@@ -691,10 +703,12 @@ class TestDailyNewsMonitor:
         from scheduler import daily_news_monitor
 
         db = Database(tmp_path / "test.db")
-        with patch("src.database.Database", return_value=db), \
-             patch("src.analyzer.CompanyAnalyzer"), \
-             patch("src.news_fetcher.FinnhubNewsFetcher") as MockFetcher, \
-             patch("src.news_fetcher.run_news_pipeline") as mock_pipeline:
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.analyzer.CompanyAnalyzer"),
+            patch("src.news_fetcher.FinnhubNewsFetcher") as MockFetcher,
+            patch("src.news_fetcher.run_news_pipeline") as mock_pipeline,
+        ):
             MockFetcher.return_value.api_key = "test_key"  # pragma: allowlist secret
             mock_pipeline.return_value = {
                 "tickers_checked": 5,

@@ -447,9 +447,7 @@ class PortfolioTracker:
         est_annual_usd = total_value * weighted_yield
         est_annual_dkk = fx.usd_to_dkk(est_annual_usd, rate)
         # ASK taxes dividends at 17% — report the DKK figure net of that.
-        est_annual_dkk_after_tax = (
-            est_annual_dkk * (1 - ASK_DIVIDEND_TAX_RATE) if est_annual_dkk is not None else None
-        )
+        est_annual_dkk_after_tax = est_annual_dkk * (1 - ASK_DIVIDEND_TAX_RATE) if est_annual_dkk is not None else None
 
         return {
             "weighted_yield": weighted_yield,

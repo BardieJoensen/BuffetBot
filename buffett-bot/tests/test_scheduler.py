@@ -31,13 +31,16 @@ sys.path.insert(0, str(_PROJECT_ROOT / "scripts"))
 # anthropic needs sub-module stubs too (src/analyzer.py imports anthropic.types).
 _anthropic_mock = MagicMock()
 for _pkg in (
-    "schedule", "dotenv",
-    "anthropic", "anthropic.types", "anthropic.lib", "anthropic.lib.streaming",
+    "schedule",
+    "dotenv",
+    "anthropic",
+    "anthropic.types",
+    "anthropic.lib",
+    "anthropic.lib.streaming",
 ):
     sys.modules.setdefault(_pkg, _anthropic_mock)
 
 from src.database import Database
-
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -56,8 +59,8 @@ def _save_haiku(db, ticker, passed=True, expires_delta_days=180):
     """Insert a haiku_screens row with a controlled expiry."""
     now = datetime.now()
     expires = (now + timedelta(days=expires_delta_days)).isoformat()
-    import sqlite3
     from src.database import _open
+
     with _open(db.path) as conn:
         conn.execute(
             """
@@ -204,8 +207,8 @@ class TestGetUnscreenedTickers:
 
     def test_excludes_out_of_universe_stocks(self, db):
         _upsert_stock(db, "AAPL")
-        import sqlite3
         from src.database import _open
+
         with _open(db.path) as conn:
             conn.execute("UPDATE universe SET in_universe = 0 WHERE ticker = 'AAPL'")
         result = db.get_unscreened_tickers()
@@ -293,15 +296,18 @@ class TestGetHaikuPassesWithoutAnalysis:
 class TestMoatLabel:
     def test_wide(self):
         from scheduler import _moat_label
+
         assert _moat_label(4) == "WIDE"
         assert _moat_label(5) == "WIDE"
 
     def test_narrow(self):
         from scheduler import _moat_label
+
         assert _moat_label(3) == "NARROW"
 
     def test_none(self):
         from scheduler import _moat_label
+
         assert _moat_label(2) == "NONE"
         assert _moat_label(0) == "NONE"
 
@@ -309,10 +315,14 @@ class TestMoatLabel:
 class TestBuildDbSummary:
     def test_returns_nonempty_string_with_data(self, db):
         from scheduler import _build_db_summary
+
         _upsert_stock(db, "AAPL", quality_score=90.0)
         db.upsert_universe_stock(
-            "AAPL", company_name="Apple Inc", sector="Technology",
-            market_cap=3e12, source="conviction",
+            "AAPL",
+            company_name="Apple Inc",
+            sector="Technology",
+            market_cap=3e12,
+            source="conviction",
         )
         db.save_fundamentals("AAPL", {"price": 195.0, "roe": 0.17, "roic": 0.45}, as_of_date="2026-03-03")
         summary = _build_db_summary("AAPL", db)
@@ -323,12 +333,14 @@ class TestBuildDbSummary:
 
     def test_returns_ticker_line_when_no_fundamentals(self, db):
         from scheduler import _build_db_summary
+
         _upsert_stock(db, "AAPL")
         summary = _build_db_summary("AAPL", db)
         assert "AAPL" in summary
 
     def test_returns_ticker_line_for_unknown_stock(self, db):
         from scheduler import _build_db_summary
+
         summary = _build_db_summary("ZZZZ", db)
         assert "ZZZZ" in summary
 
@@ -346,11 +358,13 @@ class TestMondayMaintenance:
         db.spend_batch("weekly_haiku_screen", 15)
         assert db.get_budget_status("weekly_haiku_screen")["calls_used"] == 15
 
-        with patch("src.database.Database", return_value=db), \
-             patch("src.screener.StockScreener") as MockScreener, \
-             patch("src.quality_scorer.compute_quality_scores", return_value={}), \
-             patch("yfinance.Ticker"), \
-             patch("src.paper_trader.PaperTrader") as MockTrader:
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.screener.StockScreener") as MockScreener,
+            patch("src.quality_scorer.compute_quality_scores", return_value={}),
+            patch("yfinance.Ticker"),
+            patch("src.paper_trader.PaperTrader") as MockTrader,
+        ):
             MockScreener.return_value.screen_tickers.return_value = []
             MockTrader.return_value.is_enabled.return_value = False
             monday_maintenance()
@@ -372,11 +386,13 @@ class TestMondayMaintenance:
             "qty": 10.0,
         }
 
-        with patch("src.database.Database", return_value=db), \
-             patch("src.screener.StockScreener") as MockScreener, \
-             patch("src.quality_scorer.compute_quality_scores", return_value={}), \
-             patch("yfinance.Ticker"), \
-             patch("src.paper_trader.PaperTrader") as MockTrader:
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.screener.StockScreener") as MockScreener,
+            patch("src.quality_scorer.compute_quality_scores", return_value={}),
+            patch("yfinance.Ticker"),
+            patch("src.paper_trader.PaperTrader") as MockTrader,
+        ):
             MockScreener.return_value.screen_tickers.return_value = []
             trader_instance = MockTrader.return_value
             trader_instance.is_enabled.return_value = True
@@ -392,11 +408,13 @@ class TestMondayMaintenance:
 
         db = Database(tmp_path / "test.db")
 
-        with patch("src.database.Database", return_value=db), \
-             patch("src.screener.StockScreener") as MockScreener, \
-             patch("src.quality_scorer.compute_quality_scores", return_value={}), \
-             patch("yfinance.Ticker"), \
-             patch("src.paper_trader.PaperTrader") as MockTrader:
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.screener.StockScreener") as MockScreener,
+            patch("src.quality_scorer.compute_quality_scores", return_value={}),
+            patch("yfinance.Ticker"),
+            patch("src.paper_trader.PaperTrader") as MockTrader,
+        ):
             MockScreener.return_value.screen_tickers.return_value = []
             MockTrader.return_value.is_enabled.return_value = False
             monday_maintenance()
@@ -409,11 +427,13 @@ class TestMondayMaintenance:
 
         db = Database(tmp_path / "test.db")
 
-        with patch("src.database.Database", return_value=db), \
-             patch("src.screener.StockScreener") as MockScreener, \
-             patch("src.quality_scorer.compute_quality_scores", return_value={}), \
-             patch("yfinance.Ticker"), \
-             patch("src.paper_trader.PaperTrader") as MockTrader:
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.screener.StockScreener") as MockScreener,
+            patch("src.quality_scorer.compute_quality_scores", return_value={}),
+            patch("yfinance.Ticker"),
+            patch("src.paper_trader.PaperTrader") as MockTrader,
+        ):
             MockScreener.return_value.screen_tickers.return_value = []
             MockTrader.return_value.is_enabled.return_value = False
             monday_maintenance()  # should not raise
@@ -432,8 +452,7 @@ class TestWednesdayHaikuBatch:
         # Exhaust budget
         db.spend_batch("weekly_haiku_screen", db.get_budget_status("weekly_haiku_screen")["max_calls"])
 
-        with patch("src.database.Database", return_value=db), \
-             patch("src.analyzer.CompanyAnalyzer") as MockAnalyzer:
+        with patch("src.database.Database", return_value=db), patch("src.analyzer.CompanyAnalyzer") as MockAnalyzer:
             wednesday_haiku_batch()
             MockAnalyzer.return_value.batch_quick_screen.assert_not_called()
 
@@ -445,8 +464,7 @@ class TestWednesdayHaikuBatch:
         _upsert_stock(db, "AAPL")
         _save_haiku(db, "AAPL", expires_delta_days=180)  # valid result
 
-        with patch("src.database.Database", return_value=db), \
-             patch("src.analyzer.CompanyAnalyzer") as MockAnalyzer:
+        with patch("src.database.Database", return_value=db), patch("src.analyzer.CompanyAnalyzer") as MockAnalyzer:
             wednesday_haiku_batch()
             MockAnalyzer.return_value.batch_quick_screen.assert_not_called()
 
@@ -458,12 +476,9 @@ class TestWednesdayHaikuBatch:
         _upsert_stock(db, "AAPL", quality_score=85.0)
         db.save_fundamentals("AAPL", {"price": 195.0, "roe": 0.17}, as_of_date="2026-03-03")
 
-        fake_result = [
-            {"symbol": "AAPL", "worth_analysis": True, "moat_hint": 4, "reason": "Wide moat"}
-        ]
+        fake_result = [{"symbol": "AAPL", "worth_analysis": True, "moat_hint": 4, "reason": "Wide moat"}]
 
-        with patch("src.database.Database", return_value=db), \
-             patch("src.analyzer.CompanyAnalyzer") as MockAnalyzer:
+        with patch("src.database.Database", return_value=db), patch("src.analyzer.CompanyAnalyzer") as MockAnalyzer:
             MockAnalyzer.return_value.batch_quick_screen.return_value = fake_result
             wednesday_haiku_batch()
 
@@ -482,12 +497,10 @@ class TestWednesdayHaikuBatch:
             db.save_fundamentals(sym, {"price": 100.0}, as_of_date="2026-03-03")
 
         fake_results = [
-            {"symbol": s, "worth_analysis": True, "moat_hint": 3, "reason": "ok"}
-            for s in ["AAPL", "MSFT", "GOOG"]
+            {"symbol": s, "worth_analysis": True, "moat_hint": 3, "reason": "ok"} for s in ["AAPL", "MSFT", "GOOG"]
         ]
 
-        with patch("src.database.Database", return_value=db), \
-             patch("src.analyzer.CompanyAnalyzer") as MockAnalyzer:
+        with patch("src.database.Database", return_value=db), patch("src.analyzer.CompanyAnalyzer") as MockAnalyzer:
             MockAnalyzer.return_value.batch_quick_screen.return_value = fake_results
             wednesday_haiku_batch()
 
@@ -501,8 +514,7 @@ class TestWednesdayHaikuBatch:
         db = Database(tmp_path / "test.db")
         _upsert_stock(db, "AAPL")
 
-        with patch("src.database.Database", return_value=db), \
-             patch("src.analyzer.CompanyAnalyzer") as MockAnalyzer:
+        with patch("src.database.Database", return_value=db), patch("src.analyzer.CompanyAnalyzer") as MockAnalyzer:
             MockAnalyzer.return_value.batch_quick_screen.side_effect = RuntimeError("API down")
             wednesday_haiku_batch()  # must not raise
 
@@ -519,8 +531,7 @@ class TestFridaySonnetBatch:
         _save_haiku(db, "AAPL", passed=True)
         db.spend_batch("weekly_sonnet_analysis", db.get_budget_status("weekly_sonnet_analysis")["max_calls"])
 
-        with patch("src.database.Database", return_value=db), \
-             patch("src.analyzer.CompanyAnalyzer") as MockAnalyzer:
+        with patch("src.database.Database", return_value=db), patch("src.analyzer.CompanyAnalyzer") as MockAnalyzer:
             friday_sonnet_batch()
             MockAnalyzer.return_value.batch_analyze_companies.assert_not_called()
 
@@ -531,8 +542,7 @@ class TestFridaySonnetBatch:
         _upsert_stock(db, "AAPL")
         _save_haiku(db, "AAPL", passed=False)  # failed Haiku
 
-        with patch("src.database.Database", return_value=db), \
-             patch("src.analyzer.CompanyAnalyzer") as MockAnalyzer:
+        with patch("src.database.Database", return_value=db), patch("src.analyzer.CompanyAnalyzer") as MockAnalyzer:
             friday_sonnet_batch()
             MockAnalyzer.return_value.batch_analyze_companies.assert_not_called()
 
@@ -541,8 +551,9 @@ class TestFridaySonnetBatch:
         from scheduler import friday_sonnet_batch
 
         db = Database(tmp_path / "test.db")
-        db.upsert_universe_stock("AAPL", company_name="Apple Inc", sector="Technology",
-                                 source="conviction", quality_score=90.0)
+        db.upsert_universe_stock(
+            "AAPL", company_name="Apple Inc", sector="Technology", source="conviction", quality_score=90.0
+        )
         _save_haiku(db, "AAPL", passed=True)
 
         # Mock AnalysisV2 object
@@ -565,10 +576,12 @@ class TestFridaySonnetBatch:
         mock_tier_assignment.tier_reason = "High quality, priced reasonably"
         mock_tier_assignment.price_gap_pct = -0.05
 
-        with patch("src.database.Database", return_value=db), \
-             patch("src.analyzer.CompanyAnalyzer") as MockAnalyzer, \
-             patch("src.tier_engine.assign_tier", return_value=mock_tier_assignment), \
-             patch("src.tier_engine.staged_entry_suggestion", return_value={"1/2": 190, "2/2": 180}):
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.analyzer.CompanyAnalyzer") as MockAnalyzer,
+            patch("src.tier_engine.assign_tier", return_value=mock_tier_assignment),
+            patch("src.tier_engine.staged_entry_suggestion", return_value={"1/2": 190, "2/2": 180}),
+        ):
             MockAnalyzer.return_value.batch_analyze_companies.return_value = [mock_analysis]
             friday_sonnet_batch()
 
@@ -594,8 +607,7 @@ class TestFridaySonnetBatch:
         _upsert_stock(db, "AAPL")
         _save_haiku(db, "AAPL", passed=True)
 
-        with patch("src.database.Database", return_value=db), \
-             patch("src.analyzer.CompanyAnalyzer") as MockAnalyzer:
+        with patch("src.database.Database", return_value=db), patch("src.analyzer.CompanyAnalyzer") as MockAnalyzer:
             MockAnalyzer.return_value.batch_analyze_companies.side_effect = RuntimeError("API down")
             friday_sonnet_batch()  # must not raise
 
@@ -605,8 +617,9 @@ class TestFridaySonnetBatch:
 
         db = Database(tmp_path / "test.db")
         for sym in ["AAPL", "MSFT"]:
-            db.upsert_universe_stock(sym, company_name=f"{sym} Inc", sector="Tech",
-                                     source="conviction", quality_score=90.0)
+            db.upsert_universe_stock(
+                sym, company_name=f"{sym} Inc", sector="Tech", source="conviction", quality_score=90.0
+            )
             _save_haiku(db, sym, passed=True)
 
         mock_analyses = []
@@ -630,10 +643,12 @@ class TestFridaySonnetBatch:
         mock_tier.tier_reason = "Watch"
         mock_tier.price_gap_pct = 0.10
 
-        with patch("src.database.Database", return_value=db), \
-             patch("src.analyzer.CompanyAnalyzer") as MockAnalyzer, \
-             patch("src.tier_engine.assign_tier", return_value=mock_tier), \
-             patch("src.tier_engine.staged_entry_suggestion", return_value={}):
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.analyzer.CompanyAnalyzer") as MockAnalyzer,
+            patch("src.tier_engine.assign_tier", return_value=mock_tier),
+            patch("src.tier_engine.staged_entry_suggestion", return_value={}),
+        ):
             MockAnalyzer.return_value.batch_analyze_companies.return_value = mock_analyses
             friday_sonnet_batch()
 

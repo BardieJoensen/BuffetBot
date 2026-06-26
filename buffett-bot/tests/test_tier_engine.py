@@ -18,15 +18,12 @@ from typing import Optional
 import pytest
 
 from src.tier_engine import (
-    EXTREME_PREMIUM_THRESHOLD,
     TIER_ORDER,
     TierAssignment,
-    WatchlistMovement,
     assign_tier,
     compute_movements,
     staged_entry_suggestion,
 )
-
 
 # ─── Fakes ────────────────────────────────────────────────────────────────
 
@@ -42,7 +39,7 @@ class FakeAnalysis:
     """Minimal AnalysisV2-compatible object for testing."""
 
     symbol: str
-    _moat: str       # "wide", "narrow", "none"
+    _moat: str  # "wide", "narrow", "none"
     _conviction: str  # "HIGH", "MEDIUM", "LOW"
     target_entry_price: Optional[float] = None
     current_price: Optional[float] = None
@@ -57,8 +54,9 @@ class FakeAnalysis:
 
 
 def make(moat: str, conviction: str, target=None, current=None, symbol="TEST") -> FakeAnalysis:
-    return FakeAnalysis(symbol=symbol, _moat=moat, _conviction=conviction,
-                        target_entry_price=target, current_price=current)
+    return FakeAnalysis(
+        symbol=symbol, _moat=moat, _conviction=conviction, target_entry_price=target, current_price=current
+    )
 
 
 # ─── S-Tier Tests ─────────────────────────────────────────────────────────

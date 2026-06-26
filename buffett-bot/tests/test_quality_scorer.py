@@ -87,8 +87,8 @@ class TestPercentileRanks:
         """Low debt = better → highest rank for lowest value."""
         items = [("A", 0.1), ("B", 0.5), ("C", 2.0)]
         ranks = _percentile_ranks(items, ascending=False)
-        assert ranks["A"] == pytest.approx(100.0)   # lowest debt → best
-        assert ranks["C"] == pytest.approx(0.0)     # highest debt → worst
+        assert ranks["A"] == pytest.approx(100.0)  # lowest debt → best
+        assert ranks["C"] == pytest.approx(0.0)  # highest debt → worst
 
     def test_none_values_excluded(self):
         items = [("A", None), ("B", 50.0), ("C", 100.0)]
@@ -187,8 +187,7 @@ class TestComputeQualityScores:
 
     def test_single_stock_midpoint_score(self):
         """Single stock with all metrics should get 50.0 (median of universe=1)."""
-        stocks = [FakeStock("SOLO", roic=0.20, roe=0.15, real_fcf_yield=0.04,
-                             operating_margin=0.18, debt_equity=0.5)]
+        stocks = [FakeStock("SOLO", roic=0.20, roe=0.15, real_fcf_yield=0.04, operating_margin=0.18, debt_equity=0.5)]
         scores = compute_quality_scores(stocks)
         # Single stock: every percentile rank = 50, so composite = 50
         assert scores["SOLO"].score == pytest.approx(50.0)
@@ -196,7 +195,7 @@ class TestComputeQualityScores:
     def test_fcf_yield_fallback(self):
         """If real_fcf_yield is None, fall back to fcf_yield."""
         stocks = [
-            FakeStock("A", roic=0.20, fcf_yield=0.05),   # uses fcf_yield fallback
+            FakeStock("A", roic=0.20, fcf_yield=0.05),  # uses fcf_yield fallback
             FakeStock("B", roic=0.10, fcf_yield=0.02),
         ]
         scores = compute_quality_scores(stocks)
@@ -218,8 +217,15 @@ class TestComputeQualityScores:
     def test_data_coverage_field(self):
         # All five fundamentals + insider → full coverage = 1.0
         stocks = [
-            FakeStock("FULL", roic=0.20, roe=0.15, real_fcf_yield=0.04,
-                      operating_margin=0.18, debt_equity=0.5, insider_buying=2),
+            FakeStock(
+                "FULL",
+                roic=0.20,
+                roe=0.15,
+                real_fcf_yield=0.04,
+                operating_margin=0.18,
+                debt_equity=0.5,
+                insider_buying=2,
+            ),
         ]
         scores = compute_quality_scores(stocks)
         assert scores["FULL"].data_coverage == pytest.approx(1.0)
@@ -227,8 +233,7 @@ class TestComputeQualityScores:
     def test_full_fundamentals_without_insider_coverage(self):
         # All five fundamentals but no insider data → coverage = 1 - INSIDER_WEIGHT
         stocks = [
-            FakeStock("FUND", roic=0.20, roe=0.15, real_fcf_yield=0.04,
-                      operating_margin=0.18, debt_equity=0.5),
+            FakeStock("FUND", roic=0.20, roe=0.15, real_fcf_yield=0.04, operating_margin=0.18, debt_equity=0.5),
         ]
         scores = compute_quality_scores(stocks)
         assert scores["FUND"].data_coverage == pytest.approx(1 - INSIDER_WEIGHT)
@@ -252,10 +257,24 @@ class TestInsiderTilt:
     def _identical_pair(self, insider_a, insider_b):
         """Two stocks identical on fundamentals, differing only on insider data."""
         return [
-            FakeStock("A", roic=0.20, roe=0.15, real_fcf_yield=0.04,
-                      operating_margin=0.18, debt_equity=0.5, insider_buying=insider_a),
-            FakeStock("B", roic=0.20, roe=0.15, real_fcf_yield=0.04,
-                      operating_margin=0.18, debt_equity=0.5, insider_buying=insider_b),
+            FakeStock(
+                "A",
+                roic=0.20,
+                roe=0.15,
+                real_fcf_yield=0.04,
+                operating_margin=0.18,
+                debt_equity=0.5,
+                insider_buying=insider_a,
+            ),
+            FakeStock(
+                "B",
+                roic=0.20,
+                roe=0.15,
+                real_fcf_yield=0.04,
+                operating_margin=0.18,
+                debt_equity=0.5,
+                insider_buying=insider_b,
+            ),
         ]
 
     def test_cluster_buying_ranks_higher(self):
@@ -268,10 +287,8 @@ class TestInsiderTilt:
         # A stock with no insider data must score exactly as it would have under
         # the original fundamental-only weighting (others here also lack insider).
         fundamentals_only = [
-            FakeStock("X", roic=0.20, roe=0.15, real_fcf_yield=0.04,
-                      operating_margin=0.18, debt_equity=0.5),
-            FakeStock("Y", roic=0.10, roe=0.08, real_fcf_yield=0.02,
-                      operating_margin=0.10, debt_equity=1.0),
+            FakeStock("X", roic=0.20, roe=0.15, real_fcf_yield=0.04, operating_margin=0.18, debt_equity=0.5),
+            FakeStock("Y", roic=0.10, roe=0.08, real_fcf_yield=0.02, operating_margin=0.10, debt_equity=1.0),
         ]
         scores = compute_quality_scores(fundamentals_only)
         # X dominates Y on every metric → X gets the top percentile composite.
@@ -282,10 +299,24 @@ class TestInsiderTilt:
         # The insider component must not swamp fundamentals: a stock that is best
         # on fundamentals but worst on insider still beats a fundamentals-laggard.
         stocks = [
-            FakeStock("STRONG", roic=0.30, roe=0.25, real_fcf_yield=0.06,
-                      operating_margin=0.25, debt_equity=0.2, insider_buying=-5),
-            FakeStock("WEAK", roic=0.05, roe=0.03, real_fcf_yield=0.01,
-                      operating_margin=0.05, debt_equity=2.0, insider_buying=10),
+            FakeStock(
+                "STRONG",
+                roic=0.30,
+                roe=0.25,
+                real_fcf_yield=0.06,
+                operating_margin=0.25,
+                debt_equity=0.2,
+                insider_buying=-5,
+            ),
+            FakeStock(
+                "WEAK",
+                roic=0.05,
+                roe=0.03,
+                real_fcf_yield=0.01,
+                operating_margin=0.05,
+                debt_equity=2.0,
+                insider_buying=10,
+            ),
         ]
         scores = compute_quality_scores(stocks)
         assert scores["STRONG"].score > scores["WEAK"].score

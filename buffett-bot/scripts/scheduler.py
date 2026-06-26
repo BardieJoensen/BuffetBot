@@ -535,9 +535,7 @@ def monday_maintenance():
 
                 top_syms = [
                     qs.ticker
-                    for qs in sorted(scores.values(), key=lambda q: q.score, reverse=True)[
-                        :DEFAULT_FETCH_LIMIT
-                    ]
+                    for qs in sorted(scores.values(), key=lambda q: q.score, reverse=True)[:DEFAULT_FETCH_LIMIT]
                 ]
                 signals = fetch_insider_signals(top_syms)
                 if signals:

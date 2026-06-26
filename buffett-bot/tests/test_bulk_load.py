@@ -17,12 +17,12 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 # ── Bootstrap path ──────────────────────────────────────────────────────────
 _PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT))
 sys.path.insert(0, str(_PROJECT_ROOT / "scripts"))
+
+from datetime import datetime
 
 from bulk_load import (
     _build_company_summary,
@@ -34,13 +34,13 @@ from bulk_load import (
     step4_haiku_batch,
     step6_report,
 )
-from src.database import Database
-from src.screener import ScreeningCriteria, ScreenedStock, StockScreener
-from src.quality_scorer import QualityScore
-from datetime import datetime
 
+from src.database import Database
+from src.quality_scorer import QualityScore
+from src.screener import ScreenedStock, ScreeningCriteria, StockScreener
 
 # ─── Fixtures ───────────────────────────────────────────────────────────────
+
 
 def _make_screened_stock(symbol: str, **kwargs) -> ScreenedStock:
     defaults = dict(
@@ -71,6 +71,7 @@ def _make_db(tmp_path) -> Database:
 
 
 # ─── _build_company_summary ──────────────────────────────────────────────────
+
 
 class TestBuildCompanySummary:
     def test_basic_output_is_non_empty(self):
@@ -103,11 +104,11 @@ class TestBuildCompanySummary:
             "real_fcf_yield": 0.06,
         }
         result = _build_company_summary("TST", data)
-        assert "25.0%" in result    # roe
-        assert "30.0%" in result    # roic
-        assert "35.0%" in result    # margin
-        assert "12.0%" in result    # revenue growth
-        assert "6.0%" in result     # fcf yield
+        assert "25.0%" in result  # roe
+        assert "30.0%" in result  # roic
+        assert "35.0%" in result  # margin
+        assert "12.0%" in result  # revenue growth
+        assert "6.0%" in result  # fcf yield
 
     def test_includes_conviction_notes(self):
         data = {}
@@ -159,13 +160,17 @@ class TestBuildCompanySummary:
 
 # ─── _priority_list ──────────────────────────────────────────────────────────
 
+
 class TestPriorityList:
     def _make_score(self, ticker: str, score: float) -> QualityScore:
         return QualityScore(
             ticker=ticker,
             score=score,
-            roic_pct=None, roe_pct=None, fcf_yield_pct=None,
-            operating_margin_pct=None, low_debt_pct=None,
+            roic_pct=None,
+            roe_pct=None,
+            fcf_yield_pct=None,
+            operating_margin_pct=None,
+            low_debt_pct=None,
             insider_buying_pct=None,
             data_coverage=1.0,
         )
@@ -210,10 +215,10 @@ class TestPriorityList:
     def test_tickers_not_in_scores_get_zero(self):
         """Tickers with no quality score don't crash — they sort last."""
         conviction = ["CONV"]
-        scores = {}   # empty
+        scores = {}  # empty
         all_tickers = ["CONV", "NODATA"]
         result = _priority_list(conviction, scores, all_tickers)
-        assert result[0] == "CONV"   # conviction first
+        assert result[0] == "CONV"  # conviction first
         assert "NODATA" in result
 
     def test_empty_universe(self):
@@ -229,6 +234,7 @@ class TestPriorityList:
 
 
 # ─── _moat_hint_to_label ─────────────────────────────────────────────────────
+
 
 class TestMoatHintToLabel:
     def test_5_is_wide(self):
@@ -249,6 +255,7 @@ class TestMoatHintToLabel:
 
 # ─── _screened_to_data_map ───────────────────────────────────────────────────
 
+
 class TestScreenedToDataMap:
     def test_returns_dict_keyed_by_symbol(self):
         stocks = [_make_screened_stock("V"), _make_screened_stock("COST")]
@@ -266,6 +273,7 @@ class TestScreenedToDataMap:
 
 
 # ─── parse_args ──────────────────────────────────────────────────────────────
+
 
 class TestParseArgs:
     def test_defaults(self):
@@ -304,6 +312,7 @@ class TestParseArgs:
 
 # ─── step3_quality_scores ────────────────────────────────────────────────────
 
+
 class TestStep3QualityScores:
     def test_scores_saved_to_db(self, tmp_path):
         db = _make_db(tmp_path)
@@ -311,8 +320,12 @@ class TestStep3QualityScores:
         db.upsert_universe_stock("MSFT", source="conviction")
 
         stocks = [
-            _make_screened_stock("AAPL", roic=0.35, roe=0.30, operating_margin=0.30, real_fcf_yield=0.06, debt_equity=0.2),
-            _make_screened_stock("MSFT", roic=0.25, roe=0.20, operating_margin=0.20, real_fcf_yield=0.04, debt_equity=0.4),
+            _make_screened_stock(
+                "AAPL", roic=0.35, roe=0.30, operating_margin=0.30, real_fcf_yield=0.06, debt_equity=0.2
+            ),
+            _make_screened_stock(
+                "MSFT", roic=0.25, roe=0.20, operating_margin=0.20, real_fcf_yield=0.04, debt_equity=0.4
+            ),
         ]
 
         scores = step3_quality_scores(stocks, db, dry_run=False)
@@ -349,6 +362,7 @@ class TestStep3QualityScores:
 
 
 # ─── StockScreener.screen_tickers ───────────────────────────────────────────
+
 
 class TestScreenTickers:
     """Tests for the new screen_tickers() method added to StockScreener."""
@@ -390,9 +404,11 @@ class TestScreenTickers:
         screener = StockScreener()
         mock_data = self._make_mock_data("COST")
 
-        with patch.object(screener, "_fetch_stock_data", return_value=mock_data), \
-             patch.object(screener, "_get_cached_data", return_value=None), \
-             patch.object(screener, "_fetch_historical_data", return_value={}):
+        with (
+            patch.object(screener, "_fetch_stock_data", return_value=mock_data),
+            patch.object(screener, "_get_cached_data", return_value=None),
+            patch.object(screener, "_fetch_historical_data", return_value={}),
+        ):
             result = screener.screen_tickers(["COST"], ScreeningCriteria())
 
         assert any(s.symbol == "COST" for s in result)
@@ -404,18 +420,17 @@ class TestScreenTickers:
 
         criteria = ScreeningCriteria(max_market_cap=500_000_000_000)  # $500B limit
 
-        with patch.object(screener, "_fetch_stock_data", return_value=mega_cap_data), \
-             patch.object(screener, "_get_cached_data", return_value=None), \
-             patch.object(screener, "_fetch_historical_data", return_value={}):
-
+        with (
+            patch.object(screener, "_fetch_stock_data", return_value=mega_cap_data),
+            patch.object(screener, "_get_cached_data", return_value=None),
+            patch.object(screener, "_fetch_historical_data", return_value={}),
+        ):
             # Without force_include: AAPL filtered out
             result_no_force = screener.screen_tickers(["AAPL"], criteria)
             assert not any(s.symbol == "AAPL" for s in result_no_force)
 
             # With force_include: AAPL passes
-            result_with_force = screener.screen_tickers(
-                ["AAPL"], criteria, force_include={"AAPL"}
-            )
+            result_with_force = screener.screen_tickers(["AAPL"], criteria, force_include={"AAPL"})
             assert any(s.symbol == "AAPL" for s in result_with_force)
 
     def test_non_force_tickers_still_filtered(self):
@@ -427,13 +442,15 @@ class TestScreenTickers:
 
         criteria = ScreeningCriteria(max_market_cap=500_000_000_000)
 
-        with patch.object(screener, "_fetch_stock_data", side_effect=_side_effect), \
-             patch.object(screener, "_get_cached_data", return_value=None), \
-             patch.object(screener, "_fetch_historical_data", return_value={}):
+        with (
+            patch.object(screener, "_fetch_stock_data", side_effect=_side_effect),
+            patch.object(screener, "_get_cached_data", return_value=None),
+            patch.object(screener, "_fetch_historical_data", return_value={}),
+        ):
             result = screener.screen_tickers(
                 ["AAPL", "MSFT"],
                 criteria,
-                force_include={"AAPL"},   # only AAPL forced; MSFT should be filtered
+                force_include={"AAPL"},  # only AAPL forced; MSFT should be filtered
             )
 
         assert any(s.symbol == "AAPL" for s in result)
@@ -444,10 +461,12 @@ class TestScreenTickers:
         screener = StockScreener()
         mock_data = self._make_mock_data("V")
 
-        with patch("src.screener.get_stock_universe", return_value=["V"]), \
-             patch.object(screener, "_fetch_stock_data", return_value=mock_data), \
-             patch.object(screener, "_get_cached_data", return_value=None), \
-             patch.object(screener, "_fetch_historical_data", return_value={}):
+        with (
+            patch("src.screener.get_stock_universe", return_value=["V"]),
+            patch.object(screener, "_fetch_stock_data", return_value=mock_data),
+            patch.object(screener, "_get_cached_data", return_value=None),
+            patch.object(screener, "_fetch_historical_data", return_value={}),
+        ):
             result = screener.screen(ScreeningCriteria())
 
         assert any(s.symbol == "V" for s in result)
@@ -462,9 +481,11 @@ class TestScreenTickers:
         screener = StockScreener()
         mock_data = self._make_mock_data("COST", market_cap=50_000_000_000)  # $50B → large
 
-        with patch.object(screener, "_fetch_stock_data", return_value=mock_data), \
-             patch.object(screener, "_get_cached_data", return_value=None), \
-             patch.object(screener, "_fetch_historical_data", return_value={}):
+        with (
+            patch.object(screener, "_fetch_stock_data", return_value=mock_data),
+            patch.object(screener, "_get_cached_data", return_value=None),
+            patch.object(screener, "_fetch_historical_data", return_value={}),
+        ):
             result = screener.screen_tickers(["COST"], ScreeningCriteria())
 
         assert result
@@ -472,6 +493,7 @@ class TestScreenTickers:
 
 
 # ─── step4_haiku_batch (dry-run only) ────────────────────────────────────────
+
 
 class TestStep4HaikuBatchDryRun:
     def test_dry_run_does_not_call_analyzer(self, tmp_path):
@@ -501,7 +523,7 @@ class TestStep4HaikuBatchDryRun:
         result = step4_haiku_batch(
             mock_analyzer,
             priority=["NODATA"],
-            data_map={},   # empty
+            data_map={},  # empty
             conviction_notes={},
             db=db,
             dry_run=True,
@@ -528,13 +550,14 @@ class TestStep4HaikuBatchDryRun:
 
 # ─── step6_report (smoke test) ───────────────────────────────────────────────
 
+
 class TestStep6Report:
     def test_runs_without_error(self, tmp_path, capsys):
         db = _make_db(tmp_path)
         db.upsert_universe_stock("V", source="conviction", quality_score=80.0)
         db.upsert_universe_stock("COST", source="sp500_filter", quality_score=75.0)
 
-        step6_report(db)   # should not raise
+        step6_report(db)  # should not raise
 
         captured = capsys.readouterr()
         assert "Universe" in captured.out or "universe" in captured.out.lower()

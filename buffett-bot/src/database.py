@@ -1056,7 +1056,8 @@ class Database:
                     json.dumps(reasoning_snapshot) if reasoning_snapshot is not None else None,
                 ),
             )
-            return int(cur.lastrowid)
+            new_id = cur.lastrowid
+            return int(new_id) if new_id is not None else 0
 
     def get_open_buy(self, ticker: str) -> Optional[dict]:
         """
@@ -1188,7 +1189,8 @@ class Database:
                     notes,
                 ),
             )
-            return int(cur.lastrowid)
+            new_id = cur.lastrowid
+            return int(new_id) if new_id is not None else 0
 
     def get_decision_log(self, ticker: Optional[str] = None, limit: int = 100) -> list[dict]:
         """Return recent decisions (all tickers, or one), newest first."""
@@ -1285,9 +1287,7 @@ class Database:
             )
             return conn.total_changes - before
 
-    def get_pit_fundamentals_asof(
-        self, ticker: str, as_of_date: str, *, annual_only: bool = True
-    ) -> dict[str, float]:
+    def get_pit_fundamentals_asof(self, ticker: str, as_of_date: str, *, annual_only: bool = True) -> dict[str, float]:
         """
         Fundamentals for a ticker **as known at `as_of_date`**: for each concept,
         the value from the most recent period whose filing was public by that date

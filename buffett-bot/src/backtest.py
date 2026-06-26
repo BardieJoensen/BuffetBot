@@ -212,14 +212,17 @@ def run_point_in_time_backtest(
         return {"error": "No point-in-time observations", "observations": [], "summary": {}}
 
     correlation = _compute_rank_correlation(observations)
+    top = _avg_return(observations, top_pct=0.2)
+    bottom = _avg_return(observations, top_pct=0.2, bottom=True)
     summary = {
         "basis": "point-in-time (EDGAR companyfacts, originally-filed)",
         "total_observations": len(observations),
         "rebalance_dates": len(rebalance_dates),
         "forward_months": forward_months,
         "rank_correlation_1y": correlation.get("return_1y"),
-        "avg_fwd_return_top_20pct": _avg_return(observations, top_pct=0.2),
-        "avg_fwd_return_bottom_20pct": _avg_return(observations, top_pct=0.2, bottom=True),
+        "avg_fwd_return_top_20pct": top,
+        "avg_fwd_return_bottom_20pct": bottom,
+        "quality_premium": (top or 0) - (bottom or 0),
         "quintiles": _quintile_analysis(observations),
         "limitations": [
             "XBRL coverage begins ~2009 (~15y of history).",
@@ -228,9 +231,6 @@ def run_point_in_time_backtest(
         ],
         "generated_at": datetime.now().isoformat(),
     }
-    summary["quality_premium"] = (summary["avg_fwd_return_top_20pct"] or 0) - (
-        summary["avg_fwd_return_bottom_20pct"] or 0
-    )
     _save_correlation_results(observations, summary, filename="pit_backtest.json")
     return {"observations": observations, "summary": summary}
 

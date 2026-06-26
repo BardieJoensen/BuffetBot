@@ -13,19 +13,16 @@ Covers:
 """
 
 import json
-import tempfile
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
 
 from src.screener import (
-    ScreeningCriteria,
-    ScreenedStock,
     ScoringRule,
+    ScreenedStock,
+    ScreeningCriteria,
     load_criteria_from_yaml,
     score_stock,
 )
@@ -33,7 +30,6 @@ from src.universe_builder import (
     LARGE_CAP_THRESHOLD,
     MID_CAP_THRESHOLD,
     UniverseStock,
-    _fetch_sp500_from_wikipedia,
     _load_sp500_cache,
     _merge_pools,
     _read_conviction_pool,
@@ -43,7 +39,6 @@ from src.universe_builder import (
     get_conviction_tickers,
     get_tickers,
 )
-
 
 # ─── Fixtures ─────────────────────────────────────────────────────────────
 
@@ -60,7 +55,7 @@ def conviction_yaml(tmp_path):
         "last_reviewed": "2026-03-01",
         "next_review": "2026-06-01",
         "stocks": [
-            {"ticker": "V",    "notes": "Visa — payment rails"},
+            {"ticker": "V", "notes": "Visa — payment rails"},
             {"ticker": "COST", "notes": "Costco — membership moat"},
             {"ticker": "MSCI", "notes": "Index monopoly"},
         ],
@@ -81,7 +76,7 @@ def screening_criteria_yaml(tmp_path):
             "min_adtv": 2_000_000,
             "scoring": {
                 "pe_ratio": {"ideal": 15, "max": 60, "weight": 0.8},
-                "roic":     {"ideal": 0.20, "min": 0.05, "weight": 2.5},
+                "roic": {"ideal": 0.20, "min": 0.05, "weight": 2.5},
             },
             "sector_overrides": {
                 "Financial Services": {
@@ -107,13 +102,13 @@ def screening_criteria_yaml(tmp_path):
 
 class TestGetCapCategory:
     def test_large_cap(self):
-        assert get_cap_category(50_000_000_000) == "large"   # $50B
+        assert get_cap_category(50_000_000_000) == "large"  # $50B
 
     def test_exactly_at_large_boundary(self):
         assert get_cap_category(LARGE_CAP_THRESHOLD) == "large"
 
     def test_mid_cap(self):
-        assert get_cap_category(5_000_000_000) == "mid"   # $5B
+        assert get_cap_category(5_000_000_000) == "mid"  # $5B
 
     def test_exactly_at_mid_boundary(self):
         assert get_cap_category(MID_CAP_THRESHOLD) == "mid"
@@ -122,7 +117,7 @@ class TestGetCapCategory:
         assert get_cap_category(LARGE_CAP_THRESHOLD - 1) == "mid"
 
     def test_small_cap(self):
-        assert get_cap_category(800_000_000) == "small"   # $800M
+        assert get_cap_category(800_000_000) == "small"  # $800M
 
     def test_just_below_mid(self):
         assert get_cap_category(MID_CAP_THRESHOLD - 1) == "small"
@@ -286,12 +281,11 @@ class TestSP500Cache:
     def test_expired_cache_returns_none(self, tmp_path):
         """Cache older than SP500_CACHE_DAYS should be ignored."""
         from datetime import timedelta
+
         cache_file = tmp_path / "sp500_universe.json"
         old_data = {
             "tickers": ["AAPL"],
-            "cached_at": (
-                __import__("datetime").datetime.now() - timedelta(days=10)
-            ).isoformat(),
+            "cached_at": (__import__("datetime").datetime.now() - timedelta(days=10)).isoformat(),
             "count": 1,
             "source": "wikipedia",
         }
@@ -315,15 +309,17 @@ class TestSP500Cache:
 class TestBuildUniverse:
     def _mock_finviz(self, tickers):
         """Patch get_stock_universe to return a controlled list."""
-        return patch("src.universe_builder._fetch_finviz_pool", return_value=[
-            UniverseStock(ticker=t, source="finviz_screen") for t in tickers
-        ])
+        return patch(
+            "src.universe_builder._fetch_finviz_pool",
+            return_value=[UniverseStock(ticker=t, source="finviz_screen") for t in tickers],
+        )
 
     def _mock_sp500(self, tickers):
         """Patch the S&P 500 pool to return a controlled list."""
-        return patch("src.universe_builder._fetch_sp500_pool", return_value=[
-            UniverseStock(ticker=t, source="sp500_filter") for t in tickers
-        ])
+        return patch(
+            "src.universe_builder._fetch_sp500_pool",
+            return_value=[UniverseStock(ticker=t, source="sp500_filter") for t in tickers],
+        )
 
     def test_all_conviction_tickers_present(self, conviction_yaml, tmp_path):
         with self._mock_sp500([]), self._mock_finviz([]):
@@ -344,7 +340,6 @@ class TestBuildUniverse:
         """Conviction tickers should precede sp500 and finviz in the output."""
         with self._mock_sp500(["AAPL"]), self._mock_finviz(["ACME"]):
             stocks = build_universe(conviction_yaml, cache_dir=tmp_path)
-        sources = [s.source for s in stocks]
         last_conviction = max(i for i, s in enumerate(stocks) if s.source == "conviction")
         first_sp500 = min((i for i, s in enumerate(stocks) if s.source == "sp500_filter"), default=999)
         first_finviz = min((i for i, s in enumerate(stocks) if s.source == "finviz_screen"), default=999)
@@ -441,8 +436,8 @@ class TestCapOverridesInScoring:
     def test_cap_override_stacks_on_sector_override(self):
         """Cap override applies AFTER sector override (both rules can coexist)."""
         # Sector override changes one metric, cap override changes another
-        sector_rule = ScoringRule(ideal=0.05, max=0.50, weight=0.3)   # debt_equity for Financial
-        cap_rule = ScoringRule(ideal=25.0, max=80.0, weight=0.6)       # pe_ratio for large
+        sector_rule = ScoringRule(ideal=0.05, max=0.50, weight=0.3)  # debt_equity for Financial
+        cap_rule = ScoringRule(ideal=25.0, max=80.0, weight=0.6)  # pe_ratio for large
 
         criteria = ScreeningCriteria(
             scoring={
@@ -526,6 +521,7 @@ class TestLoadCriteriaFromYaml:
 class TestScreenedStockCapCategory:
     def _make_stock(self, cap_category=""):
         from datetime import datetime
+
         return ScreenedStock(
             symbol="TEST",
             name="Test Co",

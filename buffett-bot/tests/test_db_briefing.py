@@ -5,13 +5,9 @@ Uses real Database (tmp_path SQLite) and the real generate_briefing_from_db().
 No LLM calls, no external APIs.
 """
 
-import json
 import sqlite3
 import sys
 from pathlib import Path
-from unittest.mock import patch
-
-import pytest
 
 _PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT))
@@ -21,7 +17,6 @@ from src.briefing.db_briefing import (
     generate_briefing_from_db,
 )
 from src.database import Database
-
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -139,12 +134,27 @@ class TestSTierSpotlight:
     def test_s_tier_stock_appears_in_spotlight(self, tmp_path):
         db = Database(tmp_path / "test.db")
         _seed_universe(db, "COST")
-        _seed_deep_analysis(db, "COST", "S", conviction="HIGH", moat="WIDE",
-                            thesis="Membership model with extraordinary customer loyalty")
-        _seed_alert(db, "COST", "S", target=580.0, last_price=570.0, gap_pct=-0.017,
-                    staged=[{"tranche": 1, "price": 580.0, "label": "Tranche 1/3 at target"},
-                            {"tranche": 2, "price": 551.0, "label": "Tranche 2/3 at -5%"},
-                            {"tranche": 3, "price": 523.0, "label": "Tranche 3/3 at -10%"}])
+        _seed_deep_analysis(
+            db,
+            "COST",
+            "S",
+            conviction="HIGH",
+            moat="WIDE",
+            thesis="Membership model with extraordinary customer loyalty",
+        )
+        _seed_alert(
+            db,
+            "COST",
+            "S",
+            target=580.0,
+            last_price=570.0,
+            gap_pct=-0.017,
+            staged=[
+                {"tranche": 1, "price": 580.0, "label": "Tranche 1/3 at target"},
+                {"tranche": 2, "price": 551.0, "label": "Tranche 2/3 at -5%"},
+                {"tranche": 3, "price": 523.0, "label": "Tranche 3/3 at -10%"},
+            ],
+        )
         text, html = generate_briefing_from_db(db)
         assert "S-TIER SPOTLIGHT" in text
         assert "COST" in text
@@ -156,10 +166,19 @@ class TestSTierSpotlight:
         db = Database(tmp_path / "test.db")
         _seed_universe(db, "COST")
         _seed_deep_analysis(db, "COST", "S", conviction="HIGH", moat="WIDE")
-        _seed_alert(db, "COST", "S", target=580.0, last_price=570.0, gap_pct=-0.017,
-                    staged=[{"tranche": 1, "price": 580.0, "label": "Tranche 1 at target"},
-                            {"tranche": 2, "price": 551.0, "label": "Tranche 2 at -5%"},
-                            {"tranche": 3, "price": 523.0, "label": "Tranche 3 at -10%"}])
+        _seed_alert(
+            db,
+            "COST",
+            "S",
+            target=580.0,
+            last_price=570.0,
+            gap_pct=-0.017,
+            staged=[
+                {"tranche": 1, "price": 580.0, "label": "Tranche 1 at target"},
+                {"tranche": 2, "price": 551.0, "label": "Tranche 2 at -5%"},
+                {"tranche": 3, "price": 523.0, "label": "Tranche 3 at -10%"},
+            ],
+        )
         text, _ = generate_briefing_from_db(db)
         assert "STAGED ENTRY PLAN" in text
 
@@ -185,11 +204,26 @@ class TestATierActionList:
     def test_a_tier_appears_in_action_list(self, tmp_path):
         db = Database(tmp_path / "test.db")
         _seed_universe(db, "MSCI")
-        _seed_deep_analysis(db, "MSCI", "A", conviction="MEDIUM", moat="NARROW",
-                            thesis="Index licensing monopoly with recurring revenue")
-        _seed_alert(db, "MSCI", "A", target=460.0, last_price=446.0, gap_pct=-0.030,
-                    staged=[{"tranche": 1, "price": 460.0, "label": "Tranche 1/2"},
-                            {"tranche": 2, "price": 437.0, "label": "Tranche 2/2"}])
+        _seed_deep_analysis(
+            db,
+            "MSCI",
+            "A",
+            conviction="MEDIUM",
+            moat="NARROW",
+            thesis="Index licensing monopoly with recurring revenue",
+        )
+        _seed_alert(
+            db,
+            "MSCI",
+            "A",
+            target=460.0,
+            last_price=446.0,
+            gap_pct=-0.030,
+            staged=[
+                {"tranche": 1, "price": 460.0, "label": "Tranche 1/2"},
+                {"tranche": 2, "price": 437.0, "label": "Tranche 2/2"},
+            ],
+        )
         text, html = generate_briefing_from_db(db)
         assert "A-TIER ACTION LIST" in text
         assert "MSCI" in text
@@ -199,9 +233,18 @@ class TestATierActionList:
         db = Database(tmp_path / "test.db")
         _seed_universe(db, "MSCI")
         _seed_deep_analysis(db, "MSCI", "A")
-        _seed_alert(db, "MSCI", "A", target=460.0, last_price=446.0, gap_pct=-0.030,
-                    staged=[{"tranche": 1, "price": 460.0, "label": "Tranche 1/2"},
-                            {"tranche": 2, "price": 437.0, "label": "Tranche 2/2"}])
+        _seed_alert(
+            db,
+            "MSCI",
+            "A",
+            target=460.0,
+            last_price=446.0,
+            gap_pct=-0.030,
+            staged=[
+                {"tranche": 1, "price": 460.0, "label": "Tranche 1/2"},
+                {"tranche": 2, "price": 437.0, "label": "Tranche 2/2"},
+            ],
+        )
         text, _ = generate_briefing_from_db(db)
         # Entry plan shows in A-tier section
         assert "460.00" in text
@@ -215,8 +258,7 @@ class TestBTierApproachingTarget:
         for ticker, gap in [("ORCL", 0.035), ("VISA", 0.074), ("MA", 0.10)]:
             _seed_universe(db, ticker)
             _seed_deep_analysis(db, ticker, "B")
-            _seed_alert(db, ticker, "B", target=150.0,
-                        last_price=150.0 * (1 + gap), gap_pct=gap)
+            _seed_alert(db, ticker, "B", target=150.0, last_price=150.0 * (1 + gap), gap_pct=gap)
 
         text, html = generate_briefing_from_db(db)
         assert "B-TIER APPROACHING TARGET" in text
@@ -235,9 +277,9 @@ class TestBTierApproachingTarget:
         # NVDA should only appear in B-Tier Watch, not approaching
         assert "B-TIER WATCH" in text
         # The approaching section ends at the leaderboard heading
-        leaderboard_pos   = text.find("TOP 10 BY QUALITY SCORE")
+        leaderboard_pos = text.find("TOP 10 BY QUALITY SCORE")
         approaching_start = text.find("B-TIER APPROACHING TARGET")
-        approaching_text  = text[approaching_start:leaderboard_pos]
+        approaching_text = text[approaching_start:leaderboard_pos]
         assert "NVDA" not in approaching_text
 
     def test_approaching_threshold_is_10_pct(self):
@@ -250,7 +292,7 @@ class TestBTierApproachingTarget:
         _seed_deep_analysis(db, "ORCL", "B")
         _seed_alert(db, "ORCL", "B", target=150.0, last_price=154.0, gap_pct=0.027)
         text, _ = generate_briefing_from_db(db)
-        assert "***" in text   # very close to target
+        assert "***" in text  # very close to target
 
     def test_no_approaching_message_when_none(self, tmp_path):
         """When all B stocks are far from target, show 'No B-tier stocks within 10%'."""
@@ -266,8 +308,9 @@ class TestQualityLeaderboard:
     def test_top_10_shown_by_quality_score(self, tmp_path):
         db = Database(tmp_path / "test.db")
         # Seed 12 stocks with descending quality scores
-        for i, ticker in enumerate(["V", "COST", "MSCI", "MA", "ORCL", "NVDA",
-                                     "AMZN", "GOOGL", "NFLX", "SBUX", "DIS", "META"]):
+        for i, ticker in enumerate(
+            ["V", "COST", "MSCI", "MA", "ORCL", "NVDA", "AMZN", "GOOGL", "NFLX", "SBUX", "DIS", "META"]
+        ):
             score = 95.0 - i * 2.0
             _seed_universe(db, ticker, score=score)
 
@@ -275,15 +318,15 @@ class TestQualityLeaderboard:
         assert "TOP 10 BY QUALITY SCORE" in text
         # V should be #1, META should not appear (rank 12)
         assert "V" in text
-        v_pos   = text.find("V")
+        v_pos = text.find("V")
         meta_pos = text.find("META")
         assert v_pos < meta_pos or meta_pos == -1  # V before META or META absent from leaderboard
         # Only 10 entries in the leaderboard
         assert "SBUX" in text  # rank 10
         # META rank 12 — not in top 10
         leaderboard_start = text.find("TOP 10 BY QUALITY SCORE")
-        leaderboard_end   = text.find("NEWS EVENTS DIGEST")
-        leaderboard_text  = text[leaderboard_start:leaderboard_end]
+        leaderboard_end = text.find("NEWS EVENTS DIGEST")
+        leaderboard_text = text[leaderboard_start:leaderboard_end]
         assert "META" not in leaderboard_text
 
     def test_leaderboard_shows_tier_for_analyzed(self, tmp_path):
@@ -292,14 +335,13 @@ class TestQualityLeaderboard:
         _seed_deep_analysis(db, "ORCL", "B")
         _seed_alert(db, "ORCL", "B", target=150.0, last_price=160.0, gap_pct=0.067)
         text, _ = generate_briefing_from_db(db)
-        leaderboard = text[text.find("TOP 10 BY QUALITY SCORE"):]
+        leaderboard = text[text.find("TOP 10 BY QUALITY SCORE") :]
         assert "ORCL" in leaderboard
 
     def test_no_leaderboard_when_no_quality_scores(self, tmp_path):
         """Universe stocks without quality_score are excluded from leaderboard."""
         db = Database(tmp_path / "test.db")
-        db.upsert_universe_stock("ORCL", company_name="Oracle", sector="Tech",
-                                  market_cap=50e9, source="conviction")
+        db.upsert_universe_stock("ORCL", company_name="Oracle", sector="Tech", market_cap=50e9, source="conviction")
         # No quality_score set
         text, _ = generate_briefing_from_db(db)
         assert "No quality scores available" in text
@@ -466,34 +508,60 @@ class TestFullScenario:
 
         # Universe
         for ticker, sector, cap, score in [
-            ("COST",  "Consumer",   "large", 93.1),
-            ("MSCI",  "Financials", "large", 91.8),
-            ("ORCL",  "Technology", "large", 85.0),
-            ("NVDA",  "Technology", "large", 80.0),
-            ("TSLA",  "Automotive", "large", 60.0),
+            ("COST", "Consumer", "large", 93.1),
+            ("MSCI", "Financials", "large", 91.8),
+            ("ORCL", "Technology", "large", 85.0),
+            ("NVDA", "Technology", "large", 80.0),
+            ("TSLA", "Automotive", "large", 60.0),
         ]:
             _seed_universe(db, ticker, sector=sector, cap=cap, score=score)
 
         # Deep analyses
-        _seed_deep_analysis(db, "COST", "S", conviction="HIGH", moat="WIDE",
-                            thesis="Membership model creates extraordinary loyalty")
-        _seed_deep_analysis(db, "MSCI", "A", conviction="MEDIUM", moat="NARROW",
-                            thesis="Index licensing monopoly, 95% recurring revenue")
-        _seed_deep_analysis(db, "ORCL", "B", conviction="MEDIUM", moat="NARROW",
-                            thesis="Cloud database switching costs")
-        _seed_deep_analysis(db, "NVDA", "B", conviction="MEDIUM", moat="NARROW",
-                            thesis="AI chip monopoly for now")
-        _seed_deep_analysis(db, "TSLA", "C", conviction="LOW", moat="NONE",
-                            thesis="Uncertain moat in competitive EV market")
+        _seed_deep_analysis(
+            db, "COST", "S", conviction="HIGH", moat="WIDE", thesis="Membership model creates extraordinary loyalty"
+        )
+        _seed_deep_analysis(
+            db,
+            "MSCI",
+            "A",
+            conviction="MEDIUM",
+            moat="NARROW",
+            thesis="Index licensing monopoly, 95% recurring revenue",
+        )
+        _seed_deep_analysis(
+            db, "ORCL", "B", conviction="MEDIUM", moat="NARROW", thesis="Cloud database switching costs"
+        )
+        _seed_deep_analysis(db, "NVDA", "B", conviction="MEDIUM", moat="NARROW", thesis="AI chip monopoly for now")
+        _seed_deep_analysis(
+            db, "TSLA", "C", conviction="LOW", moat="NONE", thesis="Uncertain moat in competitive EV market"
+        )
 
         # Price alerts
-        _seed_alert(db, "COST", "S", target=580.0, last_price=570.0, gap_pct=-0.017,
-                    staged=[{"tranche": 1, "price": 580.0, "label": "1/3 at target"},
-                            {"tranche": 2, "price": 551.0, "label": "2/3 -5%"},
-                            {"tranche": 3, "price": 522.0, "label": "3/3 -10%"}])
-        _seed_alert(db, "MSCI", "A", target=460.0, last_price=446.0, gap_pct=-0.030,
-                    staged=[{"tranche": 1, "price": 460.0, "label": "1/2 at target"},
-                            {"tranche": 2, "price": 437.0, "label": "2/2 -5%"}])
+        _seed_alert(
+            db,
+            "COST",
+            "S",
+            target=580.0,
+            last_price=570.0,
+            gap_pct=-0.017,
+            staged=[
+                {"tranche": 1, "price": 580.0, "label": "1/3 at target"},
+                {"tranche": 2, "price": 551.0, "label": "2/3 -5%"},
+                {"tranche": 3, "price": 522.0, "label": "3/3 -10%"},
+            ],
+        )
+        _seed_alert(
+            db,
+            "MSCI",
+            "A",
+            target=460.0,
+            last_price=446.0,
+            gap_pct=-0.030,
+            staged=[
+                {"tranche": 1, "price": 460.0, "label": "1/2 at target"},
+                {"tranche": 2, "price": 437.0, "label": "2/2 -5%"},
+            ],
+        )
         _seed_alert(db, "ORCL", "B", target=150.0, last_price=155.0, gap_pct=0.033)
         _seed_alert(db, "NVDA", "B", target=500.0, last_price=850.0, gap_pct=0.70)
         _seed_alert(db, "TSLA", "C", target=100.0, last_price=220.0, gap_pct=1.20)
@@ -503,8 +571,13 @@ class TestFullScenario:
         _seed_paper_position(db, "MSCI", tier="A")
 
         # News
-        db.log_news_event("ORCL", "Oracle acquires CloudMind for $10B",
-                          event_type="acquisition", haiku_material=True, sonnet_triggered=True)
+        db.log_news_event(
+            "ORCL",
+            "Oracle acquires CloudMind for $10B",
+            event_type="acquisition",
+            haiku_material=True,
+            sonnet_triggered=True,
+        )
 
         text, html = generate_briefing_from_db(db)
 
@@ -522,14 +595,14 @@ class TestFullScenario:
         # ORCL (gap 3.3%) should be in approaching, NVDA (70%) should be in watch
         approaching_start = text.find("B-TIER APPROACHING TARGET")
         leaderboard_start = text.find("TOP 10 BY QUALITY SCORE")
-        approaching_text  = text[approaching_start:leaderboard_start]
+        approaching_text = text[approaching_start:leaderboard_start]
         assert "ORCL" in approaching_text
         assert "NVDA" not in approaching_text
 
         # Quality leaderboard: COST (93.1) > MSCI (91.8) > ORCL (85.0)
         leaderboard_start = text.find("TOP 10 BY QUALITY SCORE")
-        news_start        = text.find("NEWS EVENTS DIGEST")
-        leaderboard_text  = text[leaderboard_start:news_start]
+        news_start = text.find("NEWS EVENTS DIGEST")
+        leaderboard_text = text[leaderboard_start:news_start]
         assert "COST" in leaderboard_text
         assert "MSCI" in leaderboard_text
 

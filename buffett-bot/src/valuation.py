@@ -434,7 +434,7 @@ class ValuationAggregator:
 
         except Exception as e:
             logger.debug(f"DCF calculation failed: {e}")
-            return None
+            return []
 
 
 def get_valuation(symbol: str) -> AggregatedValuation:
