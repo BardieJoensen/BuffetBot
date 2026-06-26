@@ -20,7 +20,7 @@ import smtplib
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from typing import Optional
+from typing import Any, Optional
 
 import requests
 
@@ -386,8 +386,11 @@ class DiscordNotifier:
     def _send(self, content: Optional[str] = None, embed: Optional[dict] = None) -> bool:
         """Send message to Discord webhook"""
 
+        if not self.webhook_url:
+            return False
+
         try:
-            payload: dict[str, object] = {}
+            payload: dict[str, Any] = {}
             if content:
                 payload["content"] = content
             if embed:

@@ -137,7 +137,7 @@ def assign_tier(
     gap: Optional[float] = None
     approaching = False
     if target and current and target > 0:
-        gap = (current - target) / target
+        gap = float(current - target) / float(target)
         # approaching_target is meaningful for B-tier: stock is close to becoming buyable
         approaching = 0 < gap <= proximity_alert_pct
 
