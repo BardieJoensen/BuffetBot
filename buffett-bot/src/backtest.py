@@ -37,6 +37,7 @@ Cache: data/backtest/
 Run independently: python -m src.backtest
 """
 
+import argparse
 import json
 import logging
 from datetime import datetime
@@ -683,22 +684,91 @@ def generate_validation_report(
     return "\n".join(lines)
 
 
+def _default_rebalance_dates() -> list[str]:
+    """June 1 of each year from 2016 to last year (XBRL covers ~2009+)."""
+    last = datetime.now().year - 1
+    return [f"{y}-06-01" for y in range(2016, last + 1)]
+
+
+def _print_pit_summary(result: dict) -> None:
+    if result.get("error"):
+        print(result["error"])
+        return
+    s = result["summary"]
+    rho = s.get("rank_correlation_1y")
+    prem = s.get("quality_premium")
+    print(s["basis"])
+    print(f"  Observations:      {s['total_observations']} across {s['rebalance_dates']} rebalance dates")
+    print(f"  Rank corr (score vs {s['forward_months']}m fwd return): " + (f"{rho:+.3f}" if rho is not None else "n/a"))
+    print("  Quality premium (top20% − bottom20%): " + (f"{prem:+.2%}" if prem is not None else "n/a"))
+    print("  Quintiles (by as-known score):")
+    for q in s.get("quintiles", []):
+        r = q.get("avg_return_1y")
+        print(
+            f"    {q['label']:<10} score={q['avg_score']:<6} fwd={'n/a' if r is None else f'{r:+.2%}'}  n={q['count']}"
+        )
+    print("  Limitations:")
+    for lim in s.get("limitations", []):
+        print(f"    - {lim}")
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
-    print("Forward Validation Module")
-    print("=" * 40)
-    print("")
+    parser = argparse.ArgumentParser(description="BuffettBot forward validation / backtest")
+    parser.add_argument(
+        "--load-pit",
+        action="store_true",
+        help="Populate pit_fundamentals from EDGAR companyfacts for the DB universe (needs EDGAR_USER_AGENT)",
+    )
+    parser.add_argument(
+        "--pit-backtest",
+        action="store_true",
+        help="Run the look-ahead-free point-in-time backtest off pit_fundamentals",
+    )
+    parser.add_argument("--limit", type=int, default=None, help="Cap tickers processed (for --load-pit)")
+    parser.add_argument(
+        "--dates", nargs="+", default=None, help="Rebalance dates YYYY-MM-DD (default: yearly 2016..last year)"
+    )
+    parser.add_argument("--forward-months", type=int, default=12, help="Forward return horizon (default 12)")
+    args = parser.parse_args()
 
-    # Check for existing snapshots
-    tracking = track_watchlist_performance()
-    if tracking.get("snapshots"):
-        print(f"Found {len(tracking['snapshots'])} watchlist snapshots")
-        report = generate_validation_report(tracking_results=tracking)
-        print(report)
+    if args.load_pit or args.pit_backtest:
+        from src.database import Database
+        from src.edgar_fundamentals import load_universe_fundamentals
+
+        db = Database()
+
+        if args.load_pit:
+            universe = [u["ticker"] for u in db.get_universe()]
+            print(f"Loading point-in-time fundamentals for {len(universe)} universe tickers...")
+            results = load_universe_fundamentals(universe, db, limit=args.limit)
+            loaded = sum(1 for n in results.values() if n)
+            print(f"  Populated {sum(results.values())} facts across {loaded}/{len(results)} tickers")
+
+        if args.pit_backtest:
+            tickers = db.get_pit_tickers()
+            if not tickers:
+                print("No pit_fundamentals found — run `python -m src.backtest --load-pit` first.")
+            else:
+                dates = args.dates or _default_rebalance_dates()
+                print(f"Point-in-time backtest: {len(tickers)} tickers × {len(dates)} rebalance dates...")
+                _print_pit_summary(run_point_in_time_backtest(tickers, db, dates, forward_months=args.forward_months))
     else:
-        print("No watchlist snapshots found yet.")
-        print("Snapshots are created automatically during monthly briefing runs.")
+        print("Forward Validation Module")
+        print("=" * 40)
         print("")
-        print("To create a snapshot manually, run the monthly briefing first:")
-        print("  python scripts/run_monthly_briefing.py")
+
+        # Check for existing snapshots
+        tracking = track_watchlist_performance()
+        if tracking.get("snapshots"):
+            print(f"Found {len(tracking['snapshots'])} watchlist snapshots")
+            report = generate_validation_report(tracking_results=tracking)
+            print(report)
+        else:
+            print("No watchlist snapshots found yet.")
+            print("Snapshots are created automatically during monthly briefing runs.")
+            print("")
+            print("Point-in-time backtest (look-ahead free, needs EDGAR_USER_AGENT):")
+            print("  python -m src.backtest --load-pit       # populate pit_fundamentals")
+            print("  python -m src.backtest --pit-backtest    # run the study")
