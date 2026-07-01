@@ -252,6 +252,7 @@ def weekly_auto_trade():
     logger.info("=" * 50)
 
     try:
+        from src.accounts import get_accounts
         from src.paper_trader import PaperTrader
 
         # Check kill switch
@@ -259,10 +260,11 @@ def weekly_auto_trade():
             logger.info("AUTO_TRADE_ENABLED=false — skipping auto-trade")
             return
 
-        trader = PaperTrader()
-        if not trader.is_enabled():
-            logger.info("Alpaca not configured — skipping auto-trade")
+        accounts = get_accounts()
+        if not accounts:
+            logger.info("No enabled accounts — skipping auto-trade")
             return
+        account = accounts[0]  # Alpaca paper for now; Phase C loops all accounts
 
         import json
         from datetime import date
@@ -326,7 +328,7 @@ def weekly_auto_trade():
 
         min_margin = config.margin_of_safety_pct
         portfolio_value = config.portfolio_value
-        current_positions = len(trader.get_positions())
+        current_positions = len(account.get_positions())
         max_positions = 10
 
         for result in haiku_results[:5]:
@@ -341,7 +343,7 @@ def weekly_auto_trade():
 
             # Simple position sizing: equal weight
             amount = portfolio_value * 0.10  # 10% per position
-            order = trader.buy(val.symbol, amount)
+            order = account.buy(val.symbol, amount)
             if order:
                 current_positions += 1
                 logger.info(f"Bought {val.symbol}: ${amount:,.0f}")
@@ -364,13 +366,13 @@ def weekly_auto_trade():
         # Margin of safety = (fair_value - price) / fair_value.
         # When margin drops below 5%, the stock has risen to near fair value
         # — it's no longer undervalued, so we take profit and free up capital.
-        positions = trader.get_positions()
+        positions = account.get_positions()
         if positions:
             logger.info(f"\nChecking {len(positions)} existing positions for sell signals...")
             aggregator = ValuationAggregator()
 
             for pos in positions:
-                symbol = pos["symbol"]
+                symbol = pos.symbol
                 try:
                     val = aggregator.get_valuation(symbol)
                     if val and val.margin_of_safety is not None and val.margin_of_safety < 0.05:
@@ -378,15 +380,15 @@ def weekly_auto_trade():
                             f"Take profit: margin of safety {val.margin_of_safety:.1%} "
                             f"(stock near fair value ${val.average_fair_value:.2f})"
                         )
-                        sell_order = trader.sell(symbol, reason=reason)
+                        sell_order = account.sell(symbol, reason=reason)
                         if sell_order:
                             try:
                                 exit_id = db.log_decision(
                                     symbol,
                                     "sell",
-                                    price=pos.get("current_price"),
-                                    shares=pos.get("qty"),
-                                    notional=pos.get("market_value"),
+                                    price=pos.price,
+                                    shares=pos.shares,
+                                    notional=pos.market_value,
                                     order_id=sell_order.get("order_id"),
                                     reason=reason,
                                     regime=regime_label,
@@ -404,9 +406,9 @@ def weekly_auto_trade():
                                 db.close_trade(
                                     symbol,
                                     exit_decision_id=exit_id,
-                                    entry_price=pos.get("avg_entry_price"),
-                                    exit_price=pos.get("current_price"),
-                                    shares=pos.get("qty"),
+                                    entry_price=pos.avg_cost,
+                                    exit_price=pos.price,
+                                    shares=pos.shares,
                                     benchmark_return=bench,
                                 )
                             except Exception as e:
