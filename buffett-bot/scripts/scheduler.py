@@ -797,14 +797,17 @@ def wednesday_haiku_batch():
 
 def friday_sonnet_batch():
     """
-    Friday 07:00 — Sonnet deep-dive on new Haiku passes via batch API.
+    Friday 07:00 — Sonnet deep-dive via batch API.
 
-    Analyzes up to 5 tickers whose Haiku pre-screen passed but have no
-    valid (non-expired) deep analysis.  Runs before the existing Friday
-    17:00 weekly_screen job so the watchlist is primed with fresh tiers.
-    Respects the weekly_sonnet_analysis budget cap (10 calls/week).
+    Portfolio tickers come first: held positions and recent auto-trade buys
+    without a valid analysis jump the queue, so every holding has a tier
+    within one weekly cycle (the deployment engine sizes buys and evaluates
+    sells by tier). Then up to 5 tickers whose Haiku pre-screen passed but
+    have no valid (non-expired) deep analysis.  Runs before the existing
+    Friday 17:00 weekly_screen job so the watchlist is primed with fresh
+    tiers.  Respects the weekly_sonnet_analysis budget cap (10 calls/week).
 
-    Cost: up to $0.125 (5 × $0.025).
+    Cost: up to $0.25 (10 × $0.025) in a week with untiered holdings.
     """
     logger.info("=" * 50)
     logger.info("FRIDAY SONNET BATCH")
@@ -818,10 +821,22 @@ def friday_sonnet_batch():
 
         db = Database()
 
-        candidates = db.get_haiku_passes_without_analysis(limit=5)
+        # Portfolio first, then the quality-ranked Haiku-pass queue. On budget
+        # truncation (spend_batch below) the portfolio names survive the cut.
+        priority = db.get_portfolio_tickers_needing_analysis()
+        queue = db.get_haiku_passes_without_analysis(limit=5)
+        seen: set[str] = set()
+        candidates: list[str] = []
+        for t in priority + queue:
+            if t not in seen:
+                seen.add(t)
+                candidates.append(t)
+
         if not candidates:
-            logger.info("No Haiku passes waiting for Sonnet analysis")
+            logger.info("No Sonnet candidates — portfolio fully tiered, no Haiku passes waiting")
             return
+        if priority:
+            logger.info("Portfolio tickers needing analysis (jump the queue): %s", ", ".join(priority))
 
         allowed = db.spend_batch("weekly_sonnet_analysis", len(candidates))
         if allowed == 0:

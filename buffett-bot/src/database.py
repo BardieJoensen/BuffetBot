@@ -1744,6 +1744,50 @@ class Database:
             ).fetchall()
             return [r["ticker"] for r in rows]
 
+    def get_portfolio_tickers_needing_analysis(self, *, recent_buy_days: int = 14) -> list[str]:
+        """
+        Held positions plus recent auto-trade buys that lack a valid
+        (non-expired) deep analysis.
+
+        These jump the Friday Sonnet queue ahead of the quality-ranked
+        universe: the deployment engine sizes buys and evaluates sells by
+        tier, so an untiered holding is invisible to the sell logic and a
+        fresh buy stays at the small unranked weight forever. Being in the
+        portfolio is a stronger reason to analyze than a Haiku pass, so the
+        Haiku gate is intentionally not required here.
+
+        Held = paper_positions (synced Monday) UNION recent decision_log
+        buys not since sold — the latter covers the gap between a Friday
+        buy and the following Monday's position sync.
+        """
+        with _open(self.path) as conn:
+            rows = conn.execute(
+                """
+                SELECT t.ticker FROM (
+                    SELECT ticker FROM paper_positions
+                    UNION
+                    SELECT d.ticker FROM decision_log d
+                    WHERE d.action = 'buy'
+                      AND d.decided_at >= datetime('now', ?)
+                      AND NOT EXISTS (
+                          SELECT 1 FROM decision_log s
+                          WHERE s.ticker = d.ticker
+                            AND s.action = 'sell'
+                            AND (s.decided_at > d.decided_at
+                                 OR (s.decided_at = d.decided_at AND s.id > d.id))
+                      )
+                ) t
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM deep_analyses da
+                    WHERE da.ticker = t.ticker
+                      AND da.expires_at > datetime('now')
+                )
+                ORDER BY t.ticker
+                """,
+                (f"-{recent_buy_days} days",),
+            ).fetchall()
+            return [r["ticker"] for r in rows]
+
     # ── Priority Queue ────────────────────────────────────────────────────────
 
     def get_priority_queue(self) -> list[dict]:

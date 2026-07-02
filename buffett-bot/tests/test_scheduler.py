@@ -284,6 +284,47 @@ class TestGetHaikuPassesWithoutAnalysis:
         assert len(result) == 5
 
 
+class TestGetPortfolioTickersNeedingAnalysis:
+    def test_held_position_without_analysis_included(self, db):
+        db.upsert_paper_position("AGM", tier_at_entry="C")
+        assert "AGM" in db.get_portfolio_tickers_needing_analysis()
+
+    def test_held_position_with_valid_analysis_excluded(self, db):
+        db.upsert_paper_position("AGM", tier_at_entry="B")
+        _save_deep_analysis(db, "AGM", expires_delta_days=60)
+        assert "AGM" not in db.get_portfolio_tickers_needing_analysis()
+
+    def test_held_position_with_expired_analysis_included(self, db):
+        db.upsert_paper_position("AGM", tier_at_entry="B")
+        _save_deep_analysis(db, "AGM", expires_delta_days=-1)
+        assert "AGM" in db.get_portfolio_tickers_needing_analysis()
+
+    def test_recent_buy_included_before_position_sync(self, db):
+        # Friday-evening buy: in decision_log immediately, but paper_positions
+        # only syncs the following Monday — must still jump the queue.
+        db.log_decision("ACVA", "buy", notional=8886.76)
+        assert "ACVA" in db.get_portfolio_tickers_needing_analysis()
+
+    def test_recent_buy_since_sold_excluded(self, db):
+        db.log_decision("ACVA", "buy", notional=8886.76)
+        db.log_decision("ACVA", "sell", price=7.29, shares=1219.0)
+        assert "ACVA" not in db.get_portfolio_tickers_needing_analysis()
+
+    def test_old_unheld_buy_excluded(self, db):
+        db.log_decision("OLDBUY", "buy", notional=1000.0)
+        import sqlite3
+
+        with sqlite3.connect(str(db.path)) as conn:
+            conn.execute("UPDATE decision_log SET decided_at = datetime('now', '-30 days') WHERE ticker = 'OLDBUY'")
+            conn.commit()
+        assert "OLDBUY" not in db.get_portfolio_tickers_needing_analysis(recent_buy_days=14)
+
+    def test_held_and_recent_buy_deduplicated(self, db):
+        db.upsert_paper_position("AGM", tier_at_entry="B")
+        db.log_decision("AGM", "buy", notional=5000.0)
+        assert db.get_portfolio_tickers_needing_analysis().count("AGM") == 1
+
+
 # ─── Scheduler helpers ────────────────────────────────────────────────────────
 
 
@@ -650,6 +691,29 @@ class TestFridaySonnetBatch:
 
         status = db.get_budget_status("weekly_sonnet_analysis")
         assert status["calls_used"] == 2
+
+    def test_portfolio_tickers_jump_the_queue(self, tmp_path):
+        """A held position with no Haiku pass at all is analyzed first."""
+        from scripts.scheduler import friday_sonnet_batch
+
+        db = Database(tmp_path / "test.db")
+        # Held position: never Haiku-screened, no analysis, low quality score.
+        db.upsert_paper_position("AGM", tier_at_entry="C")
+        # Regular queue candidate: Haiku pass with a top quality score.
+        _upsert_stock(db, "MSFT", quality_score=95.0)
+        _save_haiku(db, "MSFT", passed=True)
+
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.analyzer.CompanyAnalyzer") as MockAnalyzer,
+        ):
+            MockAnalyzer.return_value.batch_analyze_companies.return_value = []
+            friday_sonnet_batch()
+
+        submitted = MockAnalyzer.return_value.batch_analyze_companies.call_args[0][0]
+        symbols = [c["symbol"] for c in submitted]
+        assert symbols[0] == "AGM"  # portfolio before the quality-ranked queue
+        assert "MSFT" in symbols
 
 
 # ─── daily_snapshot ────────────────────────────────────────────────────────────
