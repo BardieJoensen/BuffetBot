@@ -225,6 +225,52 @@ CREATE TABLE IF NOT EXISTS pit_fundamentals (
     accession     TEXT,
     PRIMARY KEY (ticker, concept, period_end, form)
 );
+
+-- Append-only daily snapshot of account state, one row per (account_id, as_of).
+-- Fixes the core gap: today the bot queries the broker live and throws the
+-- number away, so once cash moves the old level is unrecoverable. Positions
+-- are stored as a JSON blob rather than a separate per-position table — queryable
+-- enough for an equity curve; split out later if per-ticker time series is needed.
+CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id      TEXT NOT NULL,
+    as_of           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    currency        TEXT NOT NULL,
+    equity          REAL NOT NULL,
+    cash            REAL NOT NULL,
+    buying_power    REAL,
+    invested_value  REAL,
+    invested_pct    REAL,
+    equity_dkk      REAL,           -- NULL if the FX rate was unavailable
+    positions       TEXT            -- JSON array of position dicts
+);
+
+-- One row per day the market regime is classified. Regime is computed at
+-- trade time today but never stored standalone — this lets deployment
+-- behavior be compared against market conditions after the fact.
+CREATE TABLE IF NOT EXISTS regime_log (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    as_of           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    regime          TEXT NOT NULL,
+    confidence      TEXT,           -- 'high' / 'moderate' / 'low'
+    market_pe       REAL,
+    vix             REAL
+);
+
+-- Cash events outside of buy/sell trades. Dividends come from Alpaca's
+-- activities API where available; contribution/withdrawal/tax are manual
+-- entries (Nordnet is entirely manual, Phase D).
+CREATE TABLE IF NOT EXISTS income_events (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id      TEXT NOT NULL,
+    event_date      TEXT NOT NULL,      -- ISO date
+    event_type      TEXT NOT NULL,      -- 'dividend' / 'contribution' / 'withdrawal' / 'tax'
+    symbol          TEXT,               -- NULL for contribution/withdrawal
+    amount          REAL NOT NULL,
+    currency        TEXT NOT NULL,
+    withholding     REAL,               -- tax withheld, if any (same currency as amount)
+    logged_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 INDEXES_SQL = """
@@ -273,6 +319,18 @@ CREATE INDEX IF NOT EXISTS idx_closed_trades_entry
 -- Point-in-time as-of lookups: latest filed value per (ticker, concept) at a date
 CREATE INDEX IF NOT EXISTS idx_pit_asof
     ON pit_fundamentals(ticker, concept, filed_date);
+
+-- Equity curve: snapshots per account in time order
+CREATE INDEX IF NOT EXISTS idx_portfolio_snapshots_account
+    ON portfolio_snapshots(account_id, as_of);
+
+-- Regime history in time order
+CREATE INDEX IF NOT EXISTS idx_regime_log_asof
+    ON regime_log(as_of);
+
+-- Income history per account, most recent first
+CREATE INDEX IF NOT EXISTS idx_income_events_account
+    ON income_events(account_id, event_date DESC);
 """
 
 BUDGET_CAPS_DEFAULTS = [
@@ -1258,6 +1316,137 @@ class Database:
                 """
             ).fetchall()
             return [dict(r) for r in rows]
+
+    # ── Portfolio Snapshots, Regime Log & Income Events ───────────────────────
+
+    def save_snapshot(
+        self,
+        account_id: str,
+        *,
+        currency: str,
+        equity: float,
+        cash: float,
+        buying_power: Optional[float] = None,
+        invested_value: Optional[float] = None,
+        invested_pct: Optional[float] = None,
+        equity_dkk: Optional[float] = None,
+        positions: Optional[list[dict]] = None,
+    ) -> int:
+        """Append one point-in-time account snapshot. Never overwrites — the
+        history is the point."""
+        with _open(self.path) as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO portfolio_snapshots
+                    (account_id, currency, equity, cash, buying_power,
+                     invested_value, invested_pct, equity_dkk, positions)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    account_id,
+                    currency,
+                    equity,
+                    cash,
+                    buying_power,
+                    invested_value,
+                    invested_pct,
+                    equity_dkk,
+                    json.dumps(positions) if positions is not None else None,
+                ),
+            )
+            new_id = cur.lastrowid
+            return int(new_id) if new_id is not None else 0
+
+    def get_snapshots(self, account_id: str, since: Optional[str] = None, limit: int = 365) -> list[dict]:
+        """Return snapshots for one account, oldest first. `since` is an ISO
+        date/timestamp lower bound on `as_of`."""
+        with _open(self.path) as conn:
+            if since:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM portfolio_snapshots
+                    WHERE account_id = ? AND as_of >= ?
+                    ORDER BY as_of ASC LIMIT ?
+                    """,
+                    (account_id, since, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM portfolio_snapshots
+                    WHERE account_id = ?
+                    ORDER BY as_of ASC LIMIT ?
+                    """,
+                    (account_id, limit),
+                ).fetchall()
+            out = []
+            for r in rows:
+                d = dict(r)
+                d["positions"] = json.loads(d["positions"]) if d["positions"] else None
+                out.append(d)
+            return out
+
+    def get_equity_curve(self, account_id: str) -> list[dict]:
+        """Return (as_of, equity, equity_dkk) triples for one account, oldest
+        first — the minimal series a chart or CLI table needs."""
+        with _open(self.path) as conn:
+            rows = conn.execute(
+                """
+                SELECT as_of, equity, equity_dkk FROM portfolio_snapshots
+                WHERE account_id = ?
+                ORDER BY as_of ASC
+                """,
+                (account_id,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def log_regime(
+        self,
+        regime: str,
+        *,
+        confidence: Optional[str] = None,
+        market_pe: Optional[float] = None,
+        vix: Optional[float] = None,
+    ) -> int:
+        """Append one market-regime classification. Called once per day
+        alongside save_snapshot, independent of any specific account."""
+        with _open(self.path) as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO regime_log (regime, confidence, market_pe, vix)
+                VALUES (?, ?, ?, ?)
+                """,
+                (regime, confidence, market_pe, vix),
+            )
+            new_id = cur.lastrowid
+            return int(new_id) if new_id is not None else 0
+
+    def log_income_event(
+        self,
+        account_id: str,
+        *,
+        event_date: str,
+        event_type: str,
+        amount: float,
+        currency: str,
+        symbol: Optional[str] = None,
+        withholding: Optional[float] = None,
+    ) -> int:
+        """Record a cash event outside of buy/sell trades (dividend,
+        contribution, withdrawal, tax)."""
+        if event_type not in ("dividend", "contribution", "withdrawal", "tax"):
+            raise ValueError(f"event_type must be one of dividend/contribution/withdrawal/tax, got {event_type!r}")
+        with _open(self.path) as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO income_events
+                    (account_id, event_date, event_type, symbol, amount, currency, withholding)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (account_id, event_date, event_type, symbol, amount, currency, withholding),
+            )
+            new_id = cur.lastrowid
+            return int(new_id) if new_id is not None else 0
 
     # ── Point-in-Time Fundamentals (EDGAR companyfacts) ───────────────────────
 

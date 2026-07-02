@@ -650,3 +650,151 @@ class TestFridaySonnetBatch:
 
         status = db.get_budget_status("weekly_sonnet_analysis")
         assert status["calls_used"] == 2
+
+
+# ─── daily_snapshot ────────────────────────────────────────────────────────────
+
+
+class TestDailySnapshot:
+    def _mock_account(self, *, account_id="alpaca_paper", currency="USD", equity=1000.0, cash=400.0):
+        from datetime import datetime, timezone
+
+        from src.accounts.base import AccountState, PositionState
+
+        account = MagicMock()
+        account.account_id = account_id
+        account.get_state.return_value = AccountState(
+            account_id=account_id,
+            currency=currency,
+            equity=equity,
+            cash=cash,
+            buying_power=cash * 4,
+            invested_value=equity - cash,
+            invested_pct=(equity - cash) / equity,
+            as_of=datetime.now(timezone.utc),
+        )
+        account.get_positions.return_value = [
+            PositionState(
+                symbol="AAPL",
+                shares=2.0,
+                avg_cost=100.0,
+                price=110.0,
+                market_value=220.0,
+                unrealized_pl=20.0,
+                unrealized_pl_pct=0.10,
+            )
+        ]
+        return account
+
+    def _mock_regime(self):
+        regime = MagicMock()
+        regime.regime = "fair_value"
+        regime.confidence = "moderate"
+        regime.market_pe = 22.0
+        regime.vix = 16.0
+        return regime
+
+    def test_saves_snapshot_for_each_account(self, tmp_path):
+        from scripts.scheduler import daily_snapshot
+
+        db = Database(tmp_path / "test.db")
+        account = self._mock_account()
+
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.accounts.get_accounts", return_value=[account]),
+            patch("src.fx.usd_to_dkk", return_value=7000.0),
+            patch("src.bubble_detector.classify_market_regime", return_value=self._mock_regime()),
+        ):
+            daily_snapshot()
+
+        snaps = db.get_snapshots("alpaca_paper")
+        assert len(snaps) == 1
+        assert snaps[0]["equity"] == 1000.0
+        assert snaps[0]["cash"] == 400.0
+        assert snaps[0]["equity_dkk"] == 7000.0
+        assert snaps[0]["positions"] == [
+            {
+                "symbol": "AAPL",
+                "shares": 2.0,
+                "avg_cost": 100.0,
+                "price": 110.0,
+                "market_value": 220.0,
+                "unrealized_pl": 20.0,
+                "unrealized_pl_pct": 0.10,
+                "tier_at_entry": None,
+            }
+        ]
+
+    def test_logs_regime_once(self, tmp_path):
+        from scripts.scheduler import daily_snapshot
+
+        db = Database(tmp_path / "test.db")
+        account = self._mock_account()
+
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.accounts.get_accounts", return_value=[account]),
+            patch("src.fx.usd_to_dkk", return_value=7000.0),
+            patch("src.bubble_detector.classify_market_regime", return_value=self._mock_regime()),
+        ):
+            daily_snapshot()
+
+        with __import__("sqlite3").connect(str(db.path)) as conn:
+            conn.row_factory = __import__("sqlite3").Row
+            rows = conn.execute("SELECT * FROM regime_log").fetchall()
+        assert len(rows) == 1
+        assert rows[0]["regime"] == "fair_value"
+        assert rows[0]["confidence"] == "moderate"
+
+    def test_dkk_account_passes_through_equity(self, tmp_path):
+        from scripts.scheduler import daily_snapshot
+
+        db = Database(tmp_path / "test.db")
+        account = self._mock_account(account_id="nordnet_ask", currency="DKK", equity=50000.0, cash=1000.0)
+
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.accounts.get_accounts", return_value=[account]),
+            patch("src.fx.usd_to_dkk") as mock_usd_to_dkk,
+            patch("src.bubble_detector.classify_market_regime", return_value=self._mock_regime()),
+        ):
+            daily_snapshot()
+
+        mock_usd_to_dkk.assert_not_called()
+        snaps = db.get_snapshots("nordnet_ask")
+        assert snaps[0]["equity_dkk"] == 50000.0
+
+    def test_no_accounts_does_not_raise(self, tmp_path):
+        from scripts.scheduler import daily_snapshot
+
+        db = Database(tmp_path / "test.db")
+
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.accounts.get_accounts", return_value=[]),
+            patch("src.bubble_detector.classify_market_regime", return_value=self._mock_regime()),
+        ):
+            daily_snapshot()  # should not raise
+
+        assert db.get_snapshots("alpaca_paper") == []
+
+    def test_snapshot_failure_for_one_account_does_not_block_regime(self, tmp_path):
+        from scripts.scheduler import daily_snapshot
+
+        db = Database(tmp_path / "test.db")
+        broken_account = MagicMock()
+        broken_account.account_id = "alpaca_paper"
+        broken_account.get_state.side_effect = RuntimeError("API down")
+
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.accounts.get_accounts", return_value=[broken_account]),
+            patch("src.bubble_detector.classify_market_regime", return_value=self._mock_regime()),
+        ):
+            daily_snapshot()  # should not raise
+
+        with __import__("sqlite3").connect(str(db.path)) as conn:
+            conn.row_factory = __import__("sqlite3").Row
+            rows = conn.execute("SELECT * FROM regime_log").fetchall()
+        assert len(rows) == 1

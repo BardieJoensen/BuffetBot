@@ -82,6 +82,9 @@ class TestSchema:
             "decision_log",
             "closed_trades",
             "pit_fundamentals",
+            "portfolio_snapshots",
+            "regime_log",
+            "income_events",
         }
         assert expected.issubset(tables)
 

@@ -7,6 +7,7 @@ Runs automated jobs on a schedule:
 AUTOMATIC (free):
 - Weekly screen:    Every Friday at 17:00 (yfinance, free)
 - Daily check:      Every day at 08:00 (yfinance, free)
+- Daily snapshot:   Every day at 22:00 (yfinance, free) — account state + regime, append-only
 
 AUTOMATIC (cheap, needs API keys):
 - Weekly auto-trade: Every Friday at 18:00 (Haiku ~$0.10-0.20/week)
@@ -230,6 +231,77 @@ def daily_watchlist_check():
 
     except Exception as e:
         logger.error(f"Daily check failed: {e}")
+
+
+def daily_snapshot():
+    """
+    Daily 22:00 — append-only account snapshot, once per configured account,
+    plus one market-regime classification for the day.
+
+    This is FREE (yfinance only). Fixes the core gap Phase B exists for: the
+    bot queries the broker live and throws the number away, so once cash
+    moves the old equity/cash level is unrecoverable. Runs after market close
+    (20:00 UTC/16:00 ET) so equity reflects the day's final prices.
+    """
+    logger.info("Daily portfolio snapshot...")
+
+    from dataclasses import asdict
+
+    from src.accounts import get_accounts
+    from src.database import Database
+    from src.fx import usd_to_dkk
+
+    db = Database()
+
+    accounts = get_accounts()
+    if not accounts:
+        logger.info("No enabled accounts — skipping snapshot")
+    for account in accounts:
+        try:
+            state = account.get_state()
+            positions = account.get_positions()
+
+            if state.currency == "USD":
+                equity_dkk = usd_to_dkk(state.equity)
+            elif state.currency == "DKK":
+                equity_dkk = state.equity
+            else:
+                equity_dkk = None
+
+            db.save_snapshot(
+                state.account_id,
+                currency=state.currency,
+                equity=state.equity,
+                cash=state.cash,
+                buying_power=state.buying_power,
+                invested_value=state.invested_value,
+                invested_pct=state.invested_pct,
+                equity_dkk=equity_dkk,
+                positions=[asdict(p) for p in positions],
+            )
+            logger.info(
+                "Snapshot saved for %s: equity=%.2f %s (%d positions)",
+                state.account_id,
+                state.equity,
+                state.currency,
+                len(positions),
+            )
+        except Exception as e:
+            logger.error("Snapshot failed for %s: %s", getattr(account, "account_id", "?"), e)
+
+    try:
+        from src.bubble_detector import classify_market_regime
+
+        regime = classify_market_regime()
+        db.log_regime(
+            regime.regime,
+            confidence=regime.confidence,
+            market_pe=regime.market_pe,
+            vix=regime.vix,
+        )
+        logger.info("Regime logged: %s (confidence=%s)", regime.regime, regime.confidence)
+    except Exception as e:
+        logger.error("Regime logging failed: %s", e)
 
 
 def weekly_auto_trade():
@@ -897,6 +969,7 @@ def run_scheduler():
     )
     logger.info("  - Daily check:         Every day at 08:00      (yfinance, free)")
     logger.info("  - Daily news monitor:  Every day at 20:00      (Haiku+Sonnet, ~$0.30/wk max)")
+    logger.info("  - Daily snapshot:      Every day at 22:00      (yfinance, free)")
     logger.info(
         f"  - Monthly briefing:    1st of month at 09:00   (Sonnet ~$0.50) [{'ON' if auto_briefing else 'OFF'}]"
     )
@@ -929,6 +1002,9 @@ def run_scheduler():
     # Legacy free operations (watchlist.json-based)
     schedule.every().friday.at("17:00").do(weekly_screen)
     schedule.every().day.at("08:00").do(daily_watchlist_check)
+
+    # Phase B: account snapshot + regime log, after market close (DB-based)
+    schedule.every().day.at("22:00").do(daily_snapshot)
 
     # Paid operations (have their own kill switches)
     schedule.every().friday.at("18:00").do(weekly_auto_trade)
