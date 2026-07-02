@@ -36,6 +36,27 @@ class Config:
     # Position sizing
     max_position_pct: float = float(os.getenv("MAX_POSITION_PCT", "0.15"))
 
+    # Regime-driven deployment targets (Phase C). Target fraction of equity
+    # invested for each bubble_detector.classify_market_regime() regime —
+    # formalizes its existing deployment_guidance strings into numbers so
+    # weekly_auto_trade deploys toward a target instead of sitting on cash
+    # whenever nothing clears the old 25% margin-of-safety hard gate.
+    deploy_target_euphoria: float = float(os.getenv("DEPLOY_TARGET_EUPHORIA", "65")) / 100
+    deploy_target_overvalued: float = float(os.getenv("DEPLOY_TARGET_OVERVALUED", "80")) / 100
+    deploy_target_fair_value: float = float(os.getenv("DEPLOY_TARGET_FAIR_VALUE", "90")) / 100
+    deploy_target_correction: float = float(os.getenv("DEPLOY_TARGET_CORRECTION", "97")) / 100
+    deploy_target_crisis: float = float(os.getenv("DEPLOY_TARGET_CRISIS", "100")) / 100
+
+    # Quality ceiling (Phase C): margin_of_safety demotes from a pass/fail gate
+    # to a ranking/sizing tilt, but a name trading more than this far above its
+    # fair value is still skipped rather than bought at any price.
+    quality_ceiling_pct: float = float(os.getenv("QUALITY_CEILING_PCT", "12.5")) / 100
+
+    # Minimum dollar size for a deployment buy/consideration — below this a
+    # gap or remaining allocation is treated as "close enough", avoiding dust
+    # trades and infinite tiny-order loops.
+    min_trade_usd: float = float(os.getenv("MIN_TRADE_USD", "250"))
+
     # API behavior
     use_batch_api: bool = os.getenv("USE_BATCH_API", "true").lower() == "true"
     use_opus_second_opinion: bool = os.getenv("USE_OPUS_SECOND_OPINION", "false").lower() == "true"

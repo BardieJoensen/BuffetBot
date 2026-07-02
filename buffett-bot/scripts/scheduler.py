@@ -306,18 +306,23 @@ def daily_snapshot():
 
 def weekly_auto_trade():
     """
-    Weekly auto-trade job using Haiku pre-screening.
+    Weekly auto-trade job using Haiku pre-screening + the Phase C regime-driven
+    deployment engine (src/deployment.py).
 
     Runs Friday at 18:00 (after market close at 16:00 ET).
     Orders placed now will queue for Monday open via Alpaca.
     Cost: ~$0.10-0.20/week (Haiku only, no Sonnet).
 
-    - Loads watchlist from weekly_screen
-    - Runs Haiku quick-screen on top candidates
-    - Fetches valuations, determines recommendations
-    - Executes paper buys for BUY signals
-    - Checks existing positions: sells if stock has risen to near fair value
-      (margin of safety < 5% = take-profit, the stock is no longer undervalued)
+    - Loads watchlist from weekly_screen, Haiku quick-screens top candidates
+      (moat/quality still decide *what* to buy — unchanged)
+    - Sells first: a thesis break (tier downgraded to C) always sells; a
+      position at fair value only sells to rotate into a clearly
+      better-ranked candidate or to trim an overweight — never sells to cash
+      purely for hitting fair value
+    - Buys second, using the freed capital: deploys toward the current
+      regime's target invested % (bubble_detector.classify_market_regime),
+      sized off real buying power and ranked by tier + margin_of_safety
+      (a sizing tilt now, not a 25%-or-nothing gate)
     """
     logger.info("=" * 50)
     logger.info("WEEKLY AUTO-TRADE (Haiku + Alpaca paper)")
@@ -336,7 +341,6 @@ def weekly_auto_trade():
         if not accounts:
             logger.info("No enabled accounts — skipping auto-trade")
             return
-        account = accounts[0]  # Alpaca paper for now; Phase C loops all accounts
 
         import json
         from datetime import date
@@ -344,12 +348,14 @@ def weekly_auto_trade():
         from src.analyzer import CompanyAnalyzer
         from src.benchmark import fetch_benchmark_return
         from src.database import Database
+        from src.deployment import DeployCandidate, HeldPosition, plan_buys, plan_sells
         from src.valuation import ValuationAggregator, screen_for_undervalued
 
         # Decision journal: persists every buy/sell with reasoning + realized outcome.
         db = Database()
 
-        # Market regime at decision time (best-effort; never block trading on it).
+        # Market regime at decision time — now drives target invested %, not
+        # just journaling context (best-effort; never block trading on it).
         regime_label = None
         try:
             from src.bubble_detector import classify_market_regime
@@ -372,121 +378,140 @@ def weekly_auto_trade():
             logger.info("Watchlist is empty")
             return
 
-        # Get top undervalued symbols
+        # Get top candidate symbols. The floor here is the quality ceiling
+        # (margin_of_safety demoted to a ranking tilt), not the old 25% hard
+        # gate — deployment.plan_buys does the real ranking/sizing below.
         symbols = [s.get("symbol") for s in stocks[:30] if s.get("symbol")]
-        valuations = screen_for_undervalued(symbols, min_margin_of_safety=0.10)
+        valuations = screen_for_undervalued(symbols, min_margin_of_safety=-config.quality_ceiling_pct)
 
-        if not valuations:
-            logger.info("No undervalued stocks found")
-            return
+        # Haiku quick-screen — moat/quality judgment is unchanged by Phase C.
+        candidates: list[DeployCandidate] = []
+        valuations_by_symbol = {}
+        if valuations:
+            analyzer = CompanyAnalyzer()
+            import yfinance as yf
 
-        # Haiku quick-screen on top candidates
-        analyzer = CompanyAnalyzer()
-        import yfinance as yf
-
-        haiku_results = []
-        for val in valuations[:20]:
-            try:
-                ticker = yf.Ticker(val.symbol)
-                desc = ticker.info.get("longBusinessSummary", f"Company: {val.symbol}")
-                result = analyzer.quick_screen(val.symbol, desc)
-                result["valuation"] = val
-                haiku_results.append(result)
-            except Exception as e:
-                logger.warning(f"Haiku screen failed for {val.symbol}: {e}")
-
-        # Sort by quality and buy top picks
-        haiku_results.sort(key=lambda r: r["moat_hint"] + r["quality_hint"], reverse=True)
-
-        min_margin = config.margin_of_safety_pct
-        portfolio_value = config.portfolio_value
-        current_positions = len(account.get_positions())
-        max_positions = 10
-
-        for result in haiku_results[:5]:
-            val = result["valuation"]
-            if not result["worth_analysis"]:
-                continue
-            if val.margin_of_safety is None or val.margin_of_safety < min_margin:
-                continue
-            if current_positions >= max_positions:
-                logger.info("Max positions reached — stopping buys")
-                break
-
-            # Simple position sizing: equal weight
-            amount = portfolio_value * 0.10  # 10% per position
-            order = account.buy(val.symbol, amount)
-            if order:
-                current_positions += 1
-                logger.info(f"Bought {val.symbol}: ${amount:,.0f}")
+            for val in valuations[:20]:
                 try:
-                    snapshot, tier = _build_reasoning_snapshot(db, val.symbol, val)
+                    ticker = yf.Ticker(val.symbol)
+                    desc = ticker.info.get("longBusinessSummary", f"Company: {val.symbol}")
+                    result = analyzer.quick_screen(val.symbol, desc)
+                except Exception as e:
+                    logger.warning(f"Haiku screen failed for {val.symbol}: {e}")
+                    continue
+                if not result["worth_analysis"]:
+                    continue
+                valuations_by_symbol[val.symbol] = val
+                da = db.get_latest_deep_analysis(val.symbol)
+                tier = da.get("tier") if da else None
+                candidates.append(DeployCandidate(symbol=val.symbol, margin_of_safety=val.margin_of_safety, tier=tier))
+        else:
+            logger.info("No candidate stocks passed the quality ceiling this week")
+
+        aggregator = ValuationAggregator()
+
+        for account in accounts:
+            state = account.get_state()
+            positions = account.get_positions()
+            held_symbols = frozenset(p.symbol for p in positions)
+
+            # ── Sells first: thesis breaks always; fair-value positions only
+            # to rotate into something clearly better or trim an overweight.
+            held: list[HeldPosition] = []
+            for pos in positions:
+                da = db.get_latest_deep_analysis(pos.symbol)
+                tier = da.get("tier") if da else None
+                mos = None
+                try:
+                    val = aggregator.get_valuation(pos.symbol)
+                    mos = val.margin_of_safety if val else None
+                except Exception as e:
+                    logger.warning(f"Error pricing {pos.symbol}: {e}")
+                held.append(HeldPosition(position=pos, tier=tier, margin_of_safety=mos))
+
+            sells = plan_sells(state.equity, held, candidates, cfg=config)
+            sold_symbols: set[str] = set()
+            for sell in sells:
+                pos = next(p for p in positions if p.symbol == sell.symbol)
+                sell_order = account.sell(sell.symbol, reason=sell.reason)
+                if not sell_order:
+                    continue
+                sold_symbols.add(sell.symbol)
+                logger.info(f"Sold {sell.symbol}: {sell.reason}")
+                try:
+                    exit_id = db.log_decision(
+                        sell.symbol,
+                        "sell",
+                        price=pos.price,
+                        shares=pos.shares,
+                        notional=pos.market_value,
+                        order_id=sell_order.get("order_id"),
+                        reason=sell.reason,
+                        regime=regime_label,
+                    )
+                    # Benchmark return over the exact hold window (fetched here,
+                    # not in the DB layer, to keep that module offline).
+                    open_buy = db.get_open_buy(sell.symbol)
+                    bench = None
+                    if open_buy and open_buy.get("decided_at"):
+                        bench = fetch_benchmark_return(
+                            open_buy["decided_at"],
+                            date.today().isoformat(),
+                            symbol=config.benchmark_symbol,
+                        )
+                    db.close_trade(
+                        sell.symbol,
+                        exit_decision_id=exit_id,
+                        entry_price=pos.avg_cost,
+                        exit_price=pos.price,
+                        shares=pos.shares,
+                        benchmark_return=bench,
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to journal sell for {sell.symbol}: {e}")
+
+            # ── Buys second, using whatever capital the sells just freed.
+            # Re-fetch state — cash/buying_power moved if anything sold.
+            if sold_symbols:
+                state = account.get_state()
+            current_position_count = len(positions) - len(sold_symbols)
+
+            plan = plan_buys(
+                state,
+                candidates,
+                regime_label,
+                current_position_count=current_position_count,
+                held_symbols=held_symbols,
+                cfg=config,
+            )
+            logger.info(
+                f"{account.account_id}: regime={plan.regime} target={plan.target_pct:.0%} "
+                f"invested, gap=${plan.gap:,.0f}"
+            )
+
+            for buy in plan.buys:
+                order = account.buy(buy.symbol, buy.amount)
+                if not order:
+                    continue
+                logger.info(f"Bought {buy.symbol}: ${buy.amount:,.0f} (tier={buy.tier or '?'})")
+                try:
+                    val = valuations_by_symbol.get(buy.symbol)
+                    snapshot, tier = _build_reasoning_snapshot(db, buy.symbol, val) if val else ({}, buy.tier)
+                    snapshot["deploy_regime"] = plan.regime
+                    snapshot["deploy_target_pct"] = plan.target_pct
+                    snapshot["deploy_gap_at_decision"] = plan.gap
                     db.log_decision(
-                        val.symbol,
+                        buy.symbol,
                         "buy",
-                        tier=tier,
-                        notional=amount,
+                        tier=tier or buy.tier,
+                        notional=buy.amount,
                         order_id=order.get("order_id"),
-                        reason="Weekly auto-trade: undervalued (Haiku-screened)",
+                        reason=f"Weekly auto-trade: regime={plan.regime}, target={plan.target_pct:.0%} invested",
                         regime=regime_label,
                         reasoning_snapshot=snapshot,
                     )
                 except Exception as e:
-                    logger.warning(f"Failed to journal buy for {val.symbol}: {e}")
-
-        # Check existing positions for take-profit sells.
-        # Margin of safety = (fair_value - price) / fair_value.
-        # When margin drops below 5%, the stock has risen to near fair value
-        # — it's no longer undervalued, so we take profit and free up capital.
-        positions = account.get_positions()
-        if positions:
-            logger.info(f"\nChecking {len(positions)} existing positions for sell signals...")
-            aggregator = ValuationAggregator()
-
-            for pos in positions:
-                symbol = pos.symbol
-                try:
-                    val = aggregator.get_valuation(symbol)
-                    if val and val.margin_of_safety is not None and val.margin_of_safety < 0.05:
-                        reason = (
-                            f"Take profit: margin of safety {val.margin_of_safety:.1%} "
-                            f"(stock near fair value ${val.average_fair_value:.2f})"
-                        )
-                        sell_order = account.sell(symbol, reason=reason)
-                        if sell_order:
-                            try:
-                                exit_id = db.log_decision(
-                                    symbol,
-                                    "sell",
-                                    price=pos.price,
-                                    shares=pos.shares,
-                                    notional=pos.market_value,
-                                    order_id=sell_order.get("order_id"),
-                                    reason=reason,
-                                    regime=regime_label,
-                                )
-                                # Benchmark return over the exact hold window (fetched
-                                # here, not in the DB layer, to keep that module offline).
-                                open_buy = db.get_open_buy(symbol)
-                                bench = None
-                                if open_buy and open_buy.get("decided_at"):
-                                    bench = fetch_benchmark_return(
-                                        open_buy["decided_at"],
-                                        date.today().isoformat(),
-                                        symbol=config.benchmark_symbol,
-                                    )
-                                db.close_trade(
-                                    symbol,
-                                    exit_decision_id=exit_id,
-                                    entry_price=pos.avg_cost,
-                                    exit_price=pos.price,
-                                    shares=pos.shares,
-                                    benchmark_return=bench,
-                                )
-                            except Exception as e:
-                                logger.warning(f"Failed to journal sell for {symbol}: {e}")
-                except Exception as e:
-                    logger.warning(f"Error checking {symbol}: {e}")
+                    logger.warning(f"Failed to journal buy for {buy.symbol}: {e}")
 
         logger.info("Weekly auto-trade complete")
 

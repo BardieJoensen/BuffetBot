@@ -798,3 +798,157 @@ class TestDailySnapshot:
             conn.row_factory = __import__("sqlite3").Row
             rows = conn.execute("SELECT * FROM regime_log").fetchall()
         assert len(rows) == 1
+
+
+# ─── weekly_auto_trade (Phase C: deployment engine) ────────────────────────────
+
+
+class TestWeeklyAutoTrade:
+    def _mock_account(self, *, account_id="alpaca_paper", equity, cash, buying_power, invested_value, positions):
+        from datetime import timezone
+
+        from src.accounts.base import AccountState
+
+        account = MagicMock()
+        account.account_id = account_id
+        account.get_state.return_value = AccountState(
+            account_id=account_id,
+            currency="USD",
+            equity=equity,
+            cash=cash,
+            buying_power=buying_power,
+            invested_value=invested_value,
+            invested_pct=(invested_value / equity) if equity else 0.0,
+            as_of=datetime.now(timezone.utc),
+        )
+        account.get_positions.return_value = positions
+        account.buy.return_value = {"symbol": "BUY", "order_id": "buy-1"}
+        account.sell.return_value = {"symbol": "SELL", "order_id": "sell-1"}
+        return account
+
+    def _mock_valuation(self, symbol, margin_of_safety, fair_value=100.0, price=90.0):
+        val = MagicMock()
+        val.symbol = symbol
+        val.margin_of_safety = margin_of_safety
+        val.average_fair_value = fair_value
+        val.current_price = price
+        return val
+
+    def _write_watchlist(self, tmp_path, symbols):
+        import json
+
+        (tmp_path / "data").mkdir(exist_ok=True)
+        (tmp_path / "data" / "watchlist.json").write_text(json.dumps({"stocks": [{"symbol": s} for s in symbols]}))
+
+    def test_skips_when_kill_switch_off(self):
+        from scripts.scheduler import weekly_auto_trade
+
+        with (
+            patch("src.paper_trader.PaperTrader.auto_trade_enabled", return_value=False),
+            patch("src.accounts.get_accounts") as mock_get_accounts,
+        ):
+            weekly_auto_trade()
+        mock_get_accounts.assert_not_called()
+
+    def test_skips_when_no_accounts(self):
+        from scripts.scheduler import weekly_auto_trade
+
+        with (
+            patch("src.paper_trader.PaperTrader.auto_trade_enabled", return_value=True),
+            patch("src.accounts.get_accounts", return_value=[]),
+        ):
+            weekly_auto_trade()  # should not raise
+
+    def test_deploys_toward_regime_target(self, tmp_path, monkeypatch):
+        from scripts.scheduler import weekly_auto_trade
+
+        monkeypatch.chdir(tmp_path)
+        self._write_watchlist(tmp_path, ["AAPL"])
+
+        db = Database(tmp_path / "test.db")
+        account = self._mock_account(
+            equity=100_000.0, cash=100_000.0, buying_power=100_000.0, invested_value=0.0, positions=[]
+        )
+        val = self._mock_valuation("AAPL", margin_of_safety=0.20)
+
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.accounts.get_accounts", return_value=[account]),
+            patch("src.paper_trader.PaperTrader.auto_trade_enabled", return_value=True),
+            patch("src.valuation.screen_for_undervalued", return_value=[val]),
+            patch("src.analyzer.CompanyAnalyzer") as MockAnalyzer,
+            patch("yfinance.Ticker"),
+            patch("src.bubble_detector.classify_market_regime") as mock_regime,
+            patch("src.valuation.ValuationAggregator"),
+        ):
+            MockAnalyzer.return_value.quick_screen.return_value = {
+                "worth_analysis": True,
+                "moat_hint": 4,
+                "quality_hint": 4,
+            }
+            mock_regime.return_value.regime = "fair_value"
+            weekly_auto_trade()
+
+        # equity 100k, fair_value target 90% -> gap 90k; max_position_value =
+        # 100k*0.15=15k; unranked (no tier) weight 0.55 -> amount = 15k*0.55=8250
+        account.buy.assert_called_once_with("AAPL", pytest.approx(8250.0))
+        log = db.get_decision_log("AAPL")
+        assert len(log) == 1
+        assert log[0]["action"] == "buy"
+        assert log[0]["regime"] == "fair_value"
+        assert log[0]["reasoning_snapshot"]["deploy_regime"] == "fair_value"
+
+    def test_thesis_break_sells_before_buying(self, tmp_path, monkeypatch):
+        from scripts.scheduler import weekly_auto_trade
+        from src.accounts.base import PositionState
+
+        monkeypatch.chdir(tmp_path)
+        self._write_watchlist(tmp_path, ["NEWCO"])
+
+        db = Database(tmp_path / "test.db")
+        _save_deep_analysis(db, "OLDCO", tier="C")  # downgraded -> thesis break
+
+        held = PositionState(
+            symbol="OLDCO",
+            shares=10.0,
+            avg_cost=50.0,
+            price=40.0,
+            market_value=400.0,
+            unrealized_pl=-100.0,
+            unrealized_pl_pct=-0.20,
+        )
+        account = self._mock_account(
+            equity=50_400.0, cash=50_000.0, buying_power=50_000.0, invested_value=400.0, positions=[held]
+        )
+        val = self._mock_valuation("NEWCO", margin_of_safety=0.30)
+
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.accounts.get_accounts", return_value=[account]),
+            patch("src.paper_trader.PaperTrader.auto_trade_enabled", return_value=True),
+            patch("src.valuation.screen_for_undervalued", return_value=[val]),
+            patch("src.analyzer.CompanyAnalyzer") as MockAnalyzer,
+            patch("yfinance.Ticker"),
+            patch("src.bubble_detector.classify_market_regime") as mock_regime,
+            patch("src.valuation.ValuationAggregator") as MockAggregator,
+        ):
+            MockAnalyzer.return_value.quick_screen.return_value = {
+                "worth_analysis": True,
+                "moat_hint": 5,
+                "quality_hint": 5,
+            }
+            mock_regime.return_value.regime = "fair_value"
+            MockAggregator.return_value.get_valuation.return_value = MagicMock(margin_of_safety=-0.10)
+            weekly_auto_trade()
+
+        account.sell.assert_called_once()
+        sell_args, sell_kwargs = account.sell.call_args
+        assert sell_args[0] == "OLDCO"
+        assert "Thesis breaker" in sell_kwargs["reason"]
+
+        sell_log = db.get_decision_log("OLDCO")
+        assert len(sell_log) == 1
+        assert sell_log[0]["action"] == "sell"
+
+        account.buy.assert_called_once()
+        assert account.buy.call_args[0][0] == "NEWCO"
