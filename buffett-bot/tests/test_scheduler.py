@@ -324,6 +324,38 @@ class TestGetPortfolioTickersNeedingAnalysis:
         db.log_decision("AGM", "buy", notional=5000.0)
         assert db.get_portfolio_tickers_needing_analysis().count("AGM") == 1
 
+    def test_stale_mirror_row_excluded(self, db):
+        # A paper_positions row not refreshed by a recent sync is a sold
+        # position from before pruning existed (or a dead sync) — either way
+        # it must not spend a Sonnet call.
+        import sqlite3
+
+        db.upsert_paper_position("ARCO", tier_at_entry="B")
+        with sqlite3.connect(str(db.path)) as conn:
+            conn.execute("UPDATE paper_positions SET last_synced = datetime('now', '-60 days') WHERE ticker = 'ARCO'")
+            conn.commit()
+        assert "ARCO" not in db.get_portfolio_tickers_needing_analysis()
+
+
+class TestPrunePaperPositions:
+    def test_deletes_rows_not_in_current_set(self, db):
+        db.upsert_paper_position("AGM", tier_at_entry="B")
+        db.upsert_paper_position("ARCO", tier_at_entry="B")
+        deleted = db.prune_paper_positions(["AGM"])
+        assert deleted == 1
+        assert [p["ticker"] for p in db.get_paper_positions()] == ["AGM"]
+
+    def test_noop_when_all_current(self, db):
+        db.upsert_paper_position("AGM", tier_at_entry="B")
+        assert db.prune_paper_positions(["AGM"]) == 0
+
+    def test_empty_current_set_clears_table(self, db):
+        # The method itself prunes everything on []; the guard against a
+        # failed-API empty list lives in the caller (monday_maintenance).
+        db.upsert_paper_position("AGM", tier_at_entry="B")
+        assert db.prune_paper_positions([]) == 1
+        assert db.get_paper_positions() == []
+
 
 # ─── Scheduler helpers ────────────────────────────────────────────────────────
 
@@ -436,6 +468,60 @@ class TestMondayMaintenance:
 
         positions = db.get_paper_positions()
         assert any(p["ticker"] == "AAPL" for p in positions)
+
+    def test_sync_prunes_sold_positions(self, tmp_path):
+        """A mirror row for a no-longer-held ticker is deleted on sync."""
+        from scripts.scheduler import monday_maintenance
+
+        db = Database(tmp_path / "test.db")
+        db.upsert_paper_position("ARCO", tier_at_entry="B")  # sold long ago
+
+        mock_position = {
+            "symbol": "AAPL",
+            "current_price": 195.0,
+            "market_value": 1950.0,
+            "unrealized_plpc": 0.05,
+            "qty": 10.0,
+        }
+
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.screener.StockScreener") as MockScreener,
+            patch("src.quality_scorer.compute_quality_scores", return_value={}),
+            patch("yfinance.Ticker"),
+            patch("src.paper_trader.PaperTrader") as MockTrader,
+        ):
+            MockScreener.return_value.screen_tickers.return_value = []
+            trader_instance = MockTrader.return_value
+            trader_instance.is_enabled.return_value = True
+            trader_instance.get_positions.return_value = [mock_position]
+            monday_maintenance()
+
+        tickers = [p["ticker"] for p in db.get_paper_positions()]
+        assert tickers == ["AAPL"]
+
+    def test_sync_does_not_prune_on_empty_positions(self, tmp_path):
+        """An empty broker response (indistinguishable from an API failure)
+        must not wipe the mirror."""
+        from scripts.scheduler import monday_maintenance
+
+        db = Database(tmp_path / "test.db")
+        db.upsert_paper_position("AGM", tier_at_entry="B")
+
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.screener.StockScreener") as MockScreener,
+            patch("src.quality_scorer.compute_quality_scores", return_value={}),
+            patch("yfinance.Ticker"),
+            patch("src.paper_trader.PaperTrader") as MockTrader,
+        ):
+            MockScreener.return_value.screen_tickers.return_value = []
+            trader_instance = MockTrader.return_value
+            trader_instance.is_enabled.return_value = True
+            trader_instance.get_positions.return_value = []
+            monday_maintenance()
+
+        assert [p["ticker"] for p in db.get_paper_positions()] == ["AGM"]
 
     def test_skips_position_sync_when_alpaca_disabled(self, tmp_path):
         """No paper_positions rows should be written when Alpaca is off."""

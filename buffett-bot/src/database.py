@@ -1069,6 +1069,24 @@ class Database:
             rows = conn.execute("SELECT * FROM paper_positions ORDER BY ticker").fetchall()
             return [dict(r) for r in rows]
 
+    def prune_paper_positions(self, current_tickers: list[str]) -> int:
+        """
+        Delete mirror rows for positions no longer held, keeping the table a
+        true mirror of the broker. The Monday sync only ever upserted, so
+        sold positions lingered forever (ARCO/ATEX sat here months after
+        selling). Returns rows deleted. Callers must NOT pass an empty list
+        from a failed API call — an empty broker response is indistinguishable
+        from an emptied portfolio, so the sync only prunes when it actually
+        received positions.
+        """
+        with _open(self.path) as conn:
+            placeholders = ",".join("?" for _ in current_tickers) or "''"
+            cur = conn.execute(
+                f"DELETE FROM paper_positions WHERE ticker NOT IN ({placeholders})",  # nosec B608
+                current_tickers,
+            )
+            return cur.rowcount
+
     # ── Decision Journal & Track Record ───────────────────────────────────────
 
     def log_decision(
@@ -1758,13 +1776,18 @@ class Database:
 
         Held = paper_positions (synced Monday) UNION recent decision_log
         buys not since sold — the latter covers the gap between a Friday
-        buy and the following Monday's position sync.
+        buy and the following Monday's position sync. Mirror rows whose
+        last_synced is over 8 days old are ignored: the sync prunes sold
+        positions, so a stale row means either a long-sold ticker from
+        before pruning existed or a sync that stopped running — neither
+        should spend a Sonnet call.
         """
         with _open(self.path) as conn:
             rows = conn.execute(
                 """
                 SELECT t.ticker FROM (
                     SELECT ticker FROM paper_positions
+                    WHERE last_synced >= datetime('now', '-8 days')
                     UNION
                     SELECT d.ticker FROM decision_log d
                     WHERE d.action = 'buy'

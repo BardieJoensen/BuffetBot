@@ -690,6 +690,14 @@ def monday_maintenance():
                         gain_loss_pct=pos.get("unrealized_plpc"),
                         shares=pos.get("qty"),
                     )
+                # Keep the mirror true: drop rows for positions no longer held.
+                # Skipped when the API returned nothing — an empty response is
+                # indistinguishable from a failed call, and wiping the mirror
+                # on a transient error is worse than a week of staleness.
+                if positions:
+                    pruned = db.prune_paper_positions([p["symbol"] for p in positions])
+                    if pruned:
+                        logger.info("Pruned %d sold position(s) from paper_positions mirror", pruned)
                 logger.info("Synced %d paper positions from Alpaca", len(positions))
             else:
                 logger.info("Alpaca not configured — skipping paper position sync")
