@@ -82,7 +82,7 @@ class TestFirstText:
 
 def _analyzer_with_response(content):
     """Build a CompanyAnalyzer whose client returns `content`."""
-    with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
+    with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):  # pragma: allowlist secret
         analyzer = CompanyAnalyzer()
     analyzer.client = MagicMock()
     analyzer.client.messages.create.return_value = MagicMock(content=content)
@@ -93,7 +93,7 @@ class TestModelConfiguration:
     def test_models_come_from_config(self):
         from src.config import config
 
-        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
+        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):  # pragma: allowlist secret
             analyzer = CompanyAnalyzer()
 
         assert analyzer.model_deep == config.model_deep
@@ -216,7 +216,7 @@ class TestOpusSecondOpinionParsing:
 
 class TestBatchResultParsing:
     def _batch_analyzer(self, results):
-        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
+        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):  # pragma: allowlist secret
             analyzer = CompanyAnalyzer()
         analyzer.client = MagicMock()
         batch = MagicMock()
