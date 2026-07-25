@@ -7,7 +7,7 @@ the overall market. Uses yfinance for price/metric data with 24h caching.
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -94,14 +94,35 @@ def fetch_benchmark_data(symbol: str = "SPY") -> dict:
         }
 
 
+# Calendar days of padding around the requested window when fetching bars.
+# Must exceed the longest run of consecutive non-trading days (a holiday
+# adjoining a weekend), or a boundary date can fail to resolve to any bar.
+_BRACKET_PAD_DAYS = 10
+
+
 def fetch_benchmark_return(start_date: str, end_date: Optional[str] = None, symbol: str = "SPY") -> Optional[float]:
     """
-    Total price return of the benchmark over [start_date, end_date].
+    Total price return of the benchmark over the hold window [start, end].
 
-    Used by the decision journal to compute alpha over a position's exact hold
-    window. Dates are ISO strings (YYYY-MM-DD); end_date defaults to today.
-    Returns the fractional return (e.g. 0.08 for +8%), or None if price history
-    is unavailable.
+    Used by the decision journal to compute per-trade alpha. Dates are ISO
+    strings (YYYY-MM-DD); end_date defaults to today. Returns the fractional
+    return (e.g. 0.08 for +8%), or None if the window cannot be resolved.
+
+    Resolves each boundary to the last close **on or before** that date rather
+    than slicing yfinance's window directly. Two reasons, both of which
+    corrupted the journal in practice:
+
+      - yfinance treats `end` as exclusive, so passing the exit date measured
+        a window one bar short of the real hold. A 2026-07-03..07-10 hold was
+        scored over 07-06..07-09, understating the benchmark by ~1.4pp and
+        overstating that trade's alpha by the same amount.
+      - a boundary can land on a weekend or market holiday, where no bar
+        exists at all. A position exited on 2026-07-03 (July 4th observed)
+        produced fewer than two bars, so the old `len(hist) >= 2` guard
+        returned None and the trade was journalled with no alpha whatsoever.
+
+    Both failed silently, which is why the journal looked populated while
+    being partly empty and partly wrong.
     """
     import yfinance as yf
 
@@ -109,16 +130,54 @@ def fetch_benchmark_return(start_date: str, end_date: Optional[str] = None, symb
         return None
     start = start_date[:10]
     end = (end_date or datetime.now().strftime("%Y-%m-%d"))[:10]
+    if end < start:
+        logger.warning("Benchmark window ends before it starts [%s..%s] — skipping", start, end)
+        return None
+
     try:
-        ticker = yf.Ticker(symbol)
-        # end is exclusive in yfinance; nudge it out a day so a same-day window
-        # still returns the bracketing closes.
-        hist = ticker.history(start=start, end=end)
-        if len(hist) >= 2:
-            first_close = hist["Close"].iloc[0]
-            last_close = hist["Close"].iloc[-1]
-            if first_close > 0:
-                return (last_close - first_close) / first_close
+        # Pad both ends so each boundary is guaranteed a bar to resolve
+        # against even across a long holiday weekend.
+        fetch_start = (datetime.strptime(start, "%Y-%m-%d") - timedelta(days=_BRACKET_PAD_DAYS)).strftime("%Y-%m-%d")
+        fetch_end = (datetime.strptime(end, "%Y-%m-%d") + timedelta(days=_BRACKET_PAD_DAYS)).strftime("%Y-%m-%d")
+
+        hist = yf.Ticker(symbol).history(start=fetch_start, end=fetch_end)
+        if hist.empty:
+            logger.warning("No %s history for benchmark window [%s..%s]", symbol, start, end)
+            return None
+
+        # Drop NaN closes: yfinance emits a placeholder bar for the current
+        # session before it settles, and letting one through propagates NaN
+        # into benchmark_return and silently into alpha.
+        bars = [
+            (d.strftime("%Y-%m-%d"), float(c))
+            for d, c in zip(hist.index, hist["Close"])
+            if c == c  # NaN is the only value that fails this
+        ]
+        if not bars:
+            logger.warning("No usable %s closes for benchmark window [%s..%s]", symbol, start, end)
+            return None
+
+        def close_on_or_before(target: str) -> Optional[float]:
+            found = None
+            for d, c in bars:
+                if d <= target:
+                    found = c
+                else:
+                    break
+            return found
+
+        first_close = close_on_or_before(start)
+        last_close = close_on_or_before(end)
+
+        if first_close is None or last_close is None:
+            logger.warning("Could not bracket benchmark window [%s..%s] for %s", start, end, symbol)
+            return None
+        if first_close <= 0:
+            return None
+        # Both boundaries landing on the same bar means the window contained no
+        # completed trading day (a same-day round trip, or entry and exit
+        # straddling only a holiday). The benchmark genuinely did not move.
+        return (last_close - first_close) / first_close
     except Exception as e:
         logger.warning(f"Error calculating benchmark return for {symbol} [{start}..{end}]: {e}")
     return None
