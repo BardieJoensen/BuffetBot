@@ -3,10 +3,61 @@ Analysis Parser Module
 
 Parses Claude's structured text responses into AnalysisV2 dataclass.
 Extracted from analyzer.py for testability and separation of concerns.
+
+FAIL-FAST CONTRACT
+------------------
+Every extractor here degrades to a benign-looking default when it finds
+nothing — and because the defaults are the *pessimistic* end of each scale
+(NONE moat, POOR capital allocation, LOW conviction), a response the parser
+cannot read produces a fully-populated, entirely plausible analysis saying the
+business is worthless. That flows into tier_engine, tiers everything C, and the
+deployment engine reads C as a thesis breaker and sells. A parser break would
+therefore look exactly like a market crash, with nothing in the logs.
+
+So structural failure is now an exception, not a default: if the response does
+not contain enough of the expected headers to be the format we asked for,
+parse_analysis raises AnalysisParseError. Individual fields still degrade
+gracefully — one missing section shouldn't discard a good analysis — but every
+defaulted rating is counted and logged, and the survivable-but-suspicious case
+is surfaced via AnalysisV2.parse_confidence for the health check to trend.
 """
 
+import logging
 import re
 from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+# Headers the analysis prompt asks for. Used to decide whether a response is
+# structurally the thing we requested at all.
+EXPECTED_SECTIONS = (
+    "## MOAT CLASSIFICATION",
+    "## MANAGEMENT QUALITY",
+    "## BUSINESS DURABILITY",
+    "## CURRENCY EXPOSURE",
+    "## FAIR VALUE ASSESSMENT",
+    "## CONVICTION LEVEL",
+    "## INVESTMENT SUMMARY",
+    "## KEY RISKS",
+    "## THESIS-BREAKING",
+    "## TOTAL RETURN POTENTIAL",
+    "## DIVIDEND YIELD",
+)
+
+# Below this fraction of expected headers, treat the response as not being in
+# the requested format rather than as a pessimistic company. Deliberately
+# lenient: the goal is catching format drift and truncation, not policing a
+# model that merged or renamed one section.
+MIN_SECTION_MATCH_RATIO = 0.5
+
+
+class AnalysisParseError(ValueError):
+    """
+    Raised when a response is not structurally the analysis format.
+
+    Distinct from a partial parse: this means returning *anything* would be
+    fabricating an opinion the model never expressed.
+    """
 
 
 def extract_section(text: str, header: str, next_header: Optional[str] = None) -> str:
@@ -33,13 +84,25 @@ def extract_field(section: str, field_name: str) -> str:
     return ""
 
 
-def extract_rating(text: str, options: list[str]) -> str:
-    """Extract a rating from text by matching against valid options."""
+def extract_rating_checked(text: str, options: list[str]) -> tuple[str, bool]:
+    """
+    Extract a rating, reporting whether it actually matched.
+
+    Returns (value, matched). On no match the value is options[-1] — the
+    pessimistic end — and matched is False. Callers that care about the
+    difference between "the model said WEAK" and "the parser found nothing"
+    need that second element; extract_rating throws it away.
+    """
     text_upper = text.upper()
     for option in sorted(options, key=len, reverse=True):
         if re.search(r"\b" + re.escape(option.upper()) + r"\b", text_upper):
-            return option
-    return options[-1]
+            return option, True
+    return options[-1], False
+
+
+def extract_rating(text: str, options: list[str]) -> str:
+    """Extract a rating from text by matching against valid options."""
+    return extract_rating_checked(text, options)[0]
 
 
 def extract_list(text: str) -> list[str]:
@@ -79,6 +142,36 @@ def parse_analysis(symbol: str, company_name: str, analysis_text: str, sector: s
     """
     from .analyzer import AnalysisV2
 
+    # Structural gate. A response that isn't in the requested format must not
+    # be turned into a pessimistic-but-valid opinion — see the module docstring.
+    found = [h for h in EXPECTED_SECTIONS if h in analysis_text]
+    confidence = len(found) / len(EXPECTED_SECTIONS)
+    if confidence < MIN_SECTION_MATCH_RATIO:
+        missing = [h for h in EXPECTED_SECTIONS if h not in analysis_text]
+        raise AnalysisParseError(
+            f"{symbol}: response is not in the expected analysis format — "
+            f"found {len(found)}/{len(EXPECTED_SECTIONS)} sections "
+            f"(missing: {', '.join(missing[:5])}{'...' if len(missing) > 5 else ''}). "
+            f"First 200 chars: {analysis_text[:200]!r}"
+        )
+    if confidence < 1.0:
+        logger.warning(
+            "%s: analysis missing %d/%d expected section(s): %s",
+            symbol,
+            len(EXPECTED_SECTIONS) - len(found),
+            len(EXPECTED_SECTIONS),
+            ", ".join(h for h in EXPECTED_SECTIONS if h not in analysis_text),
+        )
+
+    # Ratings that fell back to their pessimistic default rather than matching.
+    defaulted: list[str] = []
+
+    def _rated(field: str, text: str, options: list[str]) -> str:
+        value, matched = extract_rating_checked(text, options)
+        if not matched:
+            defaulted.append(field)
+        return value
+
     # Extract sections
     moat_section = extract_section(analysis_text, "## MOAT CLASSIFICATION", "## MANAGEMENT")
     mgmt_section = extract_section(analysis_text, "## MANAGEMENT QUALITY", "## BUSINESS DURABILITY")
@@ -99,14 +192,16 @@ def parse_analysis(symbol: str, company_name: str, analysis_text: str, sector: s
 
     # Parse moat
     moat_type = extract_field(moat_section, "Type") or "unknown"
-    moat_durability = extract_rating(
+    moat_durability = _rated(
+        "moat_durability",
         extract_field(moat_section, "Durability") or moat_section,
         ["STRONG", "MODERATE", "WEAK", "NONE"],
     ).lower()
     moat_risks = extract_field(moat_section, "Risks") or ""
 
     # Parse management
-    mgmt_cap_alloc = extract_rating(
+    mgmt_cap_alloc = _rated(
+        "mgmt_capital_allocation",
         extract_field(mgmt_section, "Capital Allocation") or mgmt_section,
         ["EXCELLENT", "GOOD", "MIXED", "POOR"],
     ).lower()
@@ -143,7 +238,8 @@ def parse_analysis(symbol: str, company_name: str, analysis_text: str, sector: s
     intl_str = extract_field(currency_section, "International Revenue")
     domestic_pct = extract_pct(domestic_str) if domestic_str else None
     intl_pct = extract_pct(intl_str) if intl_str else None
-    currency_risk = extract_rating(
+    currency_risk = _rated(
+        "currency_risk_level",
         extract_field(currency_section, "Risk Level") or currency_section,
         ["LOW", "MODERATE", "HIGH"],
     ).lower()
@@ -170,7 +266,7 @@ def parse_analysis(symbol: str, company_name: str, analysis_text: str, sector: s
     current_price = extract_dollar(current_price_str)
 
     # Parse conviction
-    conviction = extract_rating(conviction_section, ["HIGH", "MEDIUM", "LOW"])
+    conviction = _rated("conviction", conviction_section, ["HIGH", "MEDIUM", "LOW"])
 
     # Parse summary, risks, return, dividend
     summary = summary_section or ""
@@ -178,6 +274,17 @@ def parse_analysis(symbol: str, company_name: str, analysis_text: str, sector: s
     thesis_risks = extract_list(thesis_risks_section)
     total_return = return_section or ""
     div_yield = extract_pct(dividend_section) if dividend_section else None
+
+    if defaulted:
+        # Every one of these silently became the worst value on its scale. Say
+        # so: a run where this fires across many tickers is parser drift, not a
+        # sudden collapse in business quality.
+        logger.warning(
+            "%s: %d rating(s) fell back to the pessimistic default (no match found): %s",
+            symbol,
+            len(defaulted),
+            ", ".join(defaulted),
+        )
 
     return AnalysisV2(
         symbol=symbol,

@@ -40,9 +40,29 @@ from typing import Any, Optional, cast
 from anthropic import Anthropic
 from anthropic.types import TextBlock
 
-from .analysis_parser import parse_analysis, parse_quick_screen
+from .analysis_parser import AnalysisParseError, parse_analysis, parse_quick_screen
+from .config import config
 
 logger = logging.getLogger(__name__)
+
+
+def _first_text(content: list) -> str:
+    """
+    Return the text of the first TextBlock in a response.
+
+    Not content[0]: models with thinking enabled put a thinking block first, so
+    indexing position zero yields a block with no .text. Raising here rather
+    than asserting matters because assert statements are stripped under
+    python -O, which would turn a clear failure into an AttributeError — and
+    because quick_screen's broad except would otherwise swallow an
+    AssertionError into a silent fail-open where every stock passes screening.
+    """
+    for block in content:
+        if isinstance(block, TextBlock):
+            return block.text
+    kinds = ", ".join(type(b).__name__ for b in content) or "none"
+    raise ValueError(f"No TextBlock in Claude response (got: {kinds})")
+
 
 # Default cache directory for analysis results
 DEFAULT_CACHE_DIR = Path("data/analyses")
@@ -415,10 +435,12 @@ class CompanyAnalyzer:
 
         self.client = Anthropic(api_key=self.api_key)
 
-        # Three models: Opus for second opinion, Sonnet for deep analysis, Haiku for simple tasks
-        self.model_opus = "claude-opus-4-6"  # For contrarian second opinion (~$0.30/stock)
-        self.model_deep = "claude-sonnet-4-5-20250929"  # For deep analysis
-        self.model_light = "claude-haiku-4-5-20251001"  # For news monitoring (20x cheaper)
+        # Three models: Opus for second opinion, Sonnet for deep analysis,
+        # Haiku for simple tasks. Sourced from config so a bad model can be
+        # rolled back via .env without rebuilding the image.
+        self.model_opus = config.model_opus  # Contrarian second opinion (~$0.30/stock)
+        self.model_deep = config.model_deep  # Deep analysis
+        self.model_light = config.model_light  # News monitoring (20x cheaper)
 
     def analyze_company(
         self,
@@ -451,6 +473,13 @@ class CompanyAnalyzer:
         response = self.client.messages.create(
             model=self.model_deep,
             max_tokens=4096,
+            # Thinking disabled: these prompts demand a rigid, string-parsed
+            # output format, and thinking competes with max_tokens. A truncated
+            # response doesn't raise — analysis_parser degrades silently into
+            # pessimistic defaults (NONE moat, LOW conviction), which would look
+            # like every stock suddenly being bad. Enable deliberately, with a
+            # raised max_tokens, if the quality tradeoff is worth measuring.
+            thinking={"type": "disabled"},
             system=[
                 {
                     "type": "text",
@@ -462,9 +491,7 @@ class CompanyAnalyzer:
         )
 
         # Parse the response
-        block = response.content[0]
-        assert isinstance(block, TextBlock)  # nosec B101 — type narrowing
-        analysis_text: str = block.text
+        analysis_text: str = _first_text(response.content)
         analysis = parse_analysis(symbol, company_name, analysis_text, sector)
 
         # Cache the result
@@ -537,6 +564,13 @@ Focus especially on whether the moat and durability assessments are realistic.""
         response = self.client.messages.create(
             model=self.model_opus,
             max_tokens=2048,
+            # Thinking disabled: these prompts demand a rigid, string-parsed
+            # output format, and thinking competes with max_tokens. A truncated
+            # response doesn't raise — analysis_parser degrades silently into
+            # pessimistic defaults (NONE moat, LOW conviction), which would look
+            # like every stock suddenly being bad. Enable deliberately, with a
+            # raised max_tokens, if the quality tradeoff is worth measuring.
+            thinking={"type": "disabled"},
             system=[
                 {
                     "type": "text",
@@ -547,9 +581,7 @@ Focus especially on whether the moat and durability assessments are realistic.""
             messages=[{"role": "user", "content": user_prompt}],
         )
 
-        block = response.content[0]
-        assert isinstance(block, TextBlock)  # nosec B101 — type narrowing
-        text: str = block.text
+        text: str = _first_text(response.content)
 
         # Parse the response
         result = self._parse_opus_opinion(text, symbol)
@@ -773,6 +805,13 @@ Assess business quality regardless of current valuation."""
             response = self.client.messages.create(
                 model=self.model_light,
                 max_tokens=256,
+                # Thinking disabled: these prompts demand a rigid, string-parsed
+                # output format, and thinking competes with max_tokens. A truncated
+                # response doesn't raise — analysis_parser degrades silently into
+                # pessimistic defaults (NONE moat, LOW conviction), which would look
+                # like every stock suddenly being bad. Enable deliberately, with a
+                # raised max_tokens, if the quality tradeoff is worth measuring.
+                thinking={"type": "disabled"},
                 system=[
                     {
                         "type": "text",
@@ -783,9 +822,7 @@ Assess business quality regardless of current valuation."""
                 messages=[{"role": "user", "content": user_prompt}],
             )
 
-            block = response.content[0]
-            assert isinstance(block, TextBlock)  # nosec B101 — type narrowing
-            text: str = block.text
+            text: str = _first_text(response.content)
             return parse_quick_screen(text, symbol)
 
         except Exception as e:
@@ -831,6 +868,13 @@ Analyze the news and determine:
         response = self.client.messages.create(
             model=self.model_light,
             max_tokens=1024,
+            # Thinking disabled: these prompts demand a rigid, string-parsed
+            # output format, and thinking competes with max_tokens. A truncated
+            # response doesn't raise — analysis_parser degrades silently into
+            # pessimistic defaults (NONE moat, LOW conviction), which would look
+            # like every stock suddenly being bad. Enable deliberately, with a
+            # raised max_tokens, if the quality tradeoff is worth measuring.
+            thinking={"type": "disabled"},
             system=[
                 {
                     "type": "text",
@@ -841,9 +885,7 @@ Analyze the news and determine:
             messages=[{"role": "user", "content": user_prompt}],
         )
 
-        block = response.content[0]
-        assert isinstance(block, TextBlock)  # nosec B101 — type narrowing
-        text: str = block.text
+        text: str = _first_text(response.content)
         has_flags = "RED FLAGS DETECTED: YES" in text.upper()
 
         # Extract recommendation
@@ -901,6 +943,7 @@ Assess business quality regardless of current valuation."""
                     "params": {
                         "model": self.model_light,
                         "max_tokens": 256,
+                        "thinking": {"type": "disabled"},
                         "system": [
                             {
                                 "type": "text",
@@ -926,9 +969,7 @@ Assess business quality regardless of current valuation."""
         for result in self.client.messages.batches.results(batch.id):
             symbol = result.custom_id
             if result.result.type == "succeeded":
-                blk = result.result.message.content[0]
-                assert isinstance(blk, TextBlock)  # nosec B101 — type narrowing
-                text: str = blk.text
+                text: str = _first_text(result.result.message.content)
                 results_map[symbol] = parse_quick_screen(text, symbol)
             else:
                 logger.warning(f"Batch quick-screen failed for {symbol}: {result.result.type}")
@@ -998,6 +1039,7 @@ Assess business quality regardless of current valuation."""
                         "params": {
                             "model": self.model_deep,
                             "max_tokens": 4096,
+                            "thinking": {"type": "disabled"},
                             "system": [
                                 {
                                     "type": "text",
@@ -1016,12 +1058,10 @@ Assess business quality regardless of current valuation."""
 
             self._wait_for_batch(batch.id)
 
+            parse_failures: list[str] = []
             for result in self.client.messages.batches.results(batch.id):
                 symbol = result.custom_id
                 if result.result.type == "succeeded":
-                    blk = result.result.message.content[0]
-                    assert isinstance(blk, TextBlock)  # nosec B101 — type narrowing
-                    text = blk.text
                     company_name = next(
                         (s.get("company_name", s["symbol"]) for s in uncached_stocks if s["symbol"] == symbol),
                         symbol,
@@ -1030,11 +1070,34 @@ Assess business quality regardless of current valuation."""
                         (s.get("sector", "") for s in uncached_stocks if s["symbol"] == symbol),
                         "",
                     )
-                    analysis = parse_analysis(symbol, company_name, text, sector)
+                    try:
+                        text = _first_text(result.result.message.content)
+                        analysis = parse_analysis(symbol, company_name, text, sector)
+                    except (AnalysisParseError, ValueError) as e:
+                        # Drop this symbol rather than caching a fabricated
+                        # verdict, but keep processing the rest of the batch —
+                        # one malformed response shouldn't discard the others.
+                        # An unusable analysis is strictly worse than none: a
+                        # pessimistic default would tier the stock C and the
+                        # deployment engine would sell it as a thesis breaker.
+                        logger.error("Discarding batch analysis for %s — %s", symbol, e)
+                        parse_failures.append(symbol)
+                        continue
                     save_analysis_to_cache(symbol, analysis.to_dict())
                     cached_results[symbol] = analysis
                 else:
                     logger.error(f"Batch analysis failed for {symbol}: {result.result.type}")
+
+            if parse_failures:
+                # Aggregate, so a systemic format drift reads as one loud line
+                # rather than N scattered ones that look like bad luck.
+                logger.error(
+                    "%d/%d batch analyses were unparseable and discarded: %s. "
+                    "Several at once means the response format drifted — check the model.",
+                    len(parse_failures),
+                    len(requests),
+                    ", ".join(parse_failures),
+                )
 
         # Return in original order
         return [cached_results[s["symbol"]] for s in stocks if s["symbol"] in cached_results]
