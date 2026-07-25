@@ -205,6 +205,18 @@ def plan_sells(
     for h in held:
         pos = h.position
 
+        # A quarantined (delisted / non-tradable) holding cannot be sold — the
+        # broker rejects the order — so emitting an intent would just produce
+        # one failed order every week, forever. It is already excluded from
+        # equity, sizing and slot counts upstream, and is surfaced by the
+        # quarantine alert rather than here.
+        #
+        # Checked before the tier=="C" branch on purpose: a delisted name is
+        # very likely to also be downgraded to C, which would otherwise fire a
+        # thesis-breaker sell.
+        if not pos.tradable:
+            continue
+
         if h.tier == "C":
             sells.append(SellIntent(symbol=pos.symbol, reason="Thesis breaker: downgraded to C-tier"))
             continue

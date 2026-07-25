@@ -18,12 +18,20 @@ class AccountState:
 
     account_id: str
     currency: str
+    # TRADABLE equity: the broker's figure less any quarantined holdings.
+    # Corrected in place rather than exposed as a separate field, because every
+    # consumer reads `.equity` — a parallel `tradable_equity` would leave the
+    # inflated number as the default and guarantee a call site stays wrong.
     equity: float
     cash: float
     buying_power: float
     invested_value: float
     invested_pct: float  # fraction 0.0-1.0, not percent
     as_of: datetime
+    # Broker-reported equity before the quarantine correction, kept so the two
+    # can be reconciled against the broker's own dashboard after the fact.
+    gross_equity: Optional[float] = None
+    untradable_value: float = 0.0
 
 
 @dataclass
@@ -38,6 +46,10 @@ class PositionState:
     unrealized_pl: float
     unrealized_pl_pct: float
     tier_at_entry: Optional[str] = None  # S/A/B/C, matches tier_engine
+    # Defaults to True so an adapter that can't report tradability, or a
+    # position dict predating this field, keeps its original meaning.
+    tradable: bool = True
+    asset_status: Optional[str] = None  # broker status, e.g. 'inactive'
 
 
 @runtime_checkable

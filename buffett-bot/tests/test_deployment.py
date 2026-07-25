@@ -47,7 +47,9 @@ def _state(*, equity=100_000.0, cash=50_000.0, buying_power=50_000.0, invested_v
     )
 
 
-def _position(symbol, *, market_value=10_000.0, shares=100.0, avg_cost=90.0, price=100.0) -> PositionState:
+def _position(
+    symbol, *, market_value=10_000.0, shares=100.0, avg_cost=90.0, price=100.0, tradable=True
+) -> PositionState:
     return PositionState(
         symbol=symbol,
         shares=shares,
@@ -56,6 +58,7 @@ def _position(symbol, *, market_value=10_000.0, shares=100.0, avg_cost=90.0, pri
         market_value=market_value,
         unrealized_pl=(price - avg_cost) * shares,
         unrealized_pl_pct=(price - avg_cost) / avg_cost,
+        tradable=tradable,
     )
 
 
@@ -239,3 +242,60 @@ class TestPlanSells:
         held = [HeldPosition(position=_position("UNKNOWN"), tier="A", margin_of_safety=None)]
         sells = plan_sells(100_000.0, held, [], cfg=CFG)
         assert sells == []
+
+
+class TestPlanSellsQuarantine:
+    """
+    A delisted holding cannot be sold — the broker rejects the order. Emitting
+    an intent anyway would produce one failed order every week forever, so it
+    must be skipped ahead of every other sell branch.
+    """
+
+    def test_skips_untradable_downgraded_to_c(self):
+        # The realistic case: a delisted name also gets downgraded to C, which
+        # would otherwise fire the thesis-breaker branch.
+        held = [HeldPosition(position=_position("AL", tradable=False), tier="C", margin_of_safety=0.50)]
+        assert plan_sells(100_000.0, held, [], cfg=CFG) == []
+
+    def test_skips_untradable_when_overweight_and_near_fair_value(self):
+        held = [
+            HeldPosition(
+                position=_position("AL", market_value=25_000.0, tradable=False),
+                tier="A",
+                margin_of_safety=0.02,
+            )
+        ]
+        assert plan_sells(100_000.0, held, [], cfg=CFG) == []
+
+    def test_skips_untradable_when_better_candidate_waiting(self):
+        held = [
+            HeldPosition(
+                position=_position("AL", market_value=10_000.0, tradable=False),
+                tier="B",
+                margin_of_safety=0.02,
+            )
+        ]
+        candidates = [DeployCandidate(symbol="BETTER", margin_of_safety=0.30, tier="S")]
+        assert plan_sells(100_000.0, held, candidates, cfg=CFG) == []
+
+    def test_tradable_positions_still_sell_alongside_a_quarantined_one(self):
+        held = [
+            HeldPosition(position=_position("AL", tradable=False), tier="C", margin_of_safety=0.50),
+            HeldPosition(position=_position("BADTHESIS"), tier="C", margin_of_safety=0.50),
+        ]
+        sells = plan_sells(100_000.0, held, [], cfg=CFG)
+        assert [s.symbol for s in sells] == ["BADTHESIS"]
+
+    def test_overweight_is_measured_against_corrected_equity(self):
+        """
+        Callers now pass tradable equity, so the overweight denominator shrinks
+        and a position can cross the ceiling that previously sat under it.
+        18% of gross 100k, but 20.6% of corrected 87.5k against a 20% cap.
+        """
+        held = [HeldPosition(position=_position("BIG", market_value=18_000.0), tier="A", margin_of_safety=0.02)]
+
+        assert plan_sells(100_000.0, held, [], cfg=CFG) == []
+
+        sells = plan_sells(87_500.0, held, [], cfg=CFG)
+        assert len(sells) == 1
+        assert "overweight" in sells[0].reason.lower()

@@ -16,6 +16,7 @@ Safety features:
 import json
 import logging
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -27,11 +28,24 @@ logger = logging.getLogger(__name__)
 # Trade log location
 _trade_log_dir = Path("./data")
 
+# Symbol -> (tradable, status, checked_at_monotonic). Module-level because the
+# scheduler is one long-lived process: after the first pass the tradability
+# check costs nothing. A delisting is permanent, but a trading halt is not, so
+# entries expire rather than pinning forever — a re-listed or un-halted name
+# recovers within the TTL instead of needing a container restart.
+_ASSET_CACHE: dict[str, tuple[bool, str, float]] = {}
+
 
 def set_trade_log_dir(path: Path):
     """Override the trade log directory"""
     global _trade_log_dir
     _trade_log_dir = path
+
+
+def clear_asset_cache() -> None:
+    """Reset the tradability cache. Tests must call this between cases —
+    module-level state otherwise bleeds and produces order-dependent failures."""
+    _ASSET_CACHE.clear()
 
 
 class PaperTrader:
@@ -109,25 +123,74 @@ class PaperTrader:
             logger.error(f"Failed to get account info: {e}")
             return {"error": str(e)}
 
+    def get_asset_status(self, symbol: str) -> tuple[bool, str]:
+        """
+        Return (tradable, broker_status) for one symbol, cached with a TTL.
+
+        Fails OPEN: anything that isn't a definitive 404 returns
+        (True, "unknown"). The returned value is only ever used to *subtract*
+        value from equity, so treating an Alpaca outage as "everything is
+        untradable" would collapse reported equity toward cash, blow the
+        deployment gap up to nearly the whole cash balance, and fire the
+        overweight-rotation branch on every holding at once. A 404 is
+        different — Alpaca not knowing the symbol is an answer, not a failure.
+        """
+        if not self._enabled:
+            return True, "unknown"
+
+        cached = _ASSET_CACHE.get(symbol)
+        if cached and (time.monotonic() - cached[2]) < config.asset_status_cache_hours * 3600:
+            return cached[0], cached[1]
+
+        try:
+            asset = self._trading_client.get_asset(symbol)
+            tradable = bool(asset.tradable)
+            # str(AssetStatus.INACTIVE) renders as "AssetStatus.INACTIVE".
+            status = str(getattr(asset, "status", "")).lower().rsplit(".", 1)[-1]
+        except Exception as e:
+            if getattr(e, "status_code", None) == 404:
+                tradable, status = False, "not_found"
+            else:
+                logger.warning("Asset lookup failed for %s: %s — assuming tradable", symbol, e)
+                return True, "unknown"
+
+        if not tradable:
+            logger.warning("%s is not tradable at the broker (status=%s)", symbol, status)
+        _ASSET_CACHE[symbol] = (tradable, status, time.monotonic())
+        return tradable, status
+
     def get_positions(self) -> list[dict]:
-        """Return current paper positions."""
+        """
+        Return current paper positions, annotated with broker tradability.
+
+        Positions are annotated rather than filtered: this method also answers
+        "do we already hold this?" for duplicate-buy prevention and for the
+        sell path, so dropping a delisted holding here would make the bot
+        believe it doesn't hold it — and therefore that it is buyable again.
+        Callers that need to exclude quarantined holdings filter on "tradable".
+        """
         if not self._enabled:
             return []
 
         try:
             positions = self._trading_client.get_all_positions()
-            return [
-                {
-                    "symbol": p.symbol,
-                    "qty": float(p.qty),
-                    "market_value": float(p.market_value),
-                    "avg_entry_price": float(p.avg_entry_price),
-                    "current_price": float(p.current_price),
-                    "unrealized_pl": float(p.unrealized_pl),
-                    "unrealized_plpc": float(p.unrealized_plpc),
-                }
-                for p in positions
-            ]
+            out = []
+            for p in positions:
+                tradable, status = self.get_asset_status(p.symbol)
+                out.append(
+                    {
+                        "symbol": p.symbol,
+                        "qty": float(p.qty),
+                        "market_value": float(p.market_value),
+                        "avg_entry_price": float(p.avg_entry_price),
+                        "current_price": float(p.current_price),
+                        "unrealized_pl": float(p.unrealized_pl),
+                        "unrealized_plpc": float(p.unrealized_plpc),
+                        "tradable": tradable,
+                        "asset_status": status,
+                    }
+                )
+            return out
         except Exception as e:
             logger.error(f"Failed to get positions: {e}")
             return []
@@ -163,6 +226,7 @@ class PaperTrader:
         Place a market buy order for a given dollar amount.
 
         Safety checks:
+        - Refuses symbols the broker reports as non-tradable
         - Validates dollar_amount against MAX_POSITION_PCT of account value
         - Prevents duplicate buys of same symbol
         """
@@ -171,6 +235,15 @@ class PaperTrader:
             return None
 
         try:
+            # Refuse up front rather than letting the broker reject it. The
+            # blanket except below cannot tell a "not tradable" rejection from
+            # a network blip, so the only way to surface this clearly is to
+            # never submit the doomed order.
+            tradable, status = self.get_asset_status(symbol)
+            if not tradable:
+                logger.error("Refusing to buy %s — broker reports it non-tradable (status=%s)", symbol, status)
+                return None
+
             # Check for existing position (prevent duplicates)
             existing = self.get_positions()
             if any(p["symbol"] == symbol for p in existing):
@@ -248,6 +321,18 @@ class PaperTrader:
                 logger.warning(f"No position in {symbol} to sell")
                 return None
 
+            # A delisted holding is stuck: the broker rejects the order, so
+            # retrying weekly just produces noise. It is quarantined elsewhere
+            # (excluded from equity, sizing and slots) and surfaced by alert.
+            if not held[0].get("tradable", True):
+                logger.error(
+                    "Refusing to sell %s — broker reports it non-tradable (status=%s). "
+                    "The order would be rejected; resolve this position manually.",
+                    symbol,
+                    held[0].get("asset_status"),
+                )
+                return None
+
             from alpaca.trading.enums import OrderSide, TimeInForce
             from alpaca.trading.requests import MarketOrderRequest
 
@@ -291,18 +376,27 @@ class PaperTrader:
 
         try:
             account = self.get_account()
-            positions = self.get_positions()
+            all_positions = self.get_positions()
+
+            # Quarantined holdings are excluded from every figure below: their
+            # mark is frozen at the last price before delisting, so including
+            # them overstates value and fabricates a P/L that can never change.
+            positions = [p for p in all_positions if p.get("tradable", True)]
+            untradable = [p for p in all_positions if not p.get("tradable", True)]
+            untradable_value = sum(p["market_value"] for p in untradable)
 
             if not positions:
                 return {
                     "positions": [],
                     "position_count": 0,
                     "total_invested": 0,
-                    "current_value": float(account.get("equity", 0)),
+                    "current_value": float(account.get("equity", 0)) - untradable_value,
                     "total_gain_loss": 0,
                     "total_gain_loss_pct": 0,
                     "sector_exposure": {},
                     "sector_warnings": [],
+                    "untradable_positions": untradable,
+                    "untradable_value": untradable_value,
                 }
 
             total_invested = sum(p["avg_entry_price"] * p["qty"] for p in positions)
@@ -338,6 +432,8 @@ class PaperTrader:
                 "total_gain_loss_pct": total_pl_pct,
                 "sector_exposure": sector_exposure,
                 "sector_warnings": sector_warnings,
+                "untradable_positions": untradable,
+                "untradable_value": untradable_value,
             }
 
         except Exception as e:
