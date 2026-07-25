@@ -57,11 +57,39 @@ class Config:
     # trades and infinite tiny-order loops.
     min_trade_usd: float = float(os.getenv("MIN_TRADE_USD", "250"))
 
+    # Quarantine of non-tradable holdings. A delisted position keeps showing up
+    # in Alpaca's /v2/account equity at a frozen mark long after it stops being
+    # tradable (their own portfolio-history endpoint drops it), which inflates
+    # equity, oversizes every subsequent buy, and burns a position slot. The bot
+    # excludes such holdings from equity/sizing/slots/sells and alerts instead —
+    # it cannot sell them, so resolution is manual and the alert has to repeat
+    # without becoming daily noise.
+    quarantine_alerts_enabled: bool = os.getenv("QUARANTINE_ALERTS_ENABLED", "true").lower() != "false"
+    quarantine_realert_days: int = int(os.getenv("QUARANTINE_REALERT_DAYS", "7"))
+    # A delisting is permanent but a trading halt is not, so tradability is
+    # cached with a TTL rather than pinned — an un-halted name recovers on its
+    # own instead of needing a container restart.
+    asset_status_cache_hours: int = int(os.getenv("ASSET_STATUS_CACHE_HOURS", "6"))
+
+    # Daily health check. A new or changed problem alerts immediately; an
+    # unchanged one repeats on this cadence rather than nagging daily.
+    health_checks_enabled: bool = os.getenv("HEALTH_CHECKS_ENABLED", "true").lower() != "false"
+    health_realert_days: int = int(os.getenv("HEALTH_REALERT_DAYS", "7"))
+
     # API behavior
     use_batch_api: bool = os.getenv("USE_BATCH_API", "true").lower() == "true"
     use_opus_second_opinion: bool = os.getenv("USE_OPUS_SECOND_OPINION", "false").lower() == "true"
     benchmark_symbol: str = os.getenv("BENCHMARK_SYMBOL", "SPY")
     max_deep_analyses: int = int(os.getenv("MAX_DEEP_ANALYSES", "10"))
+
+    # Claude models. Env-overridable so a bad model can be rolled back from
+    # .env without rebuilding the image.
+    #   deep  — company analysis (Sonnet tier)
+    #   light — news monitoring and quick screens (Haiku tier, ~20x cheaper)
+    #   opus  — optional contrarian second opinion, off by default
+    model_deep: str = os.getenv("ANTHROPIC_MODEL_DEEP", "claude-sonnet-5")
+    model_light: str = os.getenv("ANTHROPIC_MODEL_LIGHT", "claude-haiku-4-5")
+    model_opus: str = os.getenv("ANTHROPIC_MODEL_OPUS", "claude-opus-5")
 
     # SEC EDGAR 10-K ingestion (Phase 2). SEC fair-access requires a descriptive
     # User-Agent with a contact email or requests are blocked. Empty → EDGAR is

@@ -28,6 +28,11 @@ buffett-bot/data/edgar/
 buffett-bot/data/insider/
 buffett-bot/data/fx/
 buffett-bot/data/watchlist.json
+# SQLite state and its WAL sidecars, plus backups taken before a migration.
+buffett-bot/data/*.db
+buffett-bot/data/*.db-shm
+buffett-bot/data/*.db-wal
+buffett-bot/data/*.db.bak-*
 buffett-bot/data/watchlist_cache.json
 buffett-bot/data/watchlist_history.json
 buffett-bot/data/trade_log.json

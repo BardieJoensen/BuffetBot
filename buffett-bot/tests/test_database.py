@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from src.database import Database, _apply_pragmas
+from src.database import BUDGET_CAPS_DEFAULTS, Database, _apply_pragmas, _open
 
 # ─── Fixtures ─────────────────────────────────────────────────────────────
 
@@ -90,12 +90,12 @@ class TestSchema:
 
     def test_budget_caps_seeded(self, db):
         """budget_caps table should have default rows after init."""
-        status_sonnet = db.get_budget_status("weekly_news_sonnet")
-        status_haiku = db.get_budget_status("weekly_news_haiku")
-        assert status_sonnet["max_calls"] == 10
-        assert status_haiku["max_calls"] == 50
-        assert status_sonnet["calls_used"] == 0
-        assert status_haiku["calls_used"] == 0
+        # Assert against the constant rather than literals so tuning a cap
+        # doesn't require editing this test.
+        for cap_type, max_calls in BUDGET_CAPS_DEFAULTS:
+            status = db.get_budget_status(cap_type)
+            assert status["max_calls"] == max_calls
+            assert status["calls_used"] == 0
 
 
 # ─── can_spend() Tests ────────────────────────────────────────────────────
@@ -165,13 +165,393 @@ class TestCanSpend:
     def test_counter_at_limit_after_concurrent_calls(self, tmp_db_path):
         """After concurrent exhaustion, counter must equal max_calls (not more)."""
         db = Database(db_path=tmp_db_path)
-        threads = [threading.Thread(target=lambda: db.can_spend("weekly_news_haiku")) for _ in range(100)]
+        max_calls = db.get_budget_status("weekly_news_haiku")["max_calls"]
+        # Oversubscribe the cap so exhaustion is actually reached regardless of
+        # how the cap is tuned.
+        threads = [threading.Thread(target=lambda: db.can_spend("weekly_news_haiku")) for _ in range(max_calls + 50)]
         for t in threads:
             t.start()
         for t in threads:
             t.join()
         status = db.get_budget_status("weekly_news_haiku")
-        assert status["calls_used"] == status["max_calls"]  # 50
+        assert status["calls_used"] == max_calls
+
+
+# ─── set_trade_benchmark ──────────────────────────────────────────────────
+
+
+class TestSetTradeBenchmark:
+    """
+    Alpha and reasoning_sound are both derived from benchmark_return, so
+    repairing a benchmark has to re-derive both or the row goes internally
+    inconsistent.
+    """
+
+    def _closed_trade(
+        self,
+        db,
+        *,
+        ticker="GIS",
+        entry=37.198632,
+        exit_=36.145,
+        reason="Take profit: near fair value",
+        fair_value=42.53,
+    ):
+        # fair_value drives `converged`, which _score_reasoning_soundness needs
+        # alongside alpha — without it soundness is None regardless of alpha.
+        buy_id = db.log_decision(
+            ticker,
+            "buy",
+            tier="B",
+            price=entry,
+            shares=100.0,
+            notional=entry * 100,
+            order_id="b1",
+            reason="entry",
+            regime="fair_value",
+            reasoning_snapshot={"fair_value": fair_value},
+        )
+        sell_id = db.log_decision(
+            ticker,
+            "sell",
+            tier="B",
+            price=exit_,
+            shares=100.0,
+            notional=exit_ * 100,
+            order_id="s1",
+            reason=reason,
+            regime="fair_value",
+            reasoning_snapshot={},
+        )
+        assert buy_id and sell_id
+        return db.close_trade(ticker, exit_decision_id=sell_id, entry_price=entry, exit_price=exit_, shares=100.0)
+
+    def test_sets_benchmark_and_derives_alpha(self, db):
+        trade_id = self._closed_trade(db)
+        assert db.set_trade_benchmark(trade_id, 0.013655) is True
+
+        t = db.get_closed_trades(ticker="GIS")[0]
+        assert t["benchmark_return"] == pytest.approx(0.013655)
+        assert t["alpha"] == pytest.approx(t["realized_pl_pct"] - 0.013655)
+
+    def test_repairs_a_previously_missing_benchmark(self, db):
+        trade_id = self._closed_trade(db)
+        assert db.get_closed_trades(ticker="GIS")[0]["alpha"] is None
+
+        db.set_trade_benchmark(trade_id, 0.0)
+        t = db.get_closed_trades(ticker="GIS")[0]
+        assert t["alpha"] == pytest.approx(t["realized_pl_pct"])
+
+    def test_recomputes_from_realized_not_from_prior_alpha(self, db):
+        """Idempotency: re-applying the same benchmark must not drift."""
+        trade_id = self._closed_trade(db)
+        db.set_trade_benchmark(trade_id, 0.02)
+        first = db.get_closed_trades(ticker="GIS")[0]["alpha"]
+        db.set_trade_benchmark(trade_id, 0.02)
+        assert db.get_closed_trades(ticker="GIS")[0]["alpha"] == pytest.approx(first)
+
+    def test_rescoring_take_profit_soundness(self, db):
+        """A take-profit that lost to the benchmark is not sound reasoning."""
+        trade_id = self._closed_trade(db, reason="Take profit: near fair value")
+        db.set_trade_benchmark(trade_id, 0.013655)
+
+        t = db.get_closed_trades(ticker="GIS")[0]
+        assert t["sell_category"] == "take_profit"
+        assert t["alpha"] < 0
+        assert t["reasoning_sound"] == 0
+
+    def test_thesis_breaker_soundness_stays_unknown(self, db):
+        """Judging a thesis breaker needs post-exit prices, so it stays None."""
+        trade_id = self._closed_trade(db, ticker="AD", reason="Thesis breaker: downgraded to C-tier")
+        db.set_trade_benchmark(trade_id, 0.0)
+
+        t = db.get_closed_trades(ticker="AD")[0]
+        assert t["sell_category"] == "thesis_breaker"
+        assert t["alpha"] is not None
+        assert t["reasoning_sound"] is None
+
+    def test_none_benchmark_clears_alpha(self, db):
+        trade_id = self._closed_trade(db)
+        db.set_trade_benchmark(trade_id, 0.01)
+        db.set_trade_benchmark(trade_id, None)
+
+        t = db.get_closed_trades(ticker="GIS")[0]
+        assert t["benchmark_return"] is None
+        assert t["alpha"] is None
+
+    def test_unknown_trade_id_returns_false(self, db):
+        assert db.set_trade_benchmark(9999, 0.01) is False
+
+
+# ─── paced_allowance ──────────────────────────────────────────────────────
+
+
+class TestPacedAllowance:
+    """
+    A weekly pool spent by a daily job drains on day one. Pacing reserves a
+    proportional share for later days, but — unlike a hard per-day cap — lets a
+    busy day also consume everything earlier days left unused.
+    """
+
+    MONDAY = date(2026, 7, 20)
+    WEDNESDAY = date(2026, 7, 22)
+    SUNDAY = date(2026, 7, 26)
+
+    def test_monday_gets_roughly_one_seventh(self, db):
+        cap = db.get_budget_status("weekly_news_haiku")["max_calls"]
+        allowance = db.paced_allowance("weekly_news_haiku", today=self.MONDAY)
+        assert allowance == pytest.approx(cap / 7, abs=2)
+
+    def test_later_days_accumulate_unused_budget(self, db):
+        """Spending nothing on Mon/Tue must make Wednesday's share larger."""
+        monday = db.paced_allowance("weekly_news_haiku", today=self.MONDAY)
+        wednesday = db.paced_allowance("weekly_news_haiku", today=self.WEDNESDAY)
+        assert wednesday > monday
+
+    def test_final_day_may_spend_everything_left(self, db):
+        cap = db.get_budget_status("weekly_news_haiku")["max_calls"]
+        assert db.paced_allowance("weekly_news_haiku", today=self.SUNDAY) == cap
+
+    def test_shrinks_as_the_pool_is_consumed(self, db):
+        before = db.paced_allowance("weekly_news_haiku", today=self.WEDNESDAY)
+        for _ in range(10):
+            db.can_spend("weekly_news_haiku")
+        after = db.paced_allowance("weekly_news_haiku", today=self.WEDNESDAY)
+        assert after == before - 10
+
+    def test_zero_when_pool_exhausted(self, db):
+        cap = db.get_budget_status("weekly_news_haiku")["max_calls"]
+        db.spend_batch("weekly_news_haiku", cap)
+        assert db.paced_allowance("weekly_news_haiku", today=self.SUNDAY) == 0
+
+    def test_never_negative_when_ahead_of_pace(self, db):
+        """Monday overspend must not produce a negative allowance later."""
+        db.spend_batch("weekly_news_haiku", 100)
+        assert db.paced_allowance("weekly_news_haiku", today=self.MONDAY) == 0
+
+    def test_unknown_cap_returns_zero(self, db):
+        assert db.paced_allowance("nonexistent_cap") == 0
+
+
+# ─── get_recent_headlines ─────────────────────────────────────────────────
+
+
+class TestGetRecentHeadlines:
+    def test_returns_logged_headlines(self, db):
+        db.log_news_event("AAPL", "AAPL under SEC investigation")
+        assert db.get_recent_headlines("AAPL") == {"AAPL under SEC investigation"}
+
+    def test_scoped_per_ticker(self, db):
+        db.log_news_event("AAPL", "AAPL news")
+        db.log_news_event("MSFT", "MSFT news")
+        assert db.get_recent_headlines("AAPL") == {"AAPL news"}
+
+    def test_empty_for_unknown_ticker(self, db):
+        assert db.get_recent_headlines("ZZZZ") == set()
+
+    def test_excludes_headlines_outside_the_window(self, db):
+        db.log_news_event("AAPL", "old story")
+        with _open(db.path) as conn:
+            conn.execute("UPDATE news_events SET detected_at = datetime('now', '-30 days')")
+        assert db.get_recent_headlines("AAPL", days=7) == set()
+
+    def test_deduplicates_repeats(self, db):
+        db.log_news_event("AAPL", "same story")
+        db.log_news_event("AAPL", "same story")
+        assert db.get_recent_headlines("AAPL") == {"same story"}
+
+
+# ─── Column migrations ────────────────────────────────────────────────────
+
+
+class TestColumnMigrations:
+    """
+    CREATE TABLE IF NOT EXISTS is a no-op on an existing table, so a column
+    added to SCHEMA_SQL never reaches a database that already exists. Without
+    the explicit ALTER these tests pin, save_snapshot() would start raising
+    "no such column" inside the scheduler's per-account try/except — which logs
+    and continues, so snapshots would silently stop being written in production
+    with no visible failure.
+    """
+
+    LEGACY_SNAPSHOTS_DDL = """
+        CREATE TABLE portfolio_snapshots (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id      TEXT NOT NULL,
+            as_of           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            currency        TEXT NOT NULL,
+            equity          REAL NOT NULL,
+            cash            REAL NOT NULL,
+            buying_power    REAL,
+            invested_value  REAL,
+            invested_pct    REAL,
+            equity_dkk      REAL,
+            positions       TEXT
+        );
+    """
+
+    def _legacy_db(self, path):
+        """Build a database with the pre-migration portfolio_snapshots shape."""
+        conn = sqlite3.connect(str(path))
+        conn.executescript(self.LEGACY_SNAPSHOTS_DDL)
+        conn.execute(
+            """
+            INSERT INTO portfolio_snapshots
+                (account_id, currency, equity, cash, equity_dkk)
+            VALUES ('alpaca_paper', 'USD', 1000.0, 400.0, 7000.0)
+            """
+        )
+        conn.commit()
+        conn.close()
+
+    def test_adds_columns_to_legacy_db(self, tmp_db_path):
+        self._legacy_db(tmp_db_path)
+        Database(db_path=tmp_db_path)
+
+        conn = sqlite3.connect(str(tmp_db_path))
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(portfolio_snapshots)")}
+        conn.close()
+        assert "gross_equity" in cols
+        assert "untradable_value" in cols
+
+    def test_preserves_existing_rows(self, tmp_db_path):
+        self._legacy_db(tmp_db_path)
+        db = Database(db_path=tmp_db_path)
+
+        snaps = db.get_snapshots("alpaca_paper")
+        assert len(snaps) == 1
+        assert snaps[0]["equity"] == 1000.0
+        # New columns backfill as NULL, not zero — "unknown", not "none held".
+        assert snaps[0]["gross_equity"] is None
+        assert snaps[0]["untradable_value"] is None
+
+    def test_is_idempotent(self, tmp_db_path):
+        self._legacy_db(tmp_db_path)
+        Database(db_path=tmp_db_path)
+        Database(db_path=tmp_db_path)  # must not raise "duplicate column name"
+
+        db = Database(db_path=tmp_db_path)
+        assert len(db.get_snapshots("alpaca_paper")) == 1
+
+    def test_raised_cap_reaches_existing_db(self, tmp_db_path):
+        """
+        budget_caps is seeded with INSERT OR IGNORE, so raising a cap in
+        BUDGET_CAPS_DEFAULTS must be synced explicitly or the old ceiling
+        persists forever on a live database.
+        """
+        db = Database(db_path=tmp_db_path)
+        with _open(tmp_db_path) as conn:
+            conn.execute("UPDATE budget_caps SET max_calls = 1 WHERE cap_type = 'weekly_news_haiku'")
+
+        db = Database(db_path=tmp_db_path)  # re-init should re-sync the ceiling
+        expected = dict(BUDGET_CAPS_DEFAULTS)["weekly_news_haiku"]
+        assert db.get_budget_status("weekly_news_haiku")["max_calls"] == expected
+
+    def test_cap_sync_preserves_usage(self, tmp_db_path):
+        """Re-syncing the ceiling must not reset the week's spend."""
+        db = Database(db_path=tmp_db_path)
+        db.can_spend("weekly_news_haiku")
+        db.can_spend("weekly_news_haiku")
+
+        db = Database(db_path=tmp_db_path)
+        assert db.get_budget_status("weekly_news_haiku")["calls_used"] == 2
+
+
+# ─── Quarantined positions ────────────────────────────────────────────────
+
+
+class TestQuarantinedPositions:
+    def test_first_sighting_is_due_for_alert(self, db):
+        assert db.record_quarantine("alpaca_paper", "AL", market_value=7242.03) is True
+
+    def test_not_due_again_within_window(self, db):
+        db.record_quarantine("alpaca_paper", "AL", realert_days=7)
+        db.mark_quarantine_alerted("alpaca_paper", "AL")
+        assert db.record_quarantine("alpaca_paper", "AL", realert_days=7) is False
+
+    def test_due_again_after_window(self, db):
+        db.record_quarantine("alpaca_paper", "AL", realert_days=7)
+        db.mark_quarantine_alerted("alpaca_paper", "AL")
+        with _open(db.path) as conn:
+            conn.execute("UPDATE quarantined_positions SET last_alerted = datetime('now', '-8 days')")
+        assert db.record_quarantine("alpaca_paper", "AL", realert_days=7) is True
+
+    def test_stays_due_until_alert_is_marked(self, db):
+        """A failed notification must be retried, not silently swallowed."""
+        assert db.record_quarantine("alpaca_paper", "AL") is True
+        assert db.record_quarantine("alpaca_paper", "AL") is True
+
+    def test_upsert_refreshes_values(self, db):
+        db.record_quarantine("alpaca_paper", "AL", shares=100.0, market_value=6500.0)
+        db.record_quarantine("alpaca_paper", "AL", shares=111.4, market_value=7242.03, asset_status="inactive")
+        rows = db.get_quarantined("alpaca_paper")
+        assert len(rows) == 1
+        assert rows[0]["market_value"] == 7242.03
+        assert rows[0]["asset_status"] == "inactive"
+
+    def test_resolve_marks_departed_positions(self, db):
+        db.record_quarantine("alpaca_paper", "AL")
+        resolved = db.resolve_quarantines("alpaca_paper", ["AGM", "CTSH"])
+        assert resolved == 1
+        assert db.get_quarantined("alpaca_paper") == []
+        assert len(db.get_quarantined("alpaca_paper", include_resolved=True)) == 1
+
+    def test_resolve_keeps_still_held_positions(self, db):
+        db.record_quarantine("alpaca_paper", "AL")
+        assert db.resolve_quarantines("alpaca_paper", ["AL", "AGM"]) == 0
+        assert len(db.get_quarantined("alpaca_paper")) == 1
+
+    def test_resolve_ignores_empty_ticker_list(self, db):
+        """
+        An empty broker response is indistinguishable from a failed call, so it
+        must never resolve open quarantines.
+        """
+        db.record_quarantine("alpaca_paper", "AL")
+        assert db.resolve_quarantines("alpaca_paper", []) == 0
+        assert len(db.get_quarantined("alpaca_paper")) == 1
+
+    def test_reappearance_reopens_the_episode(self, db):
+        db.record_quarantine("alpaca_paper", "AL")
+        db.resolve_quarantines("alpaca_paper", ["AGM"])
+        db.record_quarantine("alpaca_paper", "AL")
+        assert len(db.get_quarantined("alpaca_paper")) == 1
+
+    def test_accounts_are_independent(self, db):
+        db.record_quarantine("alpaca_paper", "AL")
+        db.record_quarantine("nordnet", "AL")
+        db.resolve_quarantines("alpaca_paper", ["AGM"])
+        assert db.get_quarantined("alpaca_paper") == []
+        assert len(db.get_quarantined("nordnet")) == 1
+
+    def test_get_quarantined_across_all_accounts(self, db):
+        db.record_quarantine("alpaca_paper", "AL")
+        db.record_quarantine("nordnet", "XYZ")
+        assert len(db.get_quarantined()) == 2
+
+
+# ─── Snapshot quarantine columns ──────────────────────────────────────────
+
+
+class TestSnapshotQuarantineColumns:
+    def test_round_trips_gross_equity_and_untradable_value(self, db):
+        db.save_snapshot(
+            "alpaca_paper",
+            currency="USD",
+            equity=100132.85,
+            cash=30880.40,
+            gross_equity=107374.88,
+            untradable_value=7242.03,
+        )
+        snap = db.get_snapshots("alpaca_paper")[0]
+        assert snap["equity"] == 100132.85
+        assert snap["gross_equity"] == 107374.88
+        assert snap["untradable_value"] == 7242.03
+
+    def test_columns_default_to_null_when_omitted(self, db):
+        db.save_snapshot("alpaca_paper", currency="USD", equity=1000.0, cash=400.0)
+        snap = db.get_snapshots("alpaca_paper")[0]
+        assert snap["gross_equity"] is None
+        assert snap["untradable_value"] is None
 
 
 # ─── reset_weekly_budgets() ───────────────────────────────────────────────

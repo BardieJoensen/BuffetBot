@@ -236,13 +236,44 @@ CREATE TABLE IF NOT EXISTS portfolio_snapshots (
     account_id      TEXT NOT NULL,
     as_of           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     currency        TEXT NOT NULL,
-    equity          REAL NOT NULL,
+    equity          REAL NOT NULL,  -- TRADABLE equity: broker equity less quarantined value
     cash            REAL NOT NULL,
     buying_power    REAL,
     invested_value  REAL,
     invested_pct    REAL,
     equity_dkk      REAL,           -- NULL if the FX rate was unavailable
-    positions       TEXT            -- JSON array of position dicts
+    positions       TEXT,           -- JSON array of position dicts
+    gross_equity    REAL,           -- broker-reported equity before quarantine correction
+    untradable_value REAL           -- market value of quarantined holdings
+);
+
+-- Throttle state for recurring alerts. Keyed by alert stream, with a
+-- fingerprint of what was reported: a *changed* fingerprint means a new
+-- problem and alerts immediately, an unchanged one waits out the re-alert
+-- window. Without this a permanent condition produces a daily notification
+-- and trains the reader to ignore the channel.
+CREATE TABLE IF NOT EXISTS alert_state (
+    alert_key       TEXT PRIMARY KEY,
+    fingerprint     TEXT,
+    last_alerted    TIMESTAMP
+);
+
+-- Holdings the broker reports as non-tradable (delisted / halted). They are
+-- excluded from equity, sizing, slot counts and the sell engine, and can only
+-- be cleared by hand — the broker rejects a sell order on them. This table
+-- therefore also carries the alert-throttle state, so a permanent condition
+-- doesn't produce a daily notification.
+CREATE TABLE IF NOT EXISTS quarantined_positions (
+    account_id      TEXT NOT NULL,
+    ticker          TEXT NOT NULL,
+    first_seen      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_seen       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_alerted    TIMESTAMP,
+    shares          REAL,
+    market_value    REAL,
+    asset_status    TEXT,           -- broker status, e.g. 'inactive' / 'not_found'
+    resolved_at     TIMESTAMP,      -- set when the position leaves the account
+    PRIMARY KEY (account_id, ticker)
 );
 
 -- One row per day the market regime is classified. Regime is computed at
@@ -335,9 +366,18 @@ CREATE INDEX IF NOT EXISTS idx_income_events_account
 
 BUDGET_CAPS_DEFAULTS = [
     ("weekly_news_sonnet", 10),
-    ("weekly_news_haiku", 50),
+    ("weekly_news_haiku", 150),
     ("weekly_haiku_screen", 50),  # scheduled Wednesday Haiku batch
     ("weekly_sonnet_analysis", 10),  # scheduled Friday Sonnet batch
+]
+
+# Additive-only column migrations. CREATE TABLE IF NOT EXISTS is a no-op on an
+# existing table, so a column added to SCHEMA_SQL never reaches a database that
+# already exists — it needs an explicit ALTER. Append here; never reorder,
+# never remove, never change a type.
+_COLUMN_MIGRATIONS: list[tuple[str, str, str]] = [
+    ("portfolio_snapshots", "gross_equity", "REAL"),
+    ("portfolio_snapshots", "untradable_value", "REAL"),
 ]
 
 
@@ -432,8 +472,13 @@ class Database:
         """Create all tables, indexes, and seed budget_caps defaults."""
         with _open(self.path) as conn:
             conn.executescript(SCHEMA_SQL)
+            self._apply_column_migrations(conn)
             conn.executescript(INDEXES_SQL)
-            # Seed budget caps only if table is empty
+            # Seed budget caps only if table is empty, then sync max_calls so
+            # raising a cap in BUDGET_CAPS_DEFAULTS actually reaches an existing
+            # database (INSERT OR IGNORE alone would leave the old ceiling in
+            # place forever). calls_used and period_start are left untouched —
+            # only the ceiling is code-owned.
             for cap_type, max_calls in BUDGET_CAPS_DEFAULTS:
                 conn.execute(
                     """
@@ -442,6 +487,21 @@ class Database:
                     """,
                     (cap_type, max_calls),
                 )
+                conn.execute(
+                    "UPDATE budget_caps SET max_calls = ? WHERE cap_type = ? AND max_calls != ?",
+                    (max_calls, cap_type, max_calls),
+                )
+
+    @staticmethod
+    def _apply_column_migrations(conn: sqlite3.Connection) -> None:
+        """Add any columns missing from an already-existing table."""
+        for table, column, decl in _COLUMN_MIGRATIONS:
+            cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}  # nosec B608
+            # Empty means the table doesn't exist yet, in which case SCHEMA_SQL
+            # just created it with the column already present.
+            if cols and column not in cols:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")  # nosec B608
+                logger.info("Schema migration: added %s.%s", table, column)
 
     # ── Budget Caps ──────────────────────────────────────────────────────────
 
@@ -494,10 +554,19 @@ class Database:
             conn.close()
 
     def get_budget_status(self, cap_type: str) -> dict:
-        """Return current usage for a budget cap."""
+        """
+        Return current usage for a budget cap.
+
+        Includes last_reset: nothing enforces the weekly window at spend time,
+        so a monday_maintenance that stops running leaves every cap exhausted
+        indefinitely. The health check needs this column to notice.
+        """
         with _open(self.path) as conn:
             row = conn.execute(
-                "SELECT cap_type, calls_used, max_calls, period_start FROM budget_caps WHERE cap_type = ?",
+                """
+                SELECT cap_type, calls_used, max_calls, period_start, last_reset
+                FROM budget_caps WHERE cap_type = ?
+                """,
                 (cap_type,),
             ).fetchone()
             if row is None:
@@ -516,6 +585,55 @@ class Database:
                 (today,),
             )
         logger.info("Weekly budget caps reset (period_start=%s)", today)
+
+    def paced_allowance(self, cap_type: str, *, today: Optional[date] = None) -> int:
+        """
+        How many calls a run may spend right now without starving later days.
+
+        A weekly pool consumed by a job that runs daily drains on day one: the
+        first run sees every ticker as new and spends the lot, so the same tail
+        of tickers is never evaluated, every week, deterministically.
+
+        A hard per-day cap would fix that but introduces a worse failure — a
+        genuinely news-heavy Wednesday gets throttled while Monday's unused
+        budget sits idle. So this paces proportionally instead: a run may spend
+        down to a floor of max_calls x days_remaining / 7. Each day gets its
+        own share plus everything earlier days left unused, and the final day
+        of the week can spend whatever is left.
+
+        Returns the number of calls available now (0 if exhausted or unknown).
+        """
+        status = self.get_budget_status(cap_type)
+        if not status:
+            logger.warning("Unknown budget cap type: %r", cap_type)
+            return 0
+
+        remaining = status["max_calls"] - status["calls_used"]
+        if remaining <= 0:
+            return 0
+
+        # Monday=0 .. Sunday=6, so days_remaining counts the days after today.
+        days_remaining = 6 - (today or date.today()).weekday()
+        floor = status["max_calls"] * days_remaining / 7.0
+        return max(0, int(remaining - floor))
+
+    def get_recent_headlines(self, ticker: str, *, days: int = 7) -> set[str]:
+        """
+        Headlines already logged for a ticker, for suppressing repeats.
+
+        news_events is written on every check but never read back, so a story
+        that reappears across consecutive days re-spends budget on an
+        already-answered question.
+        """
+        with _open(self.path) as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT headline FROM news_events
+                WHERE ticker = ? AND detected_at >= datetime('now', ?)
+                """,
+                (ticker, f"-{int(days)} days"),
+            ).fetchall()
+            return {r["headline"] for r in rows if r["headline"]}
 
     def spend_batch(self, cap_type: str, n: int) -> int:
         """
@@ -1268,6 +1386,40 @@ class Database:
             new_id = cur.lastrowid
             return int(new_id) if new_id is not None else 0
 
+    def set_trade_benchmark(self, trade_id: int, benchmark_return: Optional[float]) -> bool:
+        """
+        Set a closed trade's benchmark return and re-derive everything from it.
+
+        Alpha and reasoning_sound are both functions of benchmark_return, so
+        writing one without the others would leave the row internally
+        inconsistent. Used to repair trades journalled while
+        fetch_benchmark_return was mis-resolving the hold window.
+
+        Returns True if a row was updated.
+        """
+        with _open(self.path) as conn:
+            row = conn.execute(
+                "SELECT realized_pl_pct, converged, sell_category FROM closed_trades WHERE id = ?",
+                (trade_id,),
+            ).fetchone()
+            if row is None:
+                return False
+
+            alpha = None
+            if row["realized_pl_pct"] is not None and benchmark_return is not None:
+                alpha = row["realized_pl_pct"] - benchmark_return
+            reasoning_sound = _score_reasoning_soundness(row["sell_category"] or "", alpha, row["converged"])
+
+            conn.execute(
+                """
+                UPDATE closed_trades
+                SET benchmark_return = ?, alpha = ?, reasoning_sound = ?
+                WHERE id = ?
+                """,
+                (benchmark_return, alpha, reasoning_sound, trade_id),
+            )
+            return True
+
     def get_decision_log(self, ticker: Optional[str] = None, limit: int = 100) -> list[dict]:
         """Return recent decisions (all tickers, or one), newest first."""
         with _open(self.path) as conn:
@@ -1349,16 +1501,24 @@ class Database:
         invested_pct: Optional[float] = None,
         equity_dkk: Optional[float] = None,
         positions: Optional[list[dict]] = None,
+        gross_equity: Optional[float] = None,
+        untradable_value: Optional[float] = None,
     ) -> int:
         """Append one point-in-time account snapshot. Never overwrites — the
-        history is the point."""
+        history is the point.
+
+        `equity` is tradable equity. `gross_equity` retains the broker's
+        pre-correction number so the two can be reconciled against the broker's
+        own dashboard after the fact.
+        """
         with _open(self.path) as conn:
             cur = conn.execute(
                 """
                 INSERT INTO portfolio_snapshots
                     (account_id, currency, equity, cash, buying_power,
-                     invested_value, invested_pct, equity_dkk, positions)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     invested_value, invested_pct, equity_dkk, positions,
+                     gross_equity, untradable_value)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     account_id,
@@ -1370,6 +1530,8 @@ class Database:
                     invested_pct,
                     equity_dkk,
                     json.dumps(positions) if positions is not None else None,
+                    gross_equity,
+                    untradable_value,
                 ),
             )
             new_id = cur.lastrowid
@@ -1404,6 +1566,30 @@ class Database:
                 out.append(d)
             return out
 
+    def get_latest_snapshots(self, account_id: str, limit: int = 1) -> list[dict]:
+        """
+        Most recent snapshots first.
+
+        get_snapshots orders ASC for charting, so `limit` there returns the
+        OLDEST rows — the opposite of what a freshness or staleness check
+        wants. This exists so that trap isn't re-sprung at every call site.
+        """
+        with _open(self.path) as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM portfolio_snapshots
+                WHERE account_id = ?
+                ORDER BY as_of DESC LIMIT ?
+                """,
+                (account_id, limit),
+            ).fetchall()
+            out = []
+            for r in rows:
+                d = dict(r)
+                d["positions"] = json.loads(d["positions"]) if d["positions"] else None
+                out.append(d)
+            return out
+
     def get_equity_curve(self, account_id: str) -> list[dict]:
         """Return (as_of, equity, equity_dkk) triples for one account, oldest
         first — the minimal series a chart or CLI table needs."""
@@ -1417,6 +1603,146 @@ class Database:
                 (account_id,),
             ).fetchall()
             return [dict(r) for r in rows]
+
+    # ── Quarantined (non-tradable) positions ─────────────────────────────────
+
+    def record_quarantine(
+        self,
+        account_id: str,
+        ticker: str,
+        *,
+        shares: Optional[float] = None,
+        market_value: Optional[float] = None,
+        asset_status: Optional[str] = None,
+        realert_days: int = 7,
+    ) -> bool:
+        """
+        Upsert a quarantined holding and report whether it is due for an alert.
+
+        Returns True iff the position has never been alerted on, or the last
+        alert is older than `realert_days`. The caller is expected to follow a
+        True with mark_quarantine_alerted() once the notification succeeds, so a
+        failed send is retried tomorrow rather than silently swallowed.
+
+        Re-seeing a position clears resolved_at: a holding that disappears and
+        comes back is the same open episode, not a new one.
+        """
+        with _open(self.path) as conn:
+            conn.execute(
+                """
+                INSERT INTO quarantined_positions
+                    (account_id, ticker, shares, market_value, asset_status)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(account_id, ticker) DO UPDATE SET
+                    last_seen    = CURRENT_TIMESTAMP,
+                    shares       = excluded.shares,
+                    market_value = excluded.market_value,
+                    asset_status = excluded.asset_status,
+                    resolved_at  = NULL
+                """,
+                (account_id, ticker, shares, market_value, asset_status),
+            )
+            row = conn.execute(
+                """
+                SELECT last_alerted IS NULL
+                       OR last_alerted < datetime('now', ?) AS due
+                FROM quarantined_positions
+                WHERE account_id = ? AND ticker = ?
+                """,
+                (f"-{int(realert_days)} days", account_id, ticker),
+            ).fetchone()
+            return bool(row["due"]) if row else False
+
+    def should_alert(self, alert_key: str, fingerprint: str, *, realert_days: int = 7) -> bool:
+        """
+        Whether a recurring alert stream is due to speak.
+
+        True when the fingerprint differs from last time (a new or changed
+        problem — say so now) or the re-alert window has elapsed. Does not
+        record the send; call mark_alerted() once the notification succeeds, so
+        a failed send is retried rather than swallowed.
+        """
+        with _open(self.path) as conn:
+            row = conn.execute(
+                "SELECT fingerprint, last_alerted FROM alert_state WHERE alert_key = ?",
+                (alert_key,),
+            ).fetchone()
+        if row is None or row["fingerprint"] != fingerprint or not row["last_alerted"]:
+            return True
+        with _open(self.path) as conn:
+            due = conn.execute(
+                "SELECT ? < datetime('now', ?) AS due",
+                (row["last_alerted"], f"-{int(realert_days)} days"),
+            ).fetchone()
+        return bool(due["due"]) if due else True
+
+    def mark_alerted(self, alert_key: str, fingerprint: str) -> None:
+        """Record a successful send for this alert stream."""
+        with _open(self.path) as conn:
+            conn.execute(
+                """
+                INSERT INTO alert_state (alert_key, fingerprint, last_alerted)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(alert_key) DO UPDATE SET
+                    fingerprint = excluded.fingerprint,
+                    last_alerted = CURRENT_TIMESTAMP
+                """,
+                (alert_key, fingerprint),
+            )
+
+    def mark_quarantine_alerted(self, account_id: str, ticker: str) -> None:
+        """Stamp the alert clock. Called only after a notification succeeds."""
+        with _open(self.path) as conn:
+            conn.execute(
+                """
+                UPDATE quarantined_positions SET last_alerted = CURRENT_TIMESTAMP
+                WHERE account_id = ? AND ticker = ?
+                """,
+                (account_id, ticker),
+            )
+
+    def get_quarantined(self, account_id: Optional[str] = None, *, include_resolved: bool = False) -> list[dict]:
+        """Quarantined holdings, open ones only unless include_resolved."""
+        clauses, params = [], []
+        if account_id:
+            clauses.append("account_id = ?")
+            params.append(account_id)
+        if not include_resolved:
+            clauses.append("resolved_at IS NULL")
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with _open(self.path) as conn:
+            rows = conn.execute(
+                f"SELECT * FROM quarantined_positions {where} ORDER BY account_id, ticker",  # nosec B608
+                params,
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def resolve_quarantines(self, account_id: str, current_tickers: list[str]) -> int:
+        """
+        Mark quarantines resolved once the holding leaves the account.
+
+        Resolve rather than delete — the episode is worth keeping. Pass ALL
+        currently-held tickers, not just the tradable ones: passing tradable-only
+        would resolve every quarantine nightly and immediately re-record it,
+        flapping the alert state.
+
+        Callers must not invoke this with an empty list derived from a failed
+        broker call — an empty response is indistinguishable from "sold
+        everything" and would resolve open quarantines spuriously.
+        """
+        if not current_tickers:
+            return 0
+        placeholders = ",".join("?" * len(current_tickers))
+        with _open(self.path) as conn:
+            cur = conn.execute(
+                f"""
+                UPDATE quarantined_positions SET resolved_at = CURRENT_TIMESTAMP
+                WHERE account_id = ? AND resolved_at IS NULL
+                  AND ticker NOT IN ({placeholders})
+                """,  # nosec B608 — placeholders are generated, values are bound
+                [account_id, *current_tickers],
+            )
+            return cur.rowcount
 
     def log_regime(
         self,
@@ -1759,6 +2085,43 @@ class Database:
                 LIMIT ?
                 """,
                 (limit,),
+            ).fetchall()
+            return [r["ticker"] for r in rows]
+
+    _HELD_TICKERS_SQL = """
+        SELECT ticker FROM paper_positions
+        WHERE last_synced >= datetime('now', '-8 days')
+        UNION
+        SELECT d.ticker FROM decision_log d
+        WHERE d.action = 'buy'
+          AND d.decided_at >= datetime('now', ?)
+          AND NOT EXISTS (
+              SELECT 1 FROM decision_log s
+              WHERE s.ticker = d.ticker
+                AND s.action = 'sell'
+                AND (s.decided_at > d.decided_at
+                     OR (s.decided_at = d.decided_at AND s.id > d.id))
+          )
+    """
+
+    def get_held_tickers(self, *, recent_buy_days: int = 14) -> list[str]:
+        """
+        Tickers currently held, regardless of analysis state.
+
+        paper_positions (synced Monday) UNION recent decision_log buys not
+        since sold — the latter covers the gap between a Friday buy and the
+        following Monday's sync. Mirror rows over 8 days stale are ignored:
+        the sync prunes sold positions, so a stale row means either a
+        long-sold ticker or a sync that stopped running.
+
+        Shares its query with get_portfolio_tickers_needing_analysis, which
+        adds a "lacks a valid analysis" filter on top. Callers that want every
+        holding — news prioritization, for instance — want this one.
+        """
+        with _open(self.path) as conn:
+            rows = conn.execute(
+                f"SELECT t.ticker FROM ({self._HELD_TICKERS_SQL}) t ORDER BY t.ticker",  # nosec B608
+                (f"-{recent_buy_days} days",),
             ).fetchall()
             return [r["ticker"] for r in rows]
 
