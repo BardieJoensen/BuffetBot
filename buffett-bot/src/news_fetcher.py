@@ -384,9 +384,24 @@ def run_news_pipeline(
         "tier_changes": 0,
     }
 
-    # 1. Discover S/A/B watched stocks from price_alerts
+    # 1. Discover S/A/B watched stocks from price_alerts, holdings first.
+    #
+    # Ordering matters more than it looks: get_price_alerts returns rows
+    # ORDER BY gap_pct ASC, which is an accident of that query rather than a
+    # priority, and the budget truncates the tail. Deterministic order plus a
+    # fixed cap means the *same* tickers starve every week. Putting holdings
+    # first — the same pattern the Friday Sonnet queue uses — guarantees the
+    # positions actually at risk are evaluated before anything is dropped.
     alerts = db.get_price_alerts(tiers=["S", "A", "B"])
-    tickers = [a["ticker"] for a in alerts]
+    watched = [a["ticker"] for a in alerts]
+
+    held = [t for t in db.get_held_tickers() if t in set(watched)]
+    seen: set[str] = set()
+    tickers: list[str] = []
+    for t in held + watched:
+        if t not in seen:
+            seen.add(t)
+            tickers.append(t)
 
     if not tickers:
         logger.info("No S/A/B tier tickers to monitor — news pipeline skipped")
@@ -394,16 +409,25 @@ def run_news_pipeline(
 
     stats["tickers_checked"] = len(tickers)
     logger.info("News pipeline: monitoring %d S/A/B ticker(s)", len(tickers))
+    if held:
+        logger.info("Portfolio holdings jump the news queue: %s", ", ".join(held))
 
     if dry_run:
         logger.info("[dry_run] Skipping Finnhub fetch and LLM calls")
         return stats
 
+    # Pace the weekly Haiku pool so one day can't drain the week. Holdings are
+    # first in the queue, so a truncation is a suffix cut that spares them.
+    haiku_allowance = db.paced_allowance("weekly_news_haiku")
+    if haiku_allowance <= 0:
+        logger.info("weekly_news_haiku pace floor reached — no Haiku checks this run")
+
     # 2. Fetch news from Finnhub
     news_by_ticker = fetcher.get_news_for_tickers(tickers, days_back=days_back)
 
-    # 3–5. Process each ticker
-    for ticker, raw_news in news_by_ticker.items():
+    # 3–5. Process each ticker, in the priority order established above.
+    for ticker in tickers:
+        raw_news = news_by_ticker.get(ticker)
         if not raw_news:
             continue
 
@@ -411,8 +435,17 @@ def run_news_pipeline(
         if not material:
             continue
 
+        # Suppress stories already evaluated: a headline repeating across days
+        # would otherwise re-spend budget on an already-answered question.
+        already_seen = db.get_recent_headlines(ticker)
+        fresh = [m for m in material if m.get("headline") not in already_seen]
+        if not fresh:
+            logger.info("%s: %d material item(s), all previously checked — skipping", ticker, len(material))
+            continue
+        material = fresh
+
         stats["news_found"] += 1
-        logger.info("%s: %d raw → %d material news item(s)", ticker, len(raw_news), len(material))
+        logger.info("%s: %d raw → %d new material news item(s)", ticker, len(raw_news), len(material))
 
         # Gather context for Haiku check
         da = db.get_latest_deep_analysis(ticker)
@@ -421,9 +454,13 @@ def run_news_pipeline(
         formatted_news = format_news_for_llm(material)
 
         # 3. Haiku materiality check
+        if haiku_allowance <= 0:
+            logger.info("weekly_news_haiku pace floor reached — skipping Haiku check for %s", ticker)
+            continue
         if not db.can_spend("weekly_news_haiku"):
             logger.info("weekly_news_haiku budget exhausted — skipping Haiku check for %s", ticker)
             continue
+        haiku_allowance -= 1
 
         stats["haiku_calls"] += 1
         top_item = material[0]

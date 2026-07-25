@@ -720,3 +720,122 @@ class TestDailyNewsMonitor:
 
         with patch("src.database.Database", side_effect=RuntimeError("DB unavailable")):
             daily_news_monitor()  # must not raise
+
+
+# ─── Budget efficiency: prioritization, dedup, pacing ──────────────────────
+
+
+class TestPortfolioPrioritization:
+    """
+    get_price_alerts orders by gap_pct, which is an accident of that query, not
+    a priority. Combined with a fixed weekly cap that truncates the tail, the
+    same tickers starved every week. Holdings now jump the queue.
+    """
+
+    def _hold(self, db, ticker):
+        db.upsert_paper_position(ticker, tier_at_entry="A")
+
+    def test_held_ticker_is_checked_first(self, db):
+        # LAST sorts to the front by gap_pct; HELD would otherwise be second.
+        _setup_watched_ticker(db, "LAST")
+        _setup_watched_ticker(db, "HELD")
+        db.upsert_price_alert(
+            "LAST", tier="A", target_entry=150.0, staged_entries=None, last_price=160.0, gap_pct=-0.50
+        )
+        db.upsert_price_alert("HELD", tier="A", target_entry=150.0, staged_entries=None, last_price=160.0, gap_pct=0.50)
+        self._hold(db, "HELD")
+
+        fetcher = _make_fetcher(
+            {
+                "LAST": [_make_item("LAST faces lawsuit")],
+                "HELD": [_make_item("HELD faces lawsuit")],
+            }
+        )
+        analyzer = _make_analyzer()
+
+        run_news_pipeline(db, analyzer, fetcher)
+
+        checked = [c[0][0] for c in analyzer.check_news_for_red_flags.call_args_list]
+        assert checked[0] == "HELD"
+
+    def test_held_ticker_not_on_watchlist_is_not_added(self, db):
+        """Holdings jump the queue; they don't expand it beyond S/A/B."""
+        _setup_watched_ticker(db, "AAPL")
+        self._hold(db, "NOTWATCHED")
+
+        fetcher = _make_fetcher({"AAPL": [_make_item("AAPL lawsuit")]})
+        run_news_pipeline(db, _make_analyzer(), fetcher)
+
+        requested = fetcher.get_news_for_tickers.call_args[0][0]
+        assert "NOTWATCHED" not in requested
+
+    def test_no_holdings_leaves_order_unchanged(self, db):
+        _setup_watched_ticker(db, "AAPL")
+        _setup_watched_ticker(db, "MSFT")
+
+        fetcher = _make_fetcher({"AAPL": [_make_item("AAPL lawsuit")]})
+        run_news_pipeline(db, _make_analyzer(), fetcher)
+
+        requested = fetcher.get_news_for_tickers.call_args[0][0]
+        assert set(requested) == {"AAPL", "MSFT"}
+
+
+class TestHeadlineDedup:
+    """
+    news_events was written on every check but never read back, so a story
+    repeating across consecutive days re-spent budget on the same question.
+    """
+
+    def test_repeat_headline_is_not_rechecked(self, db):
+        _setup_watched_ticker(db, "AAPL")
+        fetcher = _make_fetcher({"AAPL": [_make_item("AAPL under SEC investigation")]})
+        analyzer = _make_analyzer()
+
+        first = run_news_pipeline(db, analyzer, fetcher)
+        second = run_news_pipeline(db, analyzer, fetcher)
+
+        assert first["haiku_calls"] == 1
+        assert second["haiku_calls"] == 0
+
+    def test_new_headline_is_still_checked(self, db):
+        _setup_watched_ticker(db, "AAPL")
+        analyzer = _make_analyzer()
+
+        run_news_pipeline(db, analyzer, _make_fetcher({"AAPL": [_make_item("AAPL SEC probe")]}))
+        stats = run_news_pipeline(db, analyzer, _make_fetcher({"AAPL": [_make_item("AAPL CEO resigns")]}))
+
+        assert stats["haiku_calls"] == 1
+
+    def test_only_the_repeat_is_filtered_from_a_mixed_batch(self, db):
+        _setup_watched_ticker(db, "AAPL")
+        analyzer = _make_analyzer()
+
+        run_news_pipeline(db, analyzer, _make_fetcher({"AAPL": [_make_item("AAPL SEC probe")]}))
+        stats = run_news_pipeline(
+            db,
+            analyzer,
+            _make_fetcher({"AAPL": [_make_item("AAPL SEC probe"), _make_item("AAPL CEO resigns")]}),
+        )
+
+        assert stats["haiku_calls"] == 1
+
+
+class TestPacing:
+    def test_pace_floor_blocks_the_run(self, db, monkeypatch):
+        """When the day's proportional allowance is spent, stop for today."""
+        _setup_watched_ticker(db, "AAPL")
+        monkeypatch.setattr(db, "paced_allowance", lambda *a, **k: 0)
+
+        stats = run_news_pipeline(db, _make_analyzer(), _make_fetcher({"AAPL": [_make_item("AAPL lawsuit")]}))
+
+        assert stats["haiku_calls"] == 0
+
+    def test_allowance_caps_calls_within_one_run(self, db, monkeypatch):
+        for t in ("AAA", "BBB", "CCC"):
+            _setup_watched_ticker(db, t)
+        monkeypatch.setattr(db, "paced_allowance", lambda *a, **k: 2)
+
+        news = {t: [_make_item(f"{t} lawsuit")] for t in ("AAA", "BBB", "CCC")}
+        stats = run_news_pipeline(db, _make_analyzer(), _make_fetcher(news))
+
+        assert stats["haiku_calls"] == 2
