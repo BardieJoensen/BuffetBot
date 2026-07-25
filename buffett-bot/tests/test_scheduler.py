@@ -13,6 +13,7 @@ Covers:
 External dependencies (yfinance, Anthropic API, Alpaca) are always mocked.
 """
 
+import logging
 import sys
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
@@ -836,6 +837,50 @@ class TestDailySnapshot:
         ]
         return account
 
+    def _mock_account_with_quarantine(self):
+        """One tradable holding plus one delisted holding worth 100."""
+        from datetime import datetime, timezone
+
+        from src.accounts.base import AccountState, PositionState
+
+        account = MagicMock()
+        account.account_id = "alpaca_paper"
+        account.get_state.return_value = AccountState(
+            account_id="alpaca_paper",
+            currency="USD",
+            equity=900.0,  # already corrected by the accounts layer
+            cash=400.0,
+            buying_power=1600.0,
+            invested_value=500.0,
+            invested_pct=500.0 / 900.0,
+            as_of=datetime.now(timezone.utc),
+            gross_equity=1000.0,
+            untradable_value=100.0,
+        )
+        account.get_positions.return_value = [
+            PositionState(
+                symbol="AAPL",
+                shares=2.0,
+                avg_cost=100.0,
+                price=110.0,
+                market_value=220.0,
+                unrealized_pl=20.0,
+                unrealized_pl_pct=0.10,
+            ),
+            PositionState(
+                symbol="AL",
+                shares=2.0,
+                avg_cost=50.0,
+                price=50.0,
+                market_value=100.0,
+                unrealized_pl=0.0,
+                unrealized_pl_pct=0.0,
+                tradable=False,
+                asset_status="inactive",
+            ),
+        ]
+        return account
+
     def _mock_regime(self):
         regime = MagicMock()
         regime.regime = "fair_value"
@@ -873,6 +918,8 @@ class TestDailySnapshot:
                 "unrealized_pl": 20.0,
                 "unrealized_pl_pct": 0.10,
                 "tier_at_entry": None,
+                "tradable": True,
+                "asset_status": None,
             }
         ]
 
@@ -929,6 +976,26 @@ class TestDailySnapshot:
 
         assert db.get_snapshots("alpaca_paper") == []
 
+    def test_persists_quarantine_columns(self, tmp_path):
+        from scripts.scheduler import daily_snapshot
+
+        db = Database(tmp_path / "test.db")
+        account = self._mock_account_with_quarantine()
+
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.accounts.get_accounts", return_value=[account]),
+            patch("src.fx.usd_to_dkk", return_value=7000.0),
+            patch("src.bubble_detector.classify_market_regime", return_value=self._mock_regime()),
+            patch("src.notifications.NotificationManager"),
+        ):
+            daily_snapshot()
+
+        snap = db.get_snapshots("alpaca_paper")[0]
+        assert snap["equity"] == 900.0
+        assert snap["gross_equity"] == 1000.0
+        assert snap["untradable_value"] == 100.0
+
     def test_snapshot_failure_for_one_account_does_not_block_regime(self, tmp_path):
         from scripts.scheduler import daily_snapshot
 
@@ -948,6 +1015,121 @@ class TestDailySnapshot:
             conn.row_factory = __import__("sqlite3").Row
             rows = conn.execute("SELECT * FROM regime_log").fetchall()
         assert len(rows) == 1
+
+
+class TestQuarantineReporting:
+    """
+    The quarantine condition persists until a human resolves it, so the alert
+    has to repeat (or it gets forgotten) without becoming daily noise.
+    """
+
+    def _run(self, db, account, notifier):
+        from scripts.scheduler import daily_snapshot
+
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.accounts.get_accounts", return_value=[account]),
+            patch("src.fx.usd_to_dkk", return_value=7000.0),
+            patch(
+                "src.bubble_detector.classify_market_regime",
+                return_value=TestDailySnapshot()._mock_regime(),
+            ),
+            patch("src.notifications.NotificationManager", return_value=notifier),
+        ):
+            daily_snapshot()
+
+    def test_alerts_on_first_detection(self, tmp_path):
+        db = Database(tmp_path / "test.db")
+        notifier = MagicMock()
+        self._run(db, TestDailySnapshot()._mock_account_with_quarantine(), notifier)
+
+        notifier.send_alert.assert_called_once()
+        channel, message = notifier.send_alert.call_args[0]
+        assert channel == "QUARANTINE"
+        assert "AL" in message
+        assert len(db.get_quarantined("alpaca_paper")) == 1
+
+    def test_does_not_realert_within_window(self, tmp_path):
+        db = Database(tmp_path / "test.db")
+        notifier = MagicMock()
+        account = TestDailySnapshot()._mock_account_with_quarantine()
+
+        self._run(db, account, notifier)
+        self._run(db, account, notifier)
+
+        assert notifier.send_alert.call_count == 1
+
+    def test_realerts_after_window(self, tmp_path):
+        from src.database import _open
+
+        db = Database(tmp_path / "test.db")
+        notifier = MagicMock()
+        account = TestDailySnapshot()._mock_account_with_quarantine()
+
+        self._run(db, account, notifier)
+        with _open(db.path) as conn:
+            conn.execute("UPDATE quarantined_positions SET last_alerted = datetime('now', '-30 days')")
+        self._run(db, account, notifier)
+
+        assert notifier.send_alert.call_count == 2
+
+    def test_retries_when_notification_fails(self, tmp_path):
+        """A failed send must not stamp the clock, or the alert is lost."""
+        db = Database(tmp_path / "test.db")
+        notifier = MagicMock()
+        notifier.send_alert.side_effect = RuntimeError("discord down")
+        account = TestDailySnapshot()._mock_account_with_quarantine()
+
+        self._run(db, account, notifier)
+        notifier.send_alert.side_effect = None
+        self._run(db, account, notifier)
+
+        assert notifier.send_alert.call_count == 2
+
+    def test_notification_failure_does_not_block_snapshot(self, tmp_path):
+        db = Database(tmp_path / "test.db")
+        notifier = MagicMock()
+        notifier.send_alert.side_effect = RuntimeError("discord down")
+
+        self._run(db, TestDailySnapshot()._mock_account_with_quarantine(), notifier)
+
+        assert len(db.get_snapshots("alpaca_paper")) == 1
+
+    def test_resolves_when_position_disappears(self, tmp_path):
+        db = Database(tmp_path / "test.db")
+        notifier = MagicMock()
+
+        self._run(db, TestDailySnapshot()._mock_account_with_quarantine(), notifier)
+        # Next day the stuck position is gone.
+        self._run(db, TestDailySnapshot()._mock_account(), notifier)
+
+        assert db.get_quarantined("alpaca_paper") == []
+        assert len(db.get_quarantined("alpaca_paper", include_resolved=True)) == 1
+
+    def test_no_alert_when_nothing_quarantined(self, tmp_path):
+        db = Database(tmp_path / "test.db")
+        notifier = MagicMock()
+
+        self._run(db, TestDailySnapshot()._mock_account(), notifier)
+
+        notifier.send_alert.assert_not_called()
+
+    def test_respects_disable_flag(self, tmp_path):
+        from dataclasses import replace
+
+        from src.config import config
+
+        db = Database(tmp_path / "test.db")
+        notifier = MagicMock()
+        account = TestDailySnapshot()._mock_account_with_quarantine()
+
+        # Config is a frozen dataclass — swap the whole object, don't setattr.
+        disabled = replace(config, quarantine_alerts_enabled=False)
+        with patch("scripts.scheduler.config", disabled):
+            self._run(db, account, notifier)
+
+        notifier.send_alert.assert_not_called()
+        assert db.get_quarantined("alpaca_paper") == []
 
 
 # ─── weekly_auto_trade (Phase C: deployment engine) ────────────────────────────
@@ -1102,3 +1284,327 @@ class TestWeeklyAutoTrade:
 
         account.buy.assert_called_once()
         assert account.buy.call_args[0][0] == "NEWCO"
+
+
+# ─── weekly_auto_trade: quarantined holdings ───────────────────────────────
+
+
+class TestWeeklyAutoTradeQuarantine:
+    """
+    A delisted holding must not be sold (the broker rejects it), must not eat a
+    position slot, and must not be priced — but must stay blocked from re-buy.
+    """
+
+    def _quarantined(self, symbol="AL", market_value=7242.03):
+        from src.accounts.base import PositionState
+
+        return PositionState(
+            symbol=symbol,
+            shares=111.4,
+            avg_cost=64.62,
+            price=65.0,
+            market_value=market_value,
+            unrealized_pl=42.03,
+            unrealized_pl_pct=0.0058,
+            tradable=False,
+            asset_status="inactive",
+        )
+
+    def test_is_never_sold_even_when_downgraded_to_c(self, tmp_path, monkeypatch):
+        from scripts.scheduler import weekly_auto_trade
+
+        helper = TestWeeklyAutoTrade()
+        monkeypatch.chdir(tmp_path)
+        helper._write_watchlist(tmp_path, ["NEWCO"])
+
+        db = Database(tmp_path / "test.db")
+        _save_deep_analysis(db, "AL", tier="C")  # would normally be a thesis break
+
+        account = helper._mock_account(
+            equity=50_000.0,
+            cash=42_757.97,
+            buying_power=50_000.0,
+            invested_value=7_242.03,
+            positions=[self._quarantined()],
+        )
+        val = helper._mock_valuation("NEWCO", margin_of_safety=0.30)
+
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.accounts.get_accounts", return_value=[account]),
+            patch("src.paper_trader.PaperTrader.auto_trade_enabled", return_value=True),
+            patch("src.valuation.screen_for_undervalued", return_value=[val]),
+            patch("src.analyzer.CompanyAnalyzer") as MockAnalyzer,
+            patch("yfinance.Ticker"),
+            patch("src.bubble_detector.classify_market_regime") as mock_regime,
+            patch("src.valuation.ValuationAggregator"),
+        ):
+            MockAnalyzer.return_value.quick_screen.return_value = {
+                "worth_analysis": True,
+                "moat_hint": 4,
+                "quality_hint": 4,
+            }
+            mock_regime.return_value.regime = "fair_value"
+            weekly_auto_trade()
+
+        account.sell.assert_not_called()
+
+    def test_is_not_priced(self, tmp_path, monkeypatch):
+        """get_valuation on a delisted ticker fails every week — don't call it."""
+        from scripts.scheduler import weekly_auto_trade
+
+        helper = TestWeeklyAutoTrade()
+        monkeypatch.chdir(tmp_path)
+        helper._write_watchlist(tmp_path, ["NEWCO"])
+
+        db = Database(tmp_path / "test.db")
+        account = helper._mock_account(
+            equity=50_000.0,
+            cash=42_757.97,
+            buying_power=50_000.0,
+            invested_value=7_242.03,
+            positions=[self._quarantined()],
+        )
+        val = helper._mock_valuation("NEWCO", margin_of_safety=0.30)
+
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.accounts.get_accounts", return_value=[account]),
+            patch("src.paper_trader.PaperTrader.auto_trade_enabled", return_value=True),
+            patch("src.valuation.screen_for_undervalued", return_value=[val]),
+            patch("src.analyzer.CompanyAnalyzer") as MockAnalyzer,
+            patch("yfinance.Ticker"),
+            patch("src.bubble_detector.classify_market_regime") as mock_regime,
+            patch("src.valuation.ValuationAggregator") as MockAggregator,
+        ):
+            MockAnalyzer.return_value.quick_screen.return_value = {
+                "worth_analysis": True,
+                "moat_hint": 4,
+                "quality_hint": 4,
+            }
+            mock_regime.return_value.regime = "fair_value"
+            weekly_auto_trade()
+
+        priced = [c[0][0] for c in MockAggregator.return_value.get_valuation.call_args_list]
+        assert "AL" not in priced
+
+    def test_does_not_consume_a_position_slot(self, tmp_path, monkeypatch):
+        """
+        With max_positions=1 and one quarantined holding, a buy must still
+        fire — otherwise the dead position starves deployment forever.
+        """
+        from dataclasses import replace
+
+        from scripts.scheduler import weekly_auto_trade
+        from src.config import config
+
+        helper = TestWeeklyAutoTrade()
+        monkeypatch.chdir(tmp_path)
+        helper._write_watchlist(tmp_path, ["NEWCO"])
+
+        db = Database(tmp_path / "test.db")
+        account = helper._mock_account(
+            equity=50_000.0,
+            cash=42_757.97,
+            buying_power=50_000.0,
+            invested_value=7_242.03,
+            positions=[self._quarantined()],
+        )
+        val = helper._mock_valuation("NEWCO", margin_of_safety=0.30)
+
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.accounts.get_accounts", return_value=[account]),
+            patch("src.paper_trader.PaperTrader.auto_trade_enabled", return_value=True),
+            patch("src.valuation.screen_for_undervalued", return_value=[val]),
+            patch("src.analyzer.CompanyAnalyzer") as MockAnalyzer,
+            patch("yfinance.Ticker"),
+            patch("src.bubble_detector.classify_market_regime") as mock_regime,
+            patch("src.valuation.ValuationAggregator"),
+            patch("scripts.scheduler.config", replace(config, max_positions=1)),
+        ):
+            MockAnalyzer.return_value.quick_screen.return_value = {
+                "worth_analysis": True,
+                "moat_hint": 4,
+                "quality_hint": 4,
+            }
+            mock_regime.return_value.regime = "fair_value"
+            weekly_auto_trade()
+
+        account.buy.assert_called_once()
+        assert account.buy.call_args[0][0] == "NEWCO"
+
+    def test_stays_blocked_from_being_rebought(self, tmp_path, monkeypatch):
+        """
+        Excluded from sizing and slots, but still held — so it must never be
+        re-bought, even if it screens well.
+        """
+        from scripts.scheduler import weekly_auto_trade
+
+        helper = TestWeeklyAutoTrade()
+        monkeypatch.chdir(tmp_path)
+        helper._write_watchlist(tmp_path, ["AL"])
+
+        db = Database(tmp_path / "test.db")
+        account = helper._mock_account(
+            equity=50_000.0,
+            cash=42_757.97,
+            buying_power=50_000.0,
+            invested_value=7_242.03,
+            positions=[self._quarantined()],
+        )
+        val = helper._mock_valuation("AL", margin_of_safety=0.40)
+
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.accounts.get_accounts", return_value=[account]),
+            patch("src.paper_trader.PaperTrader.auto_trade_enabled", return_value=True),
+            patch("src.valuation.screen_for_undervalued", return_value=[val]),
+            patch("src.analyzer.CompanyAnalyzer") as MockAnalyzer,
+            patch("yfinance.Ticker"),
+            patch("src.bubble_detector.classify_market_regime") as mock_regime,
+            patch("src.valuation.ValuationAggregator"),
+        ):
+            MockAnalyzer.return_value.quick_screen.return_value = {
+                "worth_analysis": True,
+                "moat_hint": 5,
+                "quality_hint": 5,
+            }
+            mock_regime.return_value.regime = "fair_value"
+            weekly_auto_trade()
+
+        account.buy.assert_not_called()
+
+
+# ─── daily_health_check ────────────────────────────────────────────────────
+
+
+class TestDailyHealthCheck:
+    """
+    The counterweight to log-and-continue. It must alert on a new problem,
+    go quiet on a repeat, and never let a Discord failure suppress the
+    finding from the logs.
+    """
+
+    def _run(self, db, notifier):
+        from scripts.scheduler import daily_health_check
+
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.notifications.NotificationManager", return_value=notifier),
+        ):
+            daily_health_check()
+
+    def _broken_state(self, db):
+        """A trade with no alpha — one real, detectable fault."""
+        sell_id = db.log_decision(
+            "AD",
+            "sell",
+            tier="B",
+            price=95.0,
+            shares=10.0,
+            notional=950.0,
+            order_id="s",
+            reason="Thesis breaker",
+            regime="fair_value",
+            reasoning_snapshot={},
+        )
+        db.log_decision(
+            "AD",
+            "buy",
+            tier="B",
+            price=100.0,
+            shares=10.0,
+            notional=1000.0,
+            order_id="b",
+            reason="entry",
+            regime="fair_value",
+            reasoning_snapshot={},
+        )
+        db.close_trade("AD", exit_decision_id=sell_id, entry_price=100.0, exit_price=95.0, shares=10.0)
+
+    def test_alerts_on_a_problem(self, tmp_path):
+        db = Database(tmp_path / "test.db")
+        self._broken_state(db)
+        notifier = MagicMock()
+
+        self._run(db, notifier)
+
+        notifier.send_alert.assert_called_once()
+        channel, message = notifier.send_alert.call_args[0]
+        assert channel == "HEALTH"
+        assert "AD" in message
+
+    def test_does_not_realert_an_unchanged_problem(self, tmp_path):
+        db = Database(tmp_path / "test.db")
+        self._broken_state(db)
+        notifier = MagicMock()
+
+        self._run(db, notifier)
+        self._run(db, notifier)
+
+        assert notifier.send_alert.call_count == 1
+
+    def test_realerts_when_a_new_problem_appears(self, tmp_path):
+        db = Database(tmp_path / "test.db")
+        self._broken_state(db)
+        notifier = MagicMock()
+
+        self._run(db, notifier)
+        # A second, different fault must break through the throttle.
+        db.record_quarantine("alpaca_paper", "AL", market_value=7242.03)
+        self._run(db, notifier)
+
+        assert notifier.send_alert.call_count == 2
+
+    def test_retries_after_a_failed_send(self, tmp_path):
+        """A Discord outage must not consume the alert."""
+        db = Database(tmp_path / "test.db")
+        self._broken_state(db)
+        notifier = MagicMock()
+        notifier.send_alert.side_effect = RuntimeError("discord down")
+
+        self._run(db, notifier)
+        notifier.send_alert.side_effect = None
+        self._run(db, notifier)
+
+        assert notifier.send_alert.call_count == 2
+
+    def test_logs_the_digest_even_when_notification_fails(self, tmp_path, caplog):
+        db = Database(tmp_path / "test.db")
+        self._broken_state(db)
+        notifier = MagicMock()
+        notifier.send_alert.side_effect = RuntimeError("discord down")
+
+        with caplog.at_level(logging.INFO):
+            self._run(db, notifier)
+
+        assert "HEALTH CHECK" in caplog.text
+
+    def test_silent_when_healthy(self, tmp_path):
+        db = Database(tmp_path / "test.db")
+        notifier = MagicMock()
+
+        # A brand-new DB has no snapshots, which is itself a WARN — give it one.
+        db.save_snapshot("alpaca_paper", currency="USD", equity=100.0, cash=100.0, positions=[])
+        db.reset_weekly_budgets()
+        for job in ("wednesday_haiku", "friday_sonnet"):
+            db.complete_run(db.start_run(job), stocks_screened=1)
+
+        self._run(db, notifier)
+
+        notifier.send_alert.assert_not_called()
+
+    def test_respects_the_disable_flag(self, tmp_path):
+        from dataclasses import replace
+
+        from src.config import config
+
+        db = Database(tmp_path / "test.db")
+        self._broken_state(db)
+        notifier = MagicMock()
+
+        with patch("scripts.scheduler.config", replace(config, health_checks_enabled=False)):
+            self._run(db, notifier)
+
+        notifier.send_alert.assert_not_called()

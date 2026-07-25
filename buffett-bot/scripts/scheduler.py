@@ -30,6 +30,7 @@ import schedule
 from dotenv import load_dotenv
 
 from src.config import config
+from src.database import BUDGET_CAPS_DEFAULTS
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -233,6 +234,94 @@ def daily_watchlist_check():
         logger.error(f"Daily check failed: {e}")
 
 
+def _quarantine_message(state, quarantined) -> str:
+    """Compose the operator-facing quarantine alert."""
+    lines = [
+        "NON-TRADABLE POSITION QUARANTINED",
+        "",
+        f"{state.account_id} holds a position the broker will not let it trade.",
+        "",
+    ]
+    for p in quarantined:
+        lines.append(
+            f"  {p.symbol}  {p.shares:,.2f} sh @ ${p.price:,.2f} frozen"
+            f"   ${p.market_value:,.2f}   (status: {p.asset_status or 'unknown'})"
+        )
+    lines += [
+        "",
+        "The bot has:",
+        f"  - removed ${state.untradable_value:,.2f} from reported equity "
+        f"(${(state.gross_equity or 0.0):,.2f} -> ${state.equity:,.2f})",
+        "  - excluded it from deployment sizing and the position-slot count",
+        "  - excluded it from the sell engine (the order would be rejected)",
+        "",
+        "This will not resolve itself. Options:",
+        "  1. Ask the broker to remove the position.",
+        "  2. Reset the paper account (destroys trade history).",
+        "  3. Leave it — the bot now ignores it correctly.",
+        "",
+        f"Re-alerting at most every {config.quarantine_realert_days} days while it persists.",
+    ]
+    return "\n".join(lines)
+
+
+def _report_quarantine(db, state, positions) -> None:
+    """
+    Persist and (rate-limited) alert on non-tradable holdings.
+
+    The condition persists until a human resolves it — the position cannot be
+    sold, so it will still be there tomorrow. Alerting daily would train the
+    user to ignore the channel, so the state lives in the DB and re-alerts are
+    throttled to config.quarantine_realert_days.
+    """
+    if not config.quarantine_alerts_enabled:
+        return
+
+    try:
+        # Pass ALL held symbols, not just tradable ones: passing tradable-only
+        # would resolve the quarantine nightly and immediately re-record it.
+        # Skip on an empty list — indistinguishable from a failed broker call.
+        if positions:
+            db.resolve_quarantines(state.account_id, [p.symbol for p in positions])
+
+        quarantined = [p for p in positions if not p.tradable]
+        if not quarantined:
+            return
+
+        logger.warning(
+            "%s: %d quarantined position(s) excluded from equity and sizing: %s",
+            state.account_id,
+            len(quarantined),
+            ", ".join(f"{p.symbol} (${p.market_value:,.0f})" for p in quarantined),
+        )
+
+        due = [
+            p
+            for p in quarantined
+            if db.record_quarantine(
+                state.account_id,
+                p.symbol,
+                shares=p.shares,
+                market_value=p.market_value,
+                asset_status=p.asset_status,
+                realert_days=config.quarantine_realert_days,
+            )
+        ]
+        if not due:
+            return
+
+        from src.notifications import NotificationManager
+
+        NotificationManager().send_alert("QUARANTINE", _quarantine_message(state, quarantined))
+        # Only stamp the clock once the send succeeded, so a failed
+        # notification is retried tomorrow rather than silently swallowed.
+        for p in due:
+            db.mark_quarantine_alerted(state.account_id, p.symbol)
+    except Exception as e:
+        # Never let alerting cost us the snapshot — same posture as _notify_trade.
+        logger.error("Quarantine reporting failed for %s: %s", state.account_id, e)
+
+
 def daily_snapshot():
     """
     Daily 22:00 — append-only account snapshot, once per configured account,
@@ -278,6 +367,8 @@ def daily_snapshot():
                 invested_pct=state.invested_pct,
                 equity_dkk=equity_dkk,
                 positions=[asdict(p) for p in positions],
+                gross_equity=state.gross_equity,
+                untradable_value=state.untradable_value,
             )
             logger.info(
                 "Snapshot saved for %s: equity=%.2f %s (%d positions)",
@@ -286,6 +377,7 @@ def daily_snapshot():
                 state.currency,
                 len(positions),
             )
+            _report_quarantine(db, state, positions)
         except Exception as e:
             logger.error("Snapshot failed for %s: %s", getattr(account, "account_id", "?"), e)
 
@@ -302,6 +394,58 @@ def daily_snapshot():
         logger.info("Regime logged: %s (confidence=%s)", regime.regime, regime.confidence)
     except Exception as e:
         logger.error("Regime logging failed: %s", e)
+
+
+def daily_health_check():
+    """
+    Daily 22:30 — assert the bot's own outputs are sane, and shout if not.
+
+    This is the counterweight to a codebase that logs-and-continues nearly
+    everywhere. Those handlers are correct for an unattended scheduler, but
+    they meant a delisted holding inflated equity for five months, per-trade
+    alpha was wrong or missing, and the news pipeline made zero LLM calls —
+    all while every job reported success. None of those raised; they produced
+    plausible values. So this checks the values.
+
+    Free (SQL only). Alerts on Discord, throttled: a new problem speaks
+    immediately, a persisting one repeats weekly.
+    """
+    if not config.health_checks_enabled:
+        return
+    logger.info("Daily health check...")
+
+    from src.database import Database
+    from src.health import alert_payload, findings_fingerprint, format_digest, run_health_checks
+
+    try:
+        db = Database()
+        findings = run_health_checks(db)
+    except Exception as e:
+        logger.error("Health check run failed: %s", e)
+        return
+
+    # Always log the full digest — the Discord throttle must never be the
+    # reason a problem is invisible.
+    logger.info("Health digest:\n%s", format_digest(findings))
+
+    payload = alert_payload(findings)
+    if payload is None:
+        logger.info("Health check: all clear")
+        return
+
+    fingerprint = findings_fingerprint(findings)
+    if not db.should_alert("health", fingerprint, realert_days=config.health_realert_days):
+        logger.info("Health issues unchanged and within the re-alert window — not notifying")
+        return
+
+    try:
+        from src.notifications import NotificationManager
+
+        NotificationManager().send_alert("HEALTH", payload)
+        # Only after a successful send, so a Discord outage retries tomorrow.
+        db.mark_alerted("health", fingerprint)
+    except Exception as e:
+        logger.error("Health alert notification failed (will retry tomorrow): %s", e)
 
 
 def weekly_auto_trade():
@@ -413,12 +557,28 @@ def weekly_auto_trade():
         for account in accounts:
             state = account.get_state()
             positions = account.get_positions()
+            # Deliberately includes quarantined symbols: they're excluded from
+            # sizing and slots, but must stay blocked from being re-bought.
             held_symbols = frozenset(p.symbol for p in positions)
+
+            quarantined = [p for p in positions if not p.tradable]
+            if quarantined:
+                logger.warning(
+                    "%s: %d quarantined position(s) excluded from sizing and sells: %s",
+                    account.account_id,
+                    len(quarantined),
+                    ", ".join(f"{p.symbol} (${p.market_value:,.0f})" for p in quarantined),
+                )
 
             # ── Sells first: thesis breaks always; fair-value positions only
             # to rotate into something clearly better or trim an overweight.
             held: list[HeldPosition] = []
             for pos in positions:
+                # Skip quarantined holdings before pricing: they can't be sold,
+                # and get_valuation on a delisted ticker fails every week,
+                # logging a warning that trains you to ignore real ones.
+                if not pos.tradable:
+                    continue
                 da = db.get_latest_deep_analysis(pos.symbol)
                 tier = da.get("tier") if da else None
                 mos = None
@@ -459,6 +619,18 @@ def weekly_auto_trade():
                             date.today().isoformat(),
                             symbol=config.benchmark_symbol,
                         )
+                    if bench is None:
+                        # The trade still journals, but without a benchmark
+                        # there is no alpha — and nothing retries on its own.
+                        # Say so loudly; scripts.backfill_trade_alpha repairs it.
+                        logger.warning(
+                            "No benchmark return for %s over [%s..%s] — trade will have no alpha. "
+                            "Repair with: python -m scripts.backfill_trade_alpha --ticker %s --apply",
+                            sell.symbol,
+                            (open_buy or {}).get("decided_at", "?"),
+                            date.today().isoformat(),
+                            sell.symbol,
+                        )
                     db.close_trade(
                         sell.symbol,
                         exit_decision_id=exit_id,
@@ -474,7 +646,10 @@ def weekly_auto_trade():
             # Re-fetch state — cash/buying_power moved if anything sold.
             if sold_symbols:
                 state = account.get_state()
-            current_position_count = len(positions) - len(sold_symbols)
+            # Quarantined holdings must not consume one of max_positions —
+            # they can never be sold, so counting them would permanently
+            # starve deployment by one slot.
+            current_position_count = sum(1 for p in positions if p.tradable) - len(sold_symbols)
 
             plan = plan_buys(
                 state,
@@ -678,7 +853,12 @@ def monday_maintenance():
 
             trader = PaperTrader()
             if trader.is_enabled():
-                positions = trader.get_positions()
+                all_positions = trader.get_positions()
+                # Quarantined holdings stay out of the mirror: it drives the
+                # Friday Sonnet queue via get_portfolio_tickers_needing_analysis,
+                # so leaving a delisted name here burns a Sonnet call every week
+                # analysing a company that no longer trades.
+                positions = [p for p in all_positions if p.get("tradable", True)]
                 for pos in positions:
                     da = db.get_latest_deep_analysis(pos["symbol"])
                     tier_at_entry = da.get("tier", "C") if da else "C"
@@ -691,7 +871,7 @@ def monday_maintenance():
                         shares=pos.get("qty"),
                     )
                 # Keep the mirror true: drop rows for positions no longer held.
-                # Skipped when the API returned nothing — an empty response is
+                # Skipped when nothing tradable came back — an empty response is
                 # indistinguishable from a failed call, and wiping the mirror
                 # on a transient error is worse than a week of staleness.
                 if positions:
@@ -1018,15 +1198,16 @@ def run_scheduler():
     logger.info("  - Daily check:         Every day at 08:00      (yfinance, free)")
     logger.info("  - Daily news monitor:  Every day at 20:00      (Haiku+Sonnet, ~$0.30/wk max)")
     logger.info("  - Daily snapshot:      Every day at 22:00      (yfinance, free)")
+    logger.info("  - Daily health check:  Every day at 22:30      (SQL only, free)")
     logger.info(
         f"  - Monthly briefing:    1st of month at 09:00   (Sonnet ~$0.50) [{'ON' if auto_briefing else 'OFF'}]"
     )
     logger.info("")
+    # Read the caps rather than restating them: hardcoded copies drift the
+    # moment a cap is tuned, and a banner that lies is worse than no banner.
     logger.info("BUDGET CAPS (weekly, reset Monday 02:00):")
-    logger.info("  weekly_haiku_screen:    50 calls/week ($0.05 max)")
-    logger.info("  weekly_sonnet_analysis: 10 calls/week ($0.25 max)")
-    logger.info("  weekly_news_haiku:      50 calls/week ($0.05 max)")
-    logger.info("  weekly_news_sonnet:     10 calls/week ($0.25 max)")
+    for cap_type, max_calls in BUDGET_CAPS_DEFAULTS:
+        logger.info("  %-24s %d calls/week", cap_type + ":", max_calls)
     logger.info("")
     logger.info("KILL SWITCHES (in .env):")
     logger.info(f"  AUTO_TRADE_ENABLED={auto_trade}        — disable weekly auto-trading")
@@ -1053,6 +1234,10 @@ def run_scheduler():
 
     # Phase B: account snapshot + regime log, after market close (DB-based)
     schedule.every().day.at("22:00").do(daily_snapshot)
+
+    # Invariant checks over the bot's own state. Runs after the snapshot so it
+    # sees the day's data. Free — no LLM, no broker calls.
+    schedule.every().day.at("22:30").do(daily_health_check)
 
     # Paid operations (have their own kill switches)
     schedule.every().friday.at("18:00").do(weekly_auto_trade)
