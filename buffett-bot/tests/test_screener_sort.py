@@ -128,3 +128,74 @@ class TestScoreSanitisation:
         """
         with pytest.raises(ValueError, match="NaN"):
             round(float("nan"))
+
+
+class TestScoreStockNaNHandling:
+    """
+    Root cause of the crash chain.
+
+    score_stock skipped missing metrics with `if value is None`, but NaN is not
+    None — it passed straight into the arithmetic and poisoned total_score.
+    _sanitize_numeric_fields could not prevent it: that runs over a fixed
+    allowlist of *cached* fields, while seven scored metrics (roic,
+    revenue_cagr, roe_consistency, fcf_consistency, margin_stability,
+    earnings_consistency, net_share_change) are computed with numpy over
+    historical financials and never touch the cache. Sparse history yields NaN
+    readily, so any thinly-covered stock could take down the whole screen.
+    """
+
+    @pytest.fixture
+    def criteria(self):
+        from src.screener import load_criteria_from_yaml
+
+        return load_criteria_from_yaml()
+
+    def _score(self, criteria, data):
+        from src.screener import score_stock
+
+        return score_stock(data, criteria, sector="Technology", cap_category="large")
+
+    def test_nan_metric_does_not_poison_the_score(self, criteria):
+        score, confidence = self._score(criteria, {"roe": 0.20, "roic": float("nan")})
+        assert math.isfinite(score)
+        assert math.isfinite(confidence)
+
+    def test_nan_metric_is_treated_as_missing(self, criteria):
+        """A NaN metric is absent data, not a zero score — same as None."""
+        with_nan = self._score(criteria, {"roe": 0.20, "roic": float("nan")})
+        without = self._score(criteria, {"roe": 0.20})
+        assert with_nan == without
+
+    def test_infinite_metric_is_also_skipped(self, criteria):
+        score, _ = self._score(criteria, {"roe": 0.20, "pe_ratio": float("inf")})
+        assert math.isfinite(score)
+
+    def test_string_infinity_is_skipped(self, criteria):
+        """The original ALHC bug: yfinance returning the literal string."""
+        score, _ = self._score(criteria, {"roe": 0.20, "pe_ratio": "Infinity"})
+        assert math.isfinite(score)
+
+    def test_every_trend_metric_survives_nan(self, criteria):
+        """
+        The seven metrics outside the cache-sanitisation allowlist. Any one of
+        them was individually capable of aborting the run.
+        """
+        trend_metrics = [
+            "roic",
+            "revenue_cagr",
+            "roe_consistency",
+            "fcf_consistency",
+            "margin_stability",
+            "earnings_consistency",
+            "net_share_change",
+        ]
+        for metric in trend_metrics:
+            score, confidence = self._score(criteria, {"roe": 0.20, metric: float("nan")})
+            assert math.isfinite(score), f"{metric} poisoned the score"
+            assert math.isfinite(confidence), f"{metric} poisoned the confidence"
+
+    def test_all_metrics_nan_yields_zero_not_nan(self, criteria):
+        data = {m: float("nan") for m in ("roe", "roic", "pe_ratio", "operating_margin")}
+        score, confidence = self._score(criteria, data)
+        assert score == 0.0
+        assert confidence == 0.0

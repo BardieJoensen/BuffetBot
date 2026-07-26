@@ -255,6 +255,18 @@ def score_stock(
         value = data.get(metric_name)
         if value is None:
             continue
+        # NaN is not None, and used to sail straight through this guard into
+        # the arithmetic below, poisoning total_score and every downstream
+        # consumer of it. _sanitize_numeric_fields can't prevent it: that runs
+        # over a fixed allowlist of *cached* fields, while the trend metrics
+        # (roic, revenue_cagr, roe_consistency, fcf_consistency,
+        # margin_stability, earnings_consistency, net_share_change) are
+        # computed with numpy over historical financials and never touch it —
+        # sparse history yields NaN readily. Semantically a NaN metric is
+        # missing data, so treat it exactly like None.
+        value = _safe_num(value)
+        if value is None:
+            continue
 
         # For debt_equity, yfinance returns as percentage - normalize
         if metric_name == "debt_equity" and value > 5:
