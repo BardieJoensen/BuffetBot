@@ -805,86 +805,99 @@ def monday_maintenance():
         db.reset_weekly_budgets()
         logger.info("Weekly budget caps reset")
 
-        # 2. Refresh fundamentals for all universe stocks
-        universe = db.get_universe()
-        tickers = [s["ticker"] for s in universe]
-        conviction_tickers = {s["ticker"] for s in universe if s.get("source") == "conviction"}
+        # 2. Refresh fundamentals + quality scores
+        try:
+            universe = db.get_universe()
+            tickers = [s["ticker"] for s in universe]
+            conviction_tickers = {s["ticker"] for s in universe if s.get("source") == "conviction"}
 
-        if tickers:
-            screener = StockScreener()
-            criteria = load_criteria_from_yaml()
-            sp500_tickers = {s["ticker"] for s in universe if s.get("source") == "sp500_filter"}
-            screened = screener.screen_tickers(
-                tickers, criteria, force_include=conviction_tickers, force_large_cap=sp500_tickers
-            )
-
-            today = _date.today().isoformat()
-            source_map = {s["ticker"]: s.get("source", "finviz_screen") for s in universe}
-            for stock in screened:
-                db.save_fundamentals(stock.symbol, stock.to_dict(), as_of_date=today)
-                db.upsert_universe_stock(
-                    stock.symbol,
-                    company_name=stock.name,
-                    sector=stock.sector,
-                    market_cap=stock.market_cap,
-                    cap_category=stock.cap_category,
-                    source=source_map.get(stock.symbol, "finviz_screen"),
+            if tickers:
+                screener = StockScreener()
+                criteria = load_criteria_from_yaml()
+                sp500_tickers = {s["ticker"] for s in universe if s.get("source") == "sp500_filter"}
+                screened = screener.screen_tickers(
+                    tickers, criteria, force_include=conviction_tickers, force_large_cap=sp500_tickers
                 )
-            logger.info("Refreshed fundamentals for %d/%d universe stocks", len(screened), len(tickers))
 
-            # Recompute quality scores from fresh data
-            compat = [{**s.to_dict(), "ticker": s.symbol} for s in screened]
-            scores = compute_quality_scores(compat)
+                today = _date.today().isoformat()
+                source_map = {s["ticker"]: s.get("source", "finviz_screen") for s in universe}
+                for stock in screened:
+                    db.save_fundamentals(stock.symbol, stock.to_dict(), as_of_date=today)
+                    db.upsert_universe_stock(
+                        stock.symbol,
+                        company_name=stock.name,
+                        sector=stock.sector,
+                        market_cap=stock.market_cap,
+                        cap_category=stock.cap_category,
+                        source=source_map.get(stock.symbol, "finviz_screen"),
+                    )
+                logger.info("Refreshed fundamentals for %d/%d universe stocks", len(screened), len(tickers))
 
-            # Phase 3: layer in an insider-buying tilt for the top candidates
-            # only (Finnhub free tier is rate-limited; cluster buying matters
-            # most among the names we'd actually consider). Others keep None and
-            # are unaffected by the new component.
-            try:
-                from src.insider import DEFAULT_FETCH_LIMIT, fetch_insider_signals
+                # Recompute quality scores from fresh data
+                compat = [{**s.to_dict(), "ticker": s.symbol} for s in screened]
+                scores = compute_quality_scores(compat)
 
-                top_syms = [
-                    qs.ticker
-                    for qs in sorted(scores.values(), key=lambda q: q.score, reverse=True)[:DEFAULT_FETCH_LIMIT]
-                ]
-                signals = fetch_insider_signals(top_syms)
-                if signals:
-                    by_ticker = {d["ticker"]: d for d in compat}
-                    for sym, sig in signals.items():
-                        if sym in by_ticker:
-                            by_ticker[sym]["insider_buying"] = sig
-                    scores = compute_quality_scores(compat)  # recompute with tilt
-                    logger.info("Applied insider-buying tilt to %d stocks", len(signals))
-            except Exception as e:
-                logger.warning(f"Insider-buying tilt skipped: {e}")
+                # Phase 3: layer in an insider-buying tilt for the top candidates
+                # only (Finnhub free tier is rate-limited; cluster buying matters
+                # most among the names we'd actually consider). Others keep None and
+                # are unaffected by the new component.
+                try:
+                    from src.insider import DEFAULT_FETCH_LIMIT, fetch_insider_signals
 
-            for sym, qs in scores.items():
-                db.update_quality_score(sym, qs.score)
-            logger.info("Recomputed quality scores for %d stocks", len(scores))
+                    top_syms = [
+                        qs.ticker
+                        for qs in sorted(scores.values(), key=lambda q: q.score, reverse=True)[:DEFAULT_FETCH_LIMIT]
+                    ]
+                    signals = fetch_insider_signals(top_syms)
+                    if signals:
+                        by_ticker = {d["ticker"]: d for d in compat}
+                        for sym, sig in signals.items():
+                            if sym in by_ticker:
+                                by_ticker[sym]["insider_buying"] = sig
+                        scores = compute_quality_scores(compat)  # recompute with tilt
+                        logger.info("Applied insider-buying tilt to %d stocks", len(signals))
+                except Exception as e:
+                    logger.warning(f"Insider-buying tilt skipped: {e}")
+
+                for sym, qs in scores.items():
+                    db.update_quality_score(sym, qs.score)
+                logger.info("Recomputed quality scores for %d stocks", len(scores))
+
+        except Exception as exc:
+            logger.error("Monday maintenance step failed (%s): %s", "2. Refresh fundamentals + quality scores", exc)
+            # Isolated so a failure here cannot skip the remaining steps. It
+            # previously could, and did: this step started throwing on
+            # 2026-07-06 and took the position mirror and price-alert refresh
+            # down with it for three consecutive weeks, unnoticed.
 
         # 3. Update price alert last_price / gap_pct
-        alerts = db.get_price_alerts()
-        updated = 0
-        for alert in alerts:
-            symbol = alert["ticker"]
-            target_entry = alert.get("target_entry")
-            try:
-                current_price = yf.Ticker(symbol).fast_info.last_price
-                if current_price and target_entry:
-                    gap_pct = (current_price - target_entry) / target_entry
-                    db.upsert_price_alert(
-                        symbol,
-                        tier=alert["tier"],
-                        target_entry=target_entry,
-                        staged_entries=alert.get("staged_entries"),
-                        last_price=current_price,
-                        gap_pct=gap_pct,
-                        alert_triggered=bool(alert.get("alert_triggered")),
-                    )
-                    updated += 1
-            except Exception as exc:
-                logger.debug("Price update failed for %s: %s", symbol, exc)
-        logger.info("Updated %d/%d price alerts", updated, len(alerts))
+        try:
+            alerts = db.get_price_alerts()
+            updated = 0
+            for alert in alerts:
+                symbol = alert["ticker"]
+                target_entry = alert.get("target_entry")
+                try:
+                    current_price = yf.Ticker(symbol).fast_info.last_price
+                    if current_price and target_entry:
+                        gap_pct = (current_price - target_entry) / target_entry
+                        db.upsert_price_alert(
+                            symbol,
+                            tier=alert["tier"],
+                            target_entry=target_entry,
+                            staged_entries=alert.get("staged_entries"),
+                            last_price=current_price,
+                            gap_pct=gap_pct,
+                            alert_triggered=bool(alert.get("alert_triggered")),
+                        )
+                        updated += 1
+                except Exception as exc:
+                    logger.debug("Price update failed for %s: %s", symbol, exc)
+            logger.info("Updated %d/%d price alerts", updated, len(alerts))
+
+        except Exception as exc:
+            logger.error("Monday maintenance step failed (%s): %s", "3. Update price alert last_price / gap_pct", exc)
+            # position mirror and price alerts silently went a month stale.
 
         # 4. Sync paper positions from Alpaca
         try:

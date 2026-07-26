@@ -15,7 +15,7 @@ The "fires" cases reconstruct the real failures:
 """
 
 import json
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import pytest
 
@@ -29,6 +29,7 @@ from src.health import (
     alert_payload,
     check_budget_exhaustion,
     check_budget_reset,
+    check_data_freshness,
     check_degenerate_analyses,
     check_frozen_position_marks,
     check_news_pipeline_effectiveness,
@@ -360,3 +361,51 @@ def db(tmp_path):
     from src.database import Database
 
     return Database(db_path=tmp_path / "test.db")
+
+
+class TestDataFreshness:
+    """
+    The gap that let monday_maintenance fail for a month. check_scheduled_jobs
+    reads run_log, and monday_maintenance writes nothing there — so the only
+    evidence it ran is the data it leaves behind.
+    """
+
+    def _universe(self, db):
+        db.upsert_universe_stock("AAPL", source="conviction", quality_score=90.0)
+
+    def test_fires_on_stale_fundamentals(self, db):
+        self._universe(db)
+        db.save_fundamentals("AAPL", {"price": 100.0}, as_of_date="2026-01-01")
+        finding = check_data_freshness(db)
+        assert finding.severity == FAIL
+        assert "fundamentals" in finding.message
+
+    def test_fires_on_a_stale_position_mirror(self, db):
+        self._universe(db)
+        db.save_fundamentals("AAPL", {"price": 100.0}, as_of_date=date.today().isoformat())
+        db.upsert_paper_position("AGM", tier_at_entry="B")
+        with _open(db.path) as conn:
+            conn.execute("UPDATE paper_positions SET last_synced = datetime('now', '-30 days')")
+        finding = check_data_freshness(db)
+        assert finding.severity == FAIL
+        assert "position mirror" in finding.message
+
+    def test_quiet_when_both_are_current(self, db):
+        self._universe(db)
+        db.save_fundamentals("AAPL", {"price": 100.0}, as_of_date=date.today().isoformat())
+        db.upsert_paper_position("AGM", tier_at_entry="B")
+        assert check_data_freshness(db).severity == OK
+
+    def test_fires_when_a_seeded_universe_has_no_fundamentals(self, db):
+        self._universe(db)
+        assert check_data_freshness(db).severity == FAIL
+
+    def test_quiet_on_an_unseeded_database(self, db):
+        """A fresh install has nothing to refresh — absence isn't a fault."""
+        assert check_data_freshness(db).severity == OK
+
+    def test_empty_mirror_is_not_stale(self, db):
+        """No positions is a valid state, not a failed sync."""
+        self._universe(db)
+        db.save_fundamentals("AAPL", {"price": 100.0}, as_of_date=date.today().isoformat())
+        assert check_data_freshness(db).severity == OK

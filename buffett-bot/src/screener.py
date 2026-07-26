@@ -922,6 +922,19 @@ class StockScreener:
 
             cap_cat = get_cap_category(market_cap)
             stock_score, score_confidence = score_stock(data, criteria, sector, cap_category=cap_cat)
+            # yfinance occasionally yields values that survive field-level
+            # sanitisation but produce NaN once combined (a NaN metric weighted
+            # into the total, a zero-weight confidence division). A NaN score
+            # is not a low score — it is missing data — so treat it as zero
+            # rather than letting it travel.
+            if not math.isfinite(stock_score) or not math.isfinite(score_confidence):
+                logger.warning(
+                    "%s produced a non-finite score (score=%r confidence=%r) — treating as unscored",
+                    symbol,
+                    stock_score,
+                    score_confidence,
+                )
+                stock_score, score_confidence = 0.0, 0.0
 
             de = data.get("debt_equity")
 
@@ -972,13 +985,25 @@ class StockScreener:
             seed = random.randint(0, 2**31)  # nosec B311 — tiebreaker, not security
             logger.info(f"Sort tiebreaker seed: {seed} (for reproducibility)")
             rng = random.Random(seed)  # nosec B311
-            candidates.sort(
-                key=lambda s: (
-                    -(round(s.effective_score * 2) / 2),
-                    -s.market_cap,
-                    rng.random(),
-                )
-            )
+
+            def _sort_key(s):
+                """
+                Rank by banded effective score, with non-finite values sorted
+                last instead of raising.
+
+                round() raises ValueError on NaN, so a single stock with a
+                non-finite score used to abort the entire screen — and with it
+                the whole of monday_maintenance, since one try/except wrapped
+                every step. That took fundamentals, price alerts and the
+                position mirror a month stale before anyone noticed. One bad
+                row must never be able to discard the other 1,300.
+                """
+                score = s.effective_score
+                band = -(round(score * 2) / 2) if math.isfinite(score) else math.inf
+                cap = -s.market_cap if math.isfinite(s.market_cap or math.nan) else math.inf
+                return (band, cap, rng.random())
+
+            candidates.sort(key=_sort_key)
             top_n = criteria.top_n
             if len(candidates) > top_n:
                 logger.info(f"Keeping top {top_n} by score (from {len(candidates)})")

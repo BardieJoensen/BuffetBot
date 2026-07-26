@@ -282,6 +282,52 @@ def check_scheduled_jobs(db, *, max_age_days: int = 9) -> HealthFinding:
     return _ok(code, "Weekly jobs running on schedule.")
 
 
+def check_data_freshness(db, *, max_age_days: int = 10) -> HealthFinding:
+    """
+    Monday's refresh writes fundamentals and syncs the Alpaca position mirror.
+    Stale data here means monday_maintenance is failing partway through.
+
+    This check exists because check_scheduled_jobs could not see it:
+    monday_maintenance writes nothing to run_log, so the only evidence it ever
+    ran is the data it leaves behind. A NaN score aborted its fundamentals step
+    from 2026-07-06, and because one try/except wrapped all five steps, the
+    position mirror and price alerts went stale with it — for three weeks,
+    while every other job reported success and the budget reset (step 1, which
+    runs before the failure) kept looking healthy.
+    """
+    code = "data_freshness"
+    stale = []
+
+    fundamentals_date = db.latest_fundamentals_date()
+    if fundamentals_date is None:
+        # No universe means the bot hasn't been seeded yet — nothing to refresh,
+        # so absence is expected rather than a fault.
+        if db.get_universe():
+            stale.append("fundamentals (never written)")
+    else:
+        ts = _parse_ts(fundamentals_date)
+        if ts and (datetime.now() - ts).days > max_age_days:
+            stale.append(f"fundamentals ({(datetime.now() - ts).days}d old)")
+
+    positions = db.get_paper_positions()
+    if positions:
+        synced = [_parse_ts(p.get("last_synced")) for p in positions]
+        newest = max((s for s in synced if s), default=None)
+        if newest is None:
+            stale.append("position mirror (never synced)")
+        elif (datetime.now() - newest).days > max_age_days:
+            stale.append(f"position mirror ({(datetime.now() - newest).days}d old)")
+
+    if stale:
+        return HealthFinding(
+            code,
+            FAIL,
+            f"Monday maintenance is not completing — stale: {', '.join(stale)}. "
+            f"Downstream screening and the Sonnet queue are running on old data.",
+        )
+    return _ok(code, "Fundamentals and position mirror are current.")
+
+
 def check_budget_exhaustion(db) -> HealthFinding:
     """
     A cap pinned at 100% isn't fatal, but sustained exhaustion means the pacing
@@ -332,6 +378,7 @@ ALL_CHECKS: tuple[Callable, ...] = (
     check_news_pipeline_effectiveness,
     check_degenerate_analyses,
     check_scheduled_jobs,
+    check_data_freshness,
     check_budget_exhaustion,
 )
 

@@ -1223,6 +1223,17 @@ class Database:
                 ),
             )
 
+    def latest_fundamentals_date(self) -> Optional[str]:
+        """
+        Most recent as-of date across all fundamentals.
+
+        Monday's refresh is the only writer, and that job leaves no run_log
+        entry — so this is the only evidence available that it completed.
+        """
+        with _open(self.path) as conn:
+            row = conn.execute("SELECT MAX(date) AS d FROM fundamentals").fetchone()
+            return row["d"] if row else None
+
     def get_paper_positions(self) -> list[dict]:
         with _open(self.path) as conn:
             rows = conn.execute("SELECT * FROM paper_positions ORDER BY ticker").fetchall()
