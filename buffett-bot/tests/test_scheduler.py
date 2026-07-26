@@ -1238,7 +1238,10 @@ class TestWeeklyAutoTrade:
         self._write_watchlist(tmp_path, ["NEWCO"])
 
         db = Database(tmp_path / "test.db")
-        _save_deep_analysis(db, "OLDCO", tier="C")  # downgraded -> thesis break
+        _save_deep_analysis(db, "OLDCO", tier="C")
+        # A real downgrade, not a first-ever analysis: only a name that fell
+        # from a better tier is a thesis breaker.
+        db.log_tier_change("OLDCO", new_tier="C", old_tier="B", trigger="scheduled")
 
         held = PositionState(
             symbol="OLDCO",
@@ -1608,3 +1611,57 @@ class TestDailyHealthCheck:
             self._run(db, notifier)
 
         notifier.send_alert.assert_not_called()
+
+
+# ─── Tier-change notifications ─────────────────────────────────────────────
+
+
+class TestNotifyTierChange:
+    """
+    Every alert the user ever received was a downgrade. Two causes: the news
+    pipeline was the only notifying path and it only watches S/A/B, and the
+    scheduled batch logged tier changes silently. Combined with C being an
+    absorbing state, an upgrade was both nearly impossible and invisible.
+    """
+
+    def _notify(self, old, new, reason=""):
+        from scripts.scheduler import _notify_tier_change
+
+        notifier = MagicMock()
+        with patch("src.notifications.NotificationManager", return_value=notifier):
+            _notify_tier_change("AAPL", old, new, reason)
+        return notifier
+
+    def test_announces_an_upgrade(self):
+        notifier = self._notify("C", "B")
+        notifier.send_alert.assert_called_once()
+        ticker, message = notifier.send_alert.call_args[0]
+        assert ticker == "AAPL"
+        assert "UPGRADE" in message
+        assert "C → B" in message
+
+    def test_announces_a_downgrade(self):
+        assert "DOWNGRADE" in self._notify("B", "C").send_alert.call_args[0][1]
+
+    def test_silent_when_the_tier_is_unchanged(self):
+        self._notify("B", "B").send_alert.assert_not_called()
+
+    def test_silent_on_a_first_ever_assignment(self):
+        """No prior tier means nothing changed — that's not news."""
+        self._notify(None, "B").send_alert.assert_not_called()
+
+    def test_includes_the_reason(self):
+        message = self._notify("C", "A", "Moat re-rated to STRONG").send_alert.call_args[0][1]
+        assert "Moat re-rated to STRONG" in message
+
+    def test_notification_failure_does_not_propagate(self):
+        """A batch must not abort mid-run because Discord is down."""
+        from scripts.scheduler import _notify_tier_change
+
+        notifier = MagicMock()
+        notifier.send_alert.side_effect = RuntimeError("discord down")
+        with patch("src.notifications.NotificationManager", return_value=notifier):
+            _notify_tier_change("AAPL", "B", "A")  # must not raise
+
+    def test_handles_an_unrecognised_tier(self):
+        assert "TIER CHANGE" in self._notify("B", "Z").send_alert.call_args[0][1]

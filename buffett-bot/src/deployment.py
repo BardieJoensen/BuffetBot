@@ -69,6 +69,11 @@ class HeldPosition:
     position: PositionState
     tier: Optional[str] = None
     margin_of_safety: Optional[float] = None  # re-priced at decision time, not the entry margin
+    # Whether this name ever fell to C from a better tier. Distinguishes a real
+    # thesis breaker from a first-ever analysis that happens to land on C —
+    # only the former justifies an immediate exit. Defaults False so an
+    # unannotated caller gets the gentler behaviour.
+    downgraded_to_c: bool = False
 
 
 @dataclass
@@ -188,14 +193,19 @@ def plan_sells(
     """
     Decide what (if anything) to sell.
 
-    A thesis break (current tier downgraded to C) always sells — that's the
-    existing news/re-analysis pipeline's own signal that the name no longer
-    belongs in the S/A/B watch set. Everything else only sells to rotate:
-    a position that has reached fair value sells ONLY if it's also
-    overweight (past max_position_pct) or a strictly better-ranked candidate
-    is available to take its place. A good name simply hitting fair value,
-    with nothing better waiting and no sizing problem, is held — never
-    sold to cash.
+    A thesis break sells immediately, but only where a thesis existed: the name
+    must have fallen to C from a better tier. A first-ever analysis landing on
+    C is the bot forming an opinion on something it bought unanalysed, not a
+    thesis failing, and treating the two alike produced same-week round trips.
+    Those instead stay permanently rotation-eligible — exempt from the
+    near-fair-value gate, since a cheap C-rated name would otherwise never
+    become sellable by any path.
+
+    Everything else only sells to rotate: a position that has reached fair
+    value sells ONLY if it's also overweight (past max_position_pct) or a
+    strictly better-ranked candidate is available to take its place. A good
+    name simply hitting fair value, with nothing better waiting and no sizing
+    problem, is held — never sold to cash.
     """
     held_symbols = {h.position.symbol for h in held}
     open_candidates = [c for c in candidates if c.symbol not in held_symbols]
@@ -217,12 +227,22 @@ def plan_sells(
         if not pos.tradable:
             continue
 
-        if h.tier == "C":
+        # A thesis breaker requires a thesis. Only a name that actually fell
+        # from a better tier gets the immediate exit — a first-ever analysis
+        # landing on C is the bot forming an opinion on something it bought
+        # before it had one, which is not the same event and should not
+        # realize a loss the same week.
+        if h.tier == "C" and h.downgraded_to_c:
             sells.append(SellIntent(symbol=pos.symbol, reason="Thesis breaker: downgraded to C-tier"))
             continue
 
+        # C-tier holdings stay eligible for rotation regardless of price.
+        # Without this they'd be trapped: the near-fair-value gate below only
+        # opens when a position approaches its target, and a C-rated name
+        # trading well below fair value would never reach it — so declining to
+        # emergency-sell above would silently mean holding it forever.
         near_fair_value = h.margin_of_safety is not None and h.margin_of_safety < NEAR_FAIR_VALUE_PCT
-        if not near_fair_value:
+        if not near_fair_value and h.tier != "C":
             continue
 
         overweight = equity > 0 and (pos.market_value / equity) > cfg.max_position_pct
@@ -236,8 +256,7 @@ def plan_sells(
                 )
             )
         elif better_candidate_waiting:
-            sells.append(
-                SellIntent(symbol=pos.symbol, reason="Rotate: near fair value, better-ranked candidate available")
-            )
+            why = "C-tier on first analysis" if h.tier == "C" else "near fair value"
+            sells.append(SellIntent(symbol=pos.symbol, reason=f"Rotate: {why}, better-ranked candidate available"))
 
     return sells

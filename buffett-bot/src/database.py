@@ -25,6 +25,8 @@ from typing import Iterator, Optional, Union
 
 import yaml
 
+from .config import config
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_DB_PATH = Path("data/buffett_bot_v2.db")
@@ -859,7 +861,18 @@ class Database:
         thesis_breakers: Optional[list] = None,
         expires_days: int = 180,
     ) -> None:
-        """Store a Sonnet deep analysis result."""
+        """
+        Store a Sonnet deep analysis result.
+
+        C-tier verdicts get a much shorter TTL. A C rating ejects a stock from
+        every downstream queue — the Haiku queue skips anything with a
+        non-expired analysis, news only monitors S/A/B, and it isn't held — so
+        at the standard 180 days a single bad verdict was a six-month exile
+        with no way back. min() rather than a plain override, so a caller that
+        deliberately expires something sooner still wins.
+        """
+        if tier == "C":
+            expires_days = min(expires_days, config.c_tier_analysis_days)
         now = datetime.now()
         expires = (now + timedelta(days=expires_days)).isoformat()
         with _open(self.path) as conn:
@@ -944,6 +957,34 @@ class Database:
                 """,
                 (ticker, old_tier, new_tier, trigger, reason),
             )
+
+    def was_downgraded_to_c(self, ticker: str) -> bool:
+        """
+        Whether this ticker ever fell to C from a better tier.
+
+        The distinction the sell engine needs. A position whose *first ever*
+        analysis lands on C has no thesis to break — the bot bought it before
+        it had an opinion, and the analysis is the opinion arriving, not a
+        thesis failing. Treating those identically produced same-week round
+        trips: AD was bought 2026-07-02 unanalysed, rated C the next morning,
+        and sold that afternoon for -3.67%.
+
+        A genuine downgrade (held at B, later C) is a real thesis breaker and
+        still warrants an immediate exit.
+        """
+        with _open(self.path) as conn:
+            row = conn.execute(
+                """
+                SELECT 1 FROM tier_history
+                WHERE ticker = ?
+                  AND new_tier = 'C'
+                  AND old_tier IS NOT NULL
+                  AND old_tier != 'C'
+                LIMIT 1
+                """,
+                (ticker,),
+            ).fetchone()
+            return row is not None
 
     def get_tier_history(self, ticker: str, limit: int = 20) -> list[dict]:
         """Return recent tier history for a ticker."""

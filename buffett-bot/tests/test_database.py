@@ -859,3 +859,88 @@ class TestMigration:
         path.write_text(json.dumps(empty))
         result = db.migrate_from_registry(path)
         assert result == 0
+
+
+# ─── Tier lifecycle ───────────────────────────────────────────────────────
+
+
+class TestWasDowngradedToC:
+    """
+    Distinguishes a real thesis breaker from a first-ever analysis landing on
+    C. Getting this backwards produced same-week round trips: AD was bought
+    unanalysed, rated C the next morning, sold that afternoon for -3.67%.
+    """
+
+    def test_false_for_a_first_ever_analysis(self, db):
+        db.log_tier_change("NEWBUY", new_tier="C", old_tier=None, trigger="scheduled")
+        assert db.was_downgraded_to_c("NEWBUY") is False
+
+    def test_true_after_a_real_downgrade(self, db):
+        db.log_tier_change("OLDCO", new_tier="B", old_tier=None, trigger="scheduled")
+        db.log_tier_change("OLDCO", new_tier="C", old_tier="B", trigger="news_event")
+        assert db.was_downgraded_to_c("OLDCO") is True
+
+    def test_false_for_an_unknown_ticker(self, db):
+        assert db.was_downgraded_to_c("NOPE") is False
+
+    def test_false_when_never_reached_c(self, db):
+        db.log_tier_change("GOODCO", new_tier="A", old_tier="B", trigger="scheduled")
+        assert db.was_downgraded_to_c("GOODCO") is False
+
+    def test_c_to_c_is_not_a_downgrade(self, db):
+        db.log_tier_change("STUCK", new_tier="C", old_tier="C", trigger="scheduled")
+        assert db.was_downgraded_to_c("STUCK") is False
+
+    def test_stays_true_after_recovering(self, db):
+        """History is history — a past downgrade remains a past downgrade."""
+        db.log_tier_change("BOUNCE", new_tier="C", old_tier="B", trigger="news_event")
+        db.log_tier_change("BOUNCE", new_tier="B", old_tier="C", trigger="scheduled")
+        assert db.was_downgraded_to_c("BOUNCE") is True
+
+    def test_scoped_per_ticker(self, db):
+        db.log_tier_change("BAD", new_tier="C", old_tier="B", trigger="news_event")
+        assert db.was_downgraded_to_c("OTHER") is False
+
+
+class TestCTierAnalysisExpiry:
+    """
+    A C verdict ejects a stock from every downstream queue, and the Haiku queue
+    skips anything holding a non-expired analysis. At the standard 180 days a
+    single bad verdict was a six-month exile: 74 stocks reached C in five
+    months and not one ever came back.
+    """
+
+    def _expiry_days(self, db, ticker):
+        row = db.get_latest_deep_analysis(ticker)
+        expires = datetime.fromisoformat(row["expires_at"])
+        return (expires - datetime.now()).days
+
+    def test_c_tier_expires_far_sooner(self, db):
+        db.save_deep_analysis("BADCO", tier="C")
+        assert self._expiry_days(db, "BADCO") < 60
+
+    def test_other_tiers_keep_the_long_ttl(self, db):
+        db.save_deep_analysis("GOODCO", tier="B")
+        assert self._expiry_days(db, "GOODCO") > 150
+
+    def test_an_explicitly_shorter_ttl_still_wins(self, db):
+        """min(), not an override — a caller expiring something now must win."""
+        db.save_deep_analysis("URGENT", tier="C", expires_days=1)
+        assert self._expiry_days(db, "URGENT") <= 1
+
+    def test_c_tier_reenters_the_queue_once_expired(self, db):
+        """The whole point: an expired C verdict becomes re-analysable."""
+        db.upsert_universe_stock("BADCO", source="finviz_screen", quality_score=80.0)
+        with _open(db.path) as conn:
+            conn.execute(
+                """
+                INSERT INTO haiku_screens (ticker, screened_at, passed, expires_at)
+                VALUES ('BADCO', datetime('now'), 1, datetime('now', '+180 days'))
+                """
+            )
+        db.save_deep_analysis("BADCO", tier="C")
+        assert "BADCO" not in db.get_haiku_passes_without_analysis(limit=10)
+
+        with _open(db.path) as conn:
+            conn.execute("UPDATE deep_analyses SET expires_at = datetime('now', '-1 day')")
+        assert "BADCO" in db.get_haiku_passes_without_analysis(limit=10)

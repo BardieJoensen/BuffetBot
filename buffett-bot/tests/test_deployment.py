@@ -5,8 +5,9 @@ Pure module — no mocking needed. Covers:
 - target_invested_pct per regime, with fallback for unknown/missing regime
 - plan_buys: gap sizing off real buying power, tier+margin ranking, the
   quality ceiling, and slot/capital caps
-- plan_sells: thesis-break (always), rotation (overweight or a strictly
-  better candidate waiting), and the "otherwise hold" default
+- plan_sells: thesis-break (only on a genuine downgrade from a better tier),
+  rotation (overweight or a strictly better candidate waiting), and the
+  "otherwise hold" default
 """
 
 from datetime import datetime, timezone
@@ -137,8 +138,10 @@ class TestPlanBuys:
         assert order.index("BTIER") < order.index("FRESH")
 
     def test_c_tier_candidates_are_never_bought(self):
-        # plan_sells thesis-breaks a held C-tier, so buying one would be
-        # guaranteed churn: buy this Friday, auto-sell next Friday.
+        # A known-C name is one the bot has already judged and rejected.
+        # plan_sells keeps held C-tier positions permanently rotation-eligible,
+        # so buying one would be churn: bought this Friday, displaced by the
+        # first better candidate that appears.
         state = _state(equity=100_000.0, invested_value=0.0, buying_power=1_000_000.0)
         candidates = [DeployCandidate(symbol="CTIER", margin_of_safety=0.50, tier="C")]
         plan = plan_buys(state, candidates, "fair_value", current_position_count=0, cfg=CFG)
@@ -186,7 +189,8 @@ class TestPlanBuys:
 
 class TestPlanSells:
     def test_thesis_break_always_sells(self):
-        held = [HeldPosition(position=_position("BADTHESIS"), tier="C", margin_of_safety=0.50)]
+        """A genuine downgrade — held at a better tier, later C — exits at once."""
+        held = [HeldPosition(position=_position("BADTHESIS"), tier="C", margin_of_safety=0.50, downgraded_to_c=True)]
         sells = plan_sells(100_000.0, held, [], cfg=CFG)
         assert len(sells) == 1
         assert sells[0].symbol == "BADTHESIS"
@@ -280,11 +284,72 @@ class TestPlanSellsQuarantine:
 
     def test_tradable_positions_still_sell_alongside_a_quarantined_one(self):
         held = [
-            HeldPosition(position=_position("AL", tradable=False), tier="C", margin_of_safety=0.50),
-            HeldPosition(position=_position("BADTHESIS"), tier="C", margin_of_safety=0.50),
+            HeldPosition(
+                position=_position("AL", tradable=False), tier="C", margin_of_safety=0.50, downgraded_to_c=True
+            ),
+            HeldPosition(position=_position("BADTHESIS"), tier="C", margin_of_safety=0.50, downgraded_to_c=True),
         ]
         sells = plan_sells(100_000.0, held, [], cfg=CFG)
         assert [s.symbol for s in sells] == ["BADTHESIS"]
+
+
+class TestPlanSellsFirstAnalysisC:
+    """
+    A thesis breaker requires a thesis. The bot buys unanalysed candidates
+    (TIER_RANK ranks None above C), holdings then jump the Sonnet queue, and
+    the resulting first analysis used to fire an immediate "thesis breaker".
+    AD was bought 2026-07-02 unanalysed, rated C the next morning and sold that
+    afternoon for -3.67% — a round trip on an opinion the bot formed after
+    buying, not on any thesis failing.
+    """
+
+    def test_first_analysis_c_does_not_emergency_sell(self):
+        held = [HeldPosition(position=_position("NEWBUY"), tier="C", margin_of_safety=0.50)]
+        assert plan_sells(100_000.0, held, [], cfg=CFG) == []
+
+    def test_downgrade_to_c_still_sells_immediately(self):
+        held = [HeldPosition(position=_position("OLDCO"), tier="C", margin_of_safety=0.50, downgraded_to_c=True)]
+        sells = plan_sells(100_000.0, held, [], cfg=CFG)
+        assert len(sells) == 1
+        assert "Thesis breaker" in sells[0].reason
+
+    def test_first_analysis_c_rotates_out_when_something_better_appears(self):
+        """
+        Declining the emergency sell must not mean holding forever. C-tier
+        stays rotation-eligible regardless of price, so a better candidate
+        displaces it.
+        """
+        held = [HeldPosition(position=_position("NEWBUY"), tier="C", margin_of_safety=0.50)]
+        candidates = [DeployCandidate(symbol="BETTER", margin_of_safety=0.30, tier="A")]
+        sells = plan_sells(100_000.0, held, candidates, cfg=CFG)
+        assert len(sells) == 1
+        assert "C-tier on first analysis" in sells[0].reason
+
+    def test_first_analysis_c_is_held_when_nothing_better_waits(self):
+        held = [HeldPosition(position=_position("NEWBUY"), tier="C", margin_of_safety=0.50)]
+        candidates = [DeployCandidate(symbol="ALSOBAD", margin_of_safety=0.30, tier="C")]
+        assert plan_sells(100_000.0, held, candidates, cfg=CFG) == []
+
+    def test_c_tier_rotation_ignores_the_near_fair_value_gate(self):
+        """
+        The trap this avoids: the rotation gate only opens near fair value, so
+        a deeply undervalued C-rated name would otherwise be unsellable by any
+        path once the emergency exit was removed.
+        """
+        deep_discount = HeldPosition(position=_position("CHEAP"), tier="C", margin_of_safety=0.60)
+        candidates = [DeployCandidate(symbol="BETTER", margin_of_safety=0.10, tier="B")]
+        assert len(plan_sells(100_000.0, [deep_discount], candidates, cfg=CFG)) == 1
+
+    def test_non_c_tiers_still_respect_the_near_fair_value_gate(self):
+        """The relaxation must apply to C only — a cheap B is still a hold."""
+        held = [HeldPosition(position=_position("GOODCO"), tier="B", margin_of_safety=0.60)]
+        candidates = [DeployCandidate(symbol="BETTER", margin_of_safety=0.30, tier="S")]
+        assert plan_sells(100_000.0, held, candidates, cfg=CFG) == []
+
+    def test_quarantined_first_analysis_c_is_still_skipped(self):
+        held = [HeldPosition(position=_position("AL", tradable=False), tier="C", margin_of_safety=0.50)]
+        candidates = [DeployCandidate(symbol="BETTER", margin_of_safety=0.30, tier="A")]
+        assert plan_sells(100_000.0, held, candidates, cfg=CFG) == []
 
     def test_overweight_is_measured_against_corrected_equity(self):
         """

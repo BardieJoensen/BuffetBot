@@ -104,6 +104,12 @@ class Config:
     haiku_batch_size: int = int(os.getenv("HAIKU_BATCH_SIZE", "100"))
     haiku_min_score: int = int(os.getenv("HAIKU_MIN_SCORE", "5"))
     analysis_max_age_days: int = int(os.getenv("ANALYSIS_MAX_AGE_DAYS", "180"))
+    # C-tier verdicts expire far sooner than the rest. A C rating is the one
+    # that ejects a stock from consideration entirely, and the re-analysis
+    # queue skips anything holding a non-expired analysis — so at the normal
+    # 180 days a single bad verdict was an effectively permanent exile. Of 74
+    # stocks that reached C, none ever recovered.
+    c_tier_analysis_days: int = int(os.getenv("C_TIER_ANALYSIS_DAYS", "30"))
 
     # Automation kill switches
     auto_trade_enabled: bool = os.getenv("AUTO_TRADE_ENABLED", "true").lower() != "false"

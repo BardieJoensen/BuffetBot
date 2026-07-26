@@ -396,6 +396,38 @@ def daily_snapshot():
         logger.error("Regime logging failed: %s", e)
 
 
+_TIER_ORDER = {"S": 0, "A": 1, "B": 2, "C": 3}
+
+
+def _notify_tier_change(ticker: str, old_tier, new_tier: str, reason: str = "") -> None:
+    """
+    Announce a tier movement, upgrades included.
+
+    Best-effort: a notification failure must never abort a batch mid-run.
+    """
+    if not old_tier or old_tier == new_tier:
+        return
+
+    old_rank = _TIER_ORDER.get(old_tier)
+    new_rank = _TIER_ORDER.get(new_tier)
+    if old_rank is not None and new_rank is not None:
+        direction = "UPGRADE" if new_rank < old_rank else "DOWNGRADE"
+    else:
+        direction = "TIER CHANGE"
+
+    message = f"{direction}: {old_tier} → {new_tier}"
+    if reason:
+        message += f"\n{reason}"
+
+    logger.info("%s: %s", ticker, message.replace("\n", " — "))
+    try:
+        from src.notifications import NotificationManager
+
+        NotificationManager().send_alert(ticker, message)
+    except Exception as e:
+        logger.warning("Tier-change notification failed for %s: %s", ticker, e)
+
+
 def daily_health_check():
     """
     Daily 22:30 — assert the bot's own outputs are sane, and shout if not.
@@ -587,7 +619,14 @@ def weekly_auto_trade():
                     mos = val.margin_of_safety if val else None
                 except Exception as e:
                     logger.warning(f"Error pricing {pos.symbol}: {e}")
-                held.append(HeldPosition(position=pos, tier=tier, margin_of_safety=mos))
+                held.append(
+                    HeldPosition(
+                        position=pos,
+                        tier=tier,
+                        margin_of_safety=mos,
+                        downgraded_to_c=db.was_downgraded_to_c(pos.symbol),
+                    )
+                )
 
             sells = plan_sells(state.equity, held, candidates, cfg=config)
             sold_symbols: set[str] = set()
@@ -1094,6 +1133,11 @@ def friday_sonnet_batch():
                 trigger="scheduled",
                 reason=tier_assignment.tier_reason,
             )
+            # Notify on any tier movement, in either direction. Previously only
+            # the news path notified, and news only watches S/A/B — so the
+            # scheduled batch's changes were silent and, since nothing could
+            # climb out of C, every alert the user ever saw was a downgrade.
+            _notify_tier_change(ticker, old_tier, tier_assignment.tier, tier_assignment.tier_reason)
 
             if tier_assignment.tier in ("S", "A", "B"):
                 entries = staged_entry_suggestion(resolved_target, tier_assignment.tier) if resolved_target else []
