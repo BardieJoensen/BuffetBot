@@ -16,6 +16,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
+from .tier_engine import Tier, normalize_tier
+
 logger = logging.getLogger(__name__)
 
 
@@ -49,7 +51,22 @@ class Registry:
         if self._path.exists():
             try:
                 data = json.loads(self._path.read_text())
-                if data.get("version") == 1:
+                if data.get("version") in (1, 2):
+                    # Complete the v1 numeric -> v2 letter migration in memory.
+                    # Normalizing v2 too makes the boundary self-healing if a
+                    # partially migrated file contains a legacy numeric value.
+                    for entry in data.get("studies", {}).values():
+                        analysis = entry.get("analysis") or {}
+                        try:
+                            entry["tier"] = normalize_tier(
+                                entry.get("tier"),
+                                moat=analysis.get("moat_rating"),
+                                conviction=analysis.get("conviction"),
+                            ).value
+                        except ValueError:
+                            logger.warning("Unknown registry tier %r; treating as C", entry.get("tier"))
+                            entry["tier"] = Tier.C.value
+                    data["version"] = 2
                     return data
                 logger.warning("Registry version mismatch, starting fresh")
             except (json.JSONDecodeError, KeyError) as exc:
@@ -59,7 +76,7 @@ class Registry:
     def _empty_registry(self) -> dict:
         """Create an empty registry with a new campaign."""
         return {
-            "version": 1,
+            "version": 2,
             "campaign": {
                 "campaign_id": _quarter_id(),
                 "started_at": datetime.now().isoformat(),
@@ -75,6 +92,7 @@ class Registry:
     def save(self) -> None:
         """Atomic write: write to temp file then rename."""
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        tmp_path: Optional[str] = None
         try:
             fd, tmp_path = tempfile.mkstemp(dir=str(self.data_dir), suffix=".tmp", prefix="registry_")
             with os.fdopen(fd, "w") as f:
@@ -82,10 +100,11 @@ class Registry:
             os.replace(tmp_path, str(self._path))
         except Exception:
             # Clean up temp file on failure
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
+            if tmp_path is not None:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
             raise
 
     # ── Lookups ──────────────────────────────────────────────────
@@ -122,6 +141,10 @@ class Registry:
         """
         Record Haiku screening results. Symbols scoring >= min_score
         go to haiku_passed, others to haiku_failed (with timestamp).
+
+        Invalid or missing model responses are deliberately left unscreened so
+        a transient API or parsing failure is retried on the next run instead
+        of being recorded as a negative investment decision.
         """
         campaign = self.campaign
         screened_set = set(campaign["haiku_screened"])
@@ -132,16 +155,20 @@ class Registry:
             failed_dict = {s: campaign.get("started_at", datetime.now().isoformat()) for s in failed_dict}
             campaign["haiku_failed"] = failed_dict
 
-        result_map = {r["symbol"]: r for r in results}
+        result_map = {str(r["symbol"]): r for r in results if r.get("symbol")}
         now_iso = datetime.now().isoformat()
         reasons = campaign.setdefault("haiku_passed_reasons", {})
 
         for sym in symbols:
             if sym in screened_set:
                 continue
-            screened_set.add(sym)
             r = result_map.get(sym)
-            if r and (r.get("moat_hint", 0) + r.get("quality_hint", 0)) >= min_score:
+            if not r or r.get("valid") is not True:
+                logger.warning("Haiku screen for %s was invalid; leaving it eligible for retry", sym)
+                continue
+
+            screened_set.add(sym)
+            if (r.get("moat_hint", 0) + r.get("quality_hint", 0)) >= min_score:
                 passed_set.add(sym)
                 reasons[sym] = r.get("reason", "")
             else:
@@ -303,6 +330,7 @@ class Registry:
                 stale.append(sym)
         return stale
 
-    def get_tier_entries(self, tiers: list[int]) -> dict[str, dict]:
-        """Return all study entries matching the given tier numbers."""
-        return {sym: entry for sym, entry in self._data["studies"].items() if entry.get("tier") in tiers}
+    def get_tier_entries(self, tiers: list[Tier | str | int]) -> dict[str, dict]:
+        """Return all study entries matching the requested canonical tiers."""
+        wanted = {normalize_tier(tier).value for tier in tiers}
+        return {sym: entry for sym, entry in self._data["studies"].items() if entry.get("tier") in wanted}

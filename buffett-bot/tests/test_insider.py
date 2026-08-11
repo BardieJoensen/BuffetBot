@@ -6,6 +6,7 @@ computation (distinct people, window filtering, code P/S), disk caching, and
 graceful degradation when no API key is configured.
 """
 
+import logging
 from datetime import datetime, timedelta
 
 import pytest
@@ -92,6 +93,20 @@ class TestSignal:
     def test_none_on_empty_data(self, cache, monkeypatch):
         monkeypatch.setattr(insider, "_fetch_transactions", lambda s, k: [])
         assert insider.get_insider_buying_signal("AAPL", finnhub_key="k") is None
+
+    def test_request_error_does_not_log_api_token(self, monkeypatch, caplog):
+        secret = "super-secret-finnhub-token"  # pragma: allowlist secret
+
+        def fail_request(*args, **kwargs):
+            raise RuntimeError(f"request failed?token={secret}")
+
+        monkeypatch.setattr(insider.time, "sleep", lambda _seconds: None)
+        monkeypatch.setattr(insider.requests, "get", fail_request)
+
+        with caplog.at_level(logging.DEBUG):
+            assert insider._fetch_transactions("AAPL", secret) is None
+
+        assert secret not in caplog.text
 
 
 # ─── fetch_insider_signals (batch) ──────────────────────────────────────────

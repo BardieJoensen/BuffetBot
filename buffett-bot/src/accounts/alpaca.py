@@ -101,5 +101,17 @@ class AlpacaPaperAccount:
     def buy(self, symbol: str, amount: float, *, context: Optional[dict] = None) -> Optional[dict]:
         return self._trader.buy(symbol, amount)
 
-    def sell(self, symbol: str, *, reason: str = "", context: Optional[dict] = None) -> Optional[dict]:
-        return self._trader.sell(symbol, reason=reason)
+    def get_order(self, order_id: str) -> dict:
+        return self._trader.get_order(order_id)
+
+    def sell(
+        self,
+        symbol: str,
+        *,
+        reason: str = "",
+        quantity: Optional[float] = None,
+        context: Optional[dict] = None,
+    ) -> Optional[dict]:
+        if quantity is None:
+            return self._trader.sell(symbol, reason=reason)
+        return self._trader.sell(symbol, reason=reason, quantity=quantity)

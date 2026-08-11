@@ -75,6 +75,17 @@ class Account(Protocol):
         """Place a buy for a currency amount. Returns the order result, or None if skipped."""
         ...
 
-    def sell(self, symbol: str, *, reason: str = "", context: Optional[dict] = None) -> Optional[dict]:
-        """Sell an entire position. Returns the order result, or None if skipped."""
+    def get_order(self, order_id: str) -> dict:
+        """Return normalized broker status and fill details for an order."""
+        ...
+
+    def sell(
+        self,
+        symbol: str,
+        *,
+        reason: str = "",
+        quantity: Optional[float] = None,
+        context: Optional[dict] = None,
+    ) -> Optional[dict]:
+        """Sell all or part of a position. Returns the order result, or None if skipped."""
         ...

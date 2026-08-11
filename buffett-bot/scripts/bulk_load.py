@@ -35,7 +35,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 
-from src.database import Database
+from src.database import DEFAULT_DB_PATH, Database
 from src.quality_scorer import compute_quality_scores
 from src.screener import StockScreener, load_criteria_from_yaml
 from src.tier_engine import assign_tier, staged_entry_suggestion
@@ -57,7 +57,6 @@ logger = logging.getLogger("bulk_load")
 # Default paths (relative to project root)
 DEFAULT_CONVICTION_YAML = Path("config/conviction_list.yaml")
 DEFAULT_CACHE_DIR = Path("data/cache")
-DEFAULT_DB_PATH = Path("data/buffett_bot_v2.db")
 DEFAULT_CONFIG_PATH = Path("config/screening_criteria.yaml")
 
 # Approximate Claude API costs (USD) — batch API rates (50% off real-time)
@@ -342,6 +341,9 @@ def step4_haiku_batch(
         if not ticker:
             continue
         results[ticker] = result
+        if result.get("valid") is not True:
+            logger.warning("Haiku result for %s was invalid; not caching so it can be retried", ticker)
+            continue
         db.save_haiku_result(
             ticker,
             passed=result.get("worth_analysis", False),
@@ -349,7 +351,7 @@ def step4_haiku_batch(
             summary=result.get("reason", ""),
         )
 
-    passed = sum(1 for r in results.values() if r.get("worth_analysis") or r.get("passed"))
+    passed = sum(1 for r in results.values() if r.get("valid") is True and (r.get("worth_analysis") or r.get("passed")))
     logger.info(
         "Haiku complete: %d API calls, %d cached, %d/%d passed",
         len(to_screen),
@@ -429,22 +431,25 @@ def step5_sonnet_batch(
     # Submit all at once via batch API
     analyses = analyzer.batch_analyze_companies(to_analyze)
 
-    # External valuation aggregator — used as a fallback target_entry source when
-    # Sonnet doesn't produce a target_entry_price. Aggregates DCF, P/E multiple,
-    # Graham number, and analyst targets from yfinance/Finnhub.
+    # External valuation supplies the authoritative market price and a fallback
+    # target when Sonnet does not provide one.
     aggregator = ValuationAggregator()
 
     for analysis in analyses:
         ticker = analysis.symbol
 
         external_val = None
-        if analysis.target_entry_price is None:
-            try:
-                external_val = aggregator.get_valuation(ticker)
-            except Exception as exc:
-                logger.debug("External valuation failed for %s: %s", ticker, exc)
+        try:
+            external_val = aggregator.get_valuation(ticker)
+        except Exception as exc:
+            logger.warning("External valuation failed for %s: %s", ticker, exc)
 
-        tier_assignment = assign_tier(analysis, external_valuation=external_val)
+        universe_row = db.get_universe_stock(ticker) or {}
+        tier_assignment = assign_tier(
+            analysis,
+            external_valuation=external_val,
+            quality_score=universe_row.get("quality_score"),
+        )
         # Resolved target prefers Sonnet's; falls back to ExternalValuation
         # × (1 - margin_of_safety) when Sonnet didn't produce one.
         resolved_target = tier_assignment.target_entry_price

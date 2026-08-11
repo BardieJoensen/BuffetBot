@@ -17,6 +17,7 @@ External dependencies (Anthropic API, Finnhub HTTP, Alpaca) are always mocked.
 
 import sqlite3
 import sys
+from dataclasses import replace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -422,6 +423,13 @@ class TestFinnhubNewsFetcher:
 
 
 class TestRunNewsPipeline:
+    @pytest.fixture(autouse=True)
+    def _market_price(self, monkeypatch):
+        valuation = MagicMock(current_price=145.0, average_fair_value=175.0, has_valid_price=True)
+        aggregator = MagicMock()
+        aggregator.return_value.get_valuation.return_value = valuation
+        monkeypatch.setattr("src.valuation.ValuationAggregator", aggregator)
+
     def test_no_watched_tickers_returns_zero_stats(self, db):
         fetcher = _make_fetcher({})
         analyzer = _make_analyzer()
@@ -537,6 +545,7 @@ class TestRunNewsPipeline:
         assert row is not None
         assert "CEO" in row["headline"]
         assert row["haiku_material"] == 0  # no red flags → False → 0
+        assert row["sonnet_triggered"] == 0  # workflow completed without Sonnet
 
     def test_tier_change_logged_to_history(self, db):
         _setup_watched_ticker(db, "TSLA", tier="A")
@@ -599,6 +608,19 @@ class TestRunNewsPipeline:
         # Should not raise; still counts the Haiku call attempt
         stats = run_news_pipeline(db, analyzer, fetcher)
         assert stats["haiku_calls"] == 1
+        assert db.get_recent_headlines("NVDA") == set()
+
+    def test_invalid_haiku_verdict_remains_retryable(self, db):
+        _setup_watched_ticker(db, "NVDA")
+        fetcher = _make_fetcher({"NVDA": [_make_item("Nvidia CEO retires")]})
+        analyzer = MagicMock()
+        analyzer.check_news_for_red_flags.return_value = {"analysis": "truncated"}
+
+        stats = run_news_pipeline(db, analyzer, fetcher)
+
+        assert stats["haiku_calls"] == 1
+        assert stats["sonnet_calls"] == 0
+        assert db.get_recent_headlines("NVDA") == set()
 
     def test_sonnet_exception_does_not_raise(self, db):
         _setup_watched_ticker(db, "AAPL")
@@ -608,6 +630,7 @@ class TestRunNewsPipeline:
 
         stats = run_news_pipeline(db, analyzer, fetcher)
         assert stats["sonnet_calls"] == 1  # attempt counted even on failure
+        assert db.get_recent_headlines("AAPL") == set()
 
     def test_multiple_tickers_independent(self, db):
         for ticker in ["AAPL", "MSFT", "GOOG"]:
@@ -678,6 +701,12 @@ class TestRunNewsPipeline:
 
 
 class TestDailyNewsMonitor:
+    @pytest.fixture(autouse=True)
+    def _enable_job(self, monkeypatch):
+        import scripts.scheduler as scheduler
+
+        monkeypatch.setattr(scheduler, "config", replace(scheduler.config, daily_news_analysis_enabled=True))
+
     def test_skips_when_no_api_key(self, tmp_path):
         """Job exits early and does not call run_news_pipeline when key is missing."""
         from scripts.scheduler import daily_news_monitor

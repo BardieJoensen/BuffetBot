@@ -13,6 +13,7 @@ These are the cases where a subtle bug silently corrupts results:
 
 from dataclasses import dataclass
 from enum import Enum
+from types import SimpleNamespace
 from typing import Optional
 
 import pytest
@@ -156,6 +157,31 @@ class TestBTier:
         """Target known but no current price → B."""
         a = assign_tier(make("narrow", "HIGH", target=100.0, current=None))
         assert a.tier == "B"
+
+    def test_invalid_external_price_does_not_fall_back_to_model_price(self):
+        external = SimpleNamespace(current_price=float("nan"), average_fair_value=100.0)
+
+        a = assign_tier(
+            make("wide", "HIGH", target=100.0, current=80.0),
+            external_valuation=external,
+        )
+
+        assert a.tier == "B"
+        assert a.current_price is None
+
+    def test_invalid_derived_target_cannot_create_buy_tier(self, monkeypatch):
+        import src.tier_engine as tier_engine
+
+        monkeypatch.setattr(tier_engine, "config", SimpleNamespace(margin_of_safety_pct=1.5))
+        external = SimpleNamespace(current_price=80.0, average_fair_value=100.0)
+
+        a = assign_tier(
+            make("wide", "HIGH", target=None, current=80.0),
+            external_valuation=external,
+        )
+
+        assert a.tier == "B"
+        assert a.target_entry_price is None
 
 
 # ─── C-Tier Tests ─────────────────────────────────────────────────────────

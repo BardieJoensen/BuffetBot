@@ -21,6 +21,15 @@ import yfinance as yf
 logger = logging.getLogger(__name__)
 
 
+def _positive_finite(value) -> Optional[float]:
+    """Coerce market data to a positive finite float, otherwise None."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and number > 0 else None
+
+
 @dataclass
 class ValuationEstimate:
     """A single fair value estimate from one source"""
@@ -42,12 +51,22 @@ class AggregatedValuation:
 
     @property
     def average_fair_value(self) -> Optional[float]:
-        if not self.estimates:
+        valid_estimates = [
+            (value, estimate.confidence)
+            for estimate in self.estimates
+            if (value := _positive_finite(estimate.fair_value)) is not None
+        ]
+        if not valid_estimates:
             return None
         weight_map = {"high": 1.5, "medium": 1.0, "low": 0.5}
-        total_weighted = sum(e.fair_value * weight_map.get(e.confidence, 1.0) for e in self.estimates)
-        total_weight = sum(weight_map.get(e.confidence, 1.0) for e in self.estimates)
+        total_weighted = sum(value * weight_map.get(confidence, 1.0) for value, confidence in valid_estimates)
+        total_weight = sum(weight_map.get(confidence, 1.0) for _, confidence in valid_estimates)
         return total_weighted / total_weight if total_weight > 0 else None
+
+    @property
+    def has_valid_price(self) -> bool:
+        """Whether the current market price is safe for automated decisions."""
+        return _positive_finite(self.current_price) is not None
 
     @property
     def margin_of_safety(self) -> Optional[float]:
@@ -57,18 +76,20 @@ class AggregatedValuation:
         Positive = undervalued (good)
         Negative = overvalued (avoid)
         """
-        avg = self.average_fair_value
-        if avg is None or avg == 0:
+        avg = _positive_finite(self.average_fair_value)
+        current = _positive_finite(self.current_price)
+        if avg is None or current is None:
             return None
-        return (avg - self.current_price) / avg
+        return (avg - current) / avg
 
     @property
     def upside_potential(self) -> Optional[float]:
         """Potential upside as percentage"""
-        avg = self.average_fair_value
-        if avg is None or self.current_price == 0:
+        avg = _positive_finite(self.average_fair_value)
+        current = _positive_finite(self.current_price)
+        if avg is None or current is None:
             return None
-        return (avg - self.current_price) / self.current_price
+        return (avg - current) / current
 
     def to_dict(self) -> dict:
         return {
@@ -104,7 +125,7 @@ class ValuationAggregator:
         ticker = yf.Ticker(symbol)
         info = ticker.info
 
-        current_price = info.get("regularMarketPrice") or info.get("currentPrice") or 0
+        current_price = _positive_finite(info.get("regularMarketPrice") or info.get("currentPrice")) or 0.0
 
         valuation = AggregatedValuation(symbol=symbol, current_price=current_price, estimates=[])
 
@@ -188,7 +209,9 @@ class ValuationAggregator:
                         confidence="medium",
                     )
         except Exception as e:
-            logger.debug(f"Finnhub error for {symbol}: {e}")
+            # Do not stringify Requests exceptions: their URL contains the
+            # Finnhub token query parameter.
+            logger.debug("Finnhub valuation error for %s (%s)", symbol, type(e).__name__)
 
         return None
 
@@ -461,7 +484,8 @@ def screen_for_undervalued(symbols: list[str], min_margin_of_safety: float = 0.2
         try:
             valuation = aggregator.get_valuation(symbol)
 
-            if valuation.margin_of_safety and valuation.margin_of_safety >= min_margin_of_safety:
+            margin = valuation.margin_of_safety
+            if margin is not None and margin >= min_margin_of_safety:
                 undervalued.append(valuation)
 
         except Exception as e:

@@ -5,9 +5,9 @@ v2.0 — Two responsibilities:
 
 1. **Market Regime Classification** — Classifies current market conditions:
    - Euphoria/Bubble: extreme overvaluation, high speculation → watchlist only
-   - Overvalued: above historical averages → selective Tier 1 deployment only
-   - Fair Value: normal conditions → deploy on Tier 1 picks
-   - Correction: 10-20% drawdown → cross-reference Tier 2 for new Tier 1 entries
+   - Overvalued: above historical averages → selective S-tier deployment only
+   - Fair Value: normal conditions → deploy on S/A picks
+   - Correction: 10-20% drawdown → cross-reference B-tier names for new S/A entries
    - Crisis: 20%+ drawdown, fear elevated → maximum deployment mode
 
 2. **Bubble Stock Detection** — Identifies overvalued individual stocks to avoid.
@@ -281,19 +281,19 @@ def _get_regime_info(regime: str) -> dict:
         },
         "overvalued": {
             "interpretation": "Market above historical averages but not extreme.",
-            "guidance": "Selective deployment on Tier 1 picks only. Demand higher margin of safety.",
+            "guidance": "Selective deployment on S-tier picks only. Demand higher margin of safety.",
         },
         "fair_value": {
             "interpretation": "Market near fair value. Normal conditions.",
-            "guidance": "Deploy on Tier 1 picks with standard margin of safety.",
+            "guidance": "Deploy on S/A picks with standard margin of safety.",
         },
         "correction": {
             "interpretation": "Market correction underway. Opportunities developing.",
-            "guidance": "Opportunity developing. Cross-reference Tier 2 watchlist for new Tier 1 entries.",
+            "guidance": "Opportunity developing. Cross-reference B-tier watchlist for new S/A entries.",
         },
         "crisis": {
             "interpretation": "Significant market decline. Fear elevated. Historical buying opportunity.",
-            "guidance": "Deployment window open. Prioritize highest conviction Tier 1 picks with staged entry.",
+            "guidance": "Deployment window open. Prioritize highest-conviction S-tier picks with staged entry.",
         },
     }
     return info.get(regime, info["fair_value"])
@@ -562,8 +562,9 @@ class BubbleDetector:
                         "sells": sells,
                         "summary": f"{sells} sells, {buys} buys recently",
                     }
-        except Exception as e:
-            logger.debug(f"Finnhub insider error for {symbol}: {e}")
+        except Exception as exc:
+            # Requests exceptions may include the prepared URL and its token.
+            logger.debug("Finnhub insider error for %s (%s)", symbol, type(exc).__name__)
 
         return None
 

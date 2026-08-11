@@ -9,7 +9,7 @@ Features:
 - Sector exposure monitoring
 - ASK-specific constraints:
   - 5-8 position concentration management
-  - Conviction-based allocation (Tier 1 sizing)
+  - Conviction-based allocation (S/A sizing)
   - Staged entry tracking
   - Annual contribution cycle tracking
   - Dividend tracking (17% tax in ASK)
@@ -210,6 +210,7 @@ class PortfolioTracker:
         self.positions: list[Position] = []
         self.trades: list[TradeRecord] = []
         self.cash: float = 0
+        self._last_price_update: Optional[datetime] = None
 
         self._load()
 
@@ -324,7 +325,7 @@ class PortfolioTracker:
             return
 
         now = datetime.now()
-        if hasattr(self, "_last_price_update") and (now - self._last_price_update).total_seconds() < 60:
+        if self._last_price_update is not None and (now - self._last_price_update).total_seconds() < 60:
             return
         self._last_price_update = now
 
@@ -335,9 +336,10 @@ class PortfolioTracker:
 
                 price = info.get("regularMarketPrice") or info.get("currentPrice")
                 if price:
+                    current_value = price * position.shares
                     position.current_price = price
-                    position.current_value = price * position.shares
-                    position.gain_loss = position.current_value - (position.cost_basis * position.shares)
+                    position.current_value = current_value
+                    position.gain_loss = current_value - (position.cost_basis * position.shares)
                     position.gain_loss_pct = (price - position.cost_basis) / position.cost_basis
                     position.dividend_yield = info.get("dividendYield")
 
@@ -532,8 +534,8 @@ class PortfolioTracker:
         Analyze what the portfolio is missing.
 
         Args:
-            tier1_symbols: Current Tier 1 candidates
-            tier2_approaching: Tier 2 stocks approaching target
+            tier1_symbols: Current S/A candidates (legacy parameter name)
+            tier2_approaching: B-tier stocks approaching target (legacy parameter name)
 
         Returns dict with recommendations.
         """
@@ -541,10 +543,10 @@ class PortfolioTracker:
         concentration = self.get_concentration_status()
         room = concentration["room_for_new"]
 
-        # Tier 1 picks not yet in portfolio
+        # S/A picks not yet in portfolio
         new_tier1 = [s for s in tier1_symbols if s not in current_symbols]
 
-        # Approaching Tier 2 not in portfolio
+        # Approaching B-tier names not in portfolio
         new_approaching = [s for s in tier2_approaching if s not in current_symbols]
 
         # Existing positions with incomplete staged entries
@@ -553,7 +555,7 @@ class PortfolioTracker:
         recommendations = []
         if room > 0 and new_tier1:
             recommendations.append(
-                f"You have room for {room} more positions. Current Tier 1 candidates: {', '.join(new_tier1[:5])}"
+                f"You have room for {room} more positions. Current S/A candidates: {', '.join(new_tier1[:5])}"
             )
         elif room == 0 and new_tier1:
             recommendations.append(
@@ -687,8 +689,8 @@ def calculate_position_size(
     Calculate recommended position size based on conviction and portfolio.
 
     v2.0 — ASK-aware sizing:
-    - Tier 1 + HIGH conviction = 15-25% of portfolio
-    - Tier 1 + MEDIUM conviction = 10-15%
+    - S-tier / HIGH conviction = 15-25% of portfolio
+    - A-tier / MEDIUM conviction = 10-15%
     - Never >25% in a single position
     - Staged entry: initial tranche = 1/3 of target position
 

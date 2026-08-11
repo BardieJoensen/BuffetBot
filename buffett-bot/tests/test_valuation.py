@@ -5,10 +5,12 @@ directly; the dual-estimate method is exercised with a fake yfinance ticker
 (in-memory pandas frames), so no network is required.
 """
 
+from datetime import datetime
+
 import pandas as pd
 import pytest
 
-from src.valuation import ValuationAggregator
+from src.valuation import AggregatedValuation, ValuationAggregator, ValuationEstimate
 
 
 @pytest.fixture
@@ -88,3 +90,27 @@ class TestDcfEstimates:
     def test_no_shares_returns_empty(self, agg):
         ticker = _frames(ocf=200, capex=50, sbc=10, dep=30, revenue=1000)
         assert agg._calculate_dcf_estimates({"sharesOutstanding": 0}, ticker) == []
+
+
+class TestActionablePrices:
+    @staticmethod
+    def _valuation(price):
+        return AggregatedValuation(
+            symbol="TEST",
+            current_price=price,
+            estimates=[ValuationEstimate("test", 100.0, "test", datetime.now(), "high")],
+        )
+
+    @pytest.mark.parametrize("price", [0, -1, float("nan"), float("inf")])
+    def test_invalid_price_has_no_margin_of_safety(self, price):
+        valuation = self._valuation(price)
+
+        assert valuation.has_valid_price is False
+        assert valuation.margin_of_safety is None
+        assert valuation.upside_potential is None
+
+    def test_positive_price_remains_actionable(self):
+        valuation = self._valuation(80.0)
+
+        assert valuation.has_valid_price is True
+        assert valuation.margin_of_safety == pytest.approx(0.20)

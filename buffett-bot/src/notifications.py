@@ -9,7 +9,7 @@ Delivers briefings and alerts via:
 
 v2.0 additions:
 - Regime-shift alerts (market regime changes)
-- Approaching-target alerts (Tier 2 stocks nearing buy range)
+- Approaching-target alerts (B-tier stocks nearing buy range)
 
 Configure your preferred method in .env
 """
@@ -178,14 +178,15 @@ class TelegramNotifier:
 
         text = f"""*Watchlist Update*
 
-Tier 1 (Buy Zone): {summary.get("tier1_count", 0)}
-Tier 2 (Watch): {summary.get("tier2_count", 0)}
-Tier 3 (Monitor): {summary.get("tier3_count", 0)}
+S-tier (Wonderful): {summary.get("s_tier_count", 0)}
+A-tier (Buy Zone): {summary.get("a_tier_count", 0)}
+B-tier (Watch): {summary.get("b_tier_count", 0)}
+C-tier (Monitor): {summary.get("c_tier_count", 0)}
 Approaching Target: {summary.get("approaching_count", 0)}
 
 Portfolio: {summary.get("portfolio_return", "N/A")}
 
-{summary.get("top_pick", "No Tier 1 picks this cycle.")}
+{summary.get("top_pick", "No S/A picks this cycle.")}
 """
         return self._send_message(text, parse_mode="Markdown")
 
@@ -207,7 +208,9 @@ Portfolio: {summary.get("portfolio_return", "N/A")}
                 return False
 
         except Exception as e:
-            logger.error(f"Failed to send Telegram message: {e}")
+            # Telegram embeds the bot token in the request URL; Requests
+            # exceptions may echo that URL verbatim.
+            logger.error("Failed to send Telegram message (%s)", type(e).__name__)
             return False
 
     def _split_message(self, text: str, max_length: int) -> list[str]:
@@ -277,13 +280,13 @@ class NtfyNotifier:
         )
 
     def send_buy_signal(self, symbol: str, message: str) -> bool:
-        """Notify of a Tier 1 entry"""
+        """Notify of an S/A buy-zone entry."""
 
         if not self.configured:
             return False
 
         return self._send(
-            title=f"Tier 1 Entry: {symbol}",
+            title=f"S/A Buy-Zone Entry: {symbol}",
             message=message,
             priority=4,
             tags=["chart_with_upwards_trend"],
@@ -371,7 +374,7 @@ class DiscordNotifier:
             logger.error(f"Discord file upload error: {response.status_code} - {response.text}")
             return False
         except Exception as e:
-            logger.error(f"Discord file upload failed: {e}")
+            logger.error("Discord file upload failed (%s)", type(e).__name__)
             return False
 
     def send_alert(self, symbol: str, message: str) -> bool:
@@ -395,7 +398,7 @@ class DiscordNotifier:
             return False
 
         embed = {
-            "title": f"Tier 1 Entry: {symbol}",
+            "title": f"S/A Buy-Zone Entry: {symbol}",
             "fields": [
                 {"name": "Margin of Safety", "value": f"{margin_of_safety:.1%}", "inline": True},
             ],
@@ -429,7 +432,7 @@ class DiscordNotifier:
                 return False
 
         except Exception as e:
-            logger.error(f"Failed to send Discord message: {e}")
+            logger.error("Failed to send Discord message (%s)", type(e).__name__)
             return False
 
     def _split_message(self, text: str, max_length: int) -> list[str]:
@@ -530,7 +533,8 @@ class NotificationManager:
         Args:
             previous_regime: Previous regime name
             new_regime: New regime name
-            tier2_approaching: List of dicts with symbol, price_gap_pct, target_entry_price
+            tier2_approaching: B-tier entries with symbol, price_gap_pct, target_entry_price.
+                The parameter name is retained for API compatibility.
         """
         lines = [
             "MARKET REGIME SHIFT",
@@ -541,7 +545,7 @@ class NotificationManager:
         ]
 
         if new_regime in ("correction", "crisis"):
-            lines.append("Opportunities may be developing. Check your Tier 2 watchlist:")
+            lines.append("Opportunities may be developing. Check your B-tier watchlist:")
             lines.append("")
             for stock in tier2_approaching[:10]:
                 sym = stock.get("symbol", "?")
@@ -569,7 +573,7 @@ class NotificationManager:
 
     def send_approaching_target_alert(self, stocks: list[dict]) -> dict:
         """
-        Send alert when Tier 2 stocks approach their target entry price.
+        Send alert when B-tier stocks approach their target entry price.
 
         Args:
             stocks: List of dicts with symbol, current_price, target_entry_price, price_gap_pct
@@ -580,7 +584,7 @@ class NotificationManager:
         lines = [
             "APPROACHING TARGET PRICE ALERT",
             "",
-            "The following Tier 2 stocks are approaching their target entry price:",
+            "The following B-tier stocks are approaching their target entry price:",
             "",
         ]
 
@@ -629,7 +633,7 @@ if __name__ == "__main__":
 
     This is a test of the notification system.
 
-    Tier 1 Entry: ACME ($175 target)
+    S/A Buy-Zone Entry: ACME ($175 target)
     """
 
     results = manager.send_briefing(test_briefing)

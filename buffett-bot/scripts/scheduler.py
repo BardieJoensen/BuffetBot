@@ -9,9 +9,10 @@ AUTOMATIC (free):
 - Daily check:      Every day at 08:00 (yfinance, free)
 - Daily snapshot:   Every day at 22:00 (yfinance, free) — account state + regime, append-only
 
-AUTOMATIC (cheap, needs API keys):
-- Weekly auto-trade: Every Friday at 18:00 (Haiku ~$0.10-0.20/week)
-- Monthly briefing:  1st of month at 09:00 (Sonnet ~$0.30-0.50/run)
+OPT-IN (paid and/or submits paper orders):
+- Wednesday Haiku, Friday Sonnet, and daily news analysis
+- Weekly auto-trade: Friday at 16:15 America/New_York
+- Monthly briefing:  1st of month at 09:00
 
 Kill switch: set AUTO_TRADE_ENABLED=false in .env to disable
 auto-trading without removing Alpaca keys.
@@ -21,13 +22,13 @@ Set MONTHLY_BRIEFING_ENABLED=false to disable auto-briefing
 """
 
 import logging
+import math
 import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
 
 import schedule
-from dotenv import load_dotenv
 
 from src.config import config
 from src.database import BUDGET_CAPS_DEFAULTS
@@ -38,6 +39,20 @@ logger = logging.getLogger(__name__)
 # Approximate batch API costs (50% off real-time)
 _HAIKU_COST_USD = 0.001  # per Haiku quick-screen call
 _SONNET_COST_USD = 0.025  # per Sonnet deep-analysis call
+
+
+def _notification_delivered(result) -> bool:
+    """True only when at least one configured channel confirms delivery."""
+    return isinstance(result, dict) and any(value is True for value in result.values())
+
+
+def _positive_finite(value) -> "float | None":
+    """Normalize broker economics without accepting zero, NaN, or infinity."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and number > 0 else None
 
 
 def _moat_label(moat_hint: int) -> str:
@@ -60,7 +75,7 @@ def _build_reasoning_snapshot(db, symbol: str, val) -> tuple[dict, "str | None"]
         "margin_of_safety": getattr(val, "margin_of_safety", None),
     }
     tier = None
-    da = db.get_latest_deep_analysis(symbol)
+    da = db.get_valid_deep_analysis(symbol)
     if da:
         tier = da.get("tier")
         snapshot.update(
@@ -146,7 +161,10 @@ def weekly_screen():
 
         # Get valuations for top candidates (uses yfinance + Finnhub, no Claude)
         symbols = [c.symbol for c in candidates[:50]]
-        valuations = screen_for_undervalued(symbols, min_margin_of_safety=0.10)
+        # Preserve the full quality-qualified universe through to Phase C.
+        # deployment.plan_buys applies the premium ceiling and ranking; an
+        # earlier 10% undervaluation gate made that policy unreachable.
+        valuations = screen_for_undervalued(symbols, min_margin_of_safety=-config.quality_ceiling_pct)
 
         # Save to watchlist
         data_dir = Path("./data")
@@ -312,7 +330,10 @@ def _report_quarantine(db, state, positions) -> None:
 
         from src.notifications import NotificationManager
 
-        NotificationManager().send_alert("QUARANTINE", _quarantine_message(state, quarantined))
+        result = NotificationManager().send_alert("QUARANTINE", _quarantine_message(state, quarantined))
+        if not _notification_delivered(result):
+            logger.error("Quarantine alert was not delivered by any configured channel; will retry tomorrow")
+            return
         # Only stamp the clock once the send succeeded, so a failed
         # notification is retried tomorrow rather than silently swallowed.
         for p in due:
@@ -473,11 +494,121 @@ def daily_health_check():
     try:
         from src.notifications import NotificationManager
 
-        NotificationManager().send_alert("HEALTH", payload)
+        result = NotificationManager().send_alert("HEALTH", payload)
+        if not _notification_delivered(result):
+            logger.error("Health alert was not delivered by any configured channel; will retry tomorrow")
+            return
         # Only after a successful send, so a Discord outage retries tomorrow.
         db.mark_alerted("health", fingerprint)
     except Exception as e:
         logger.error("Health alert notification failed (will retry tomorrow): %s", e)
+
+
+def reconcile_broker_orders():
+    """Reconcile submitted orders before recording fills or realized returns."""
+    from datetime import date
+
+    from src.accounts import get_accounts
+    from src.benchmark import fetch_benchmark_return
+    from src.database import Database
+
+    db = Database()
+    pending = db.get_pending_order_decisions()
+    if not pending:
+        return
+
+    accounts = {account.account_id: account for account in get_accounts()}
+    logger.info("Reconciling %d pending broker order(s)", len(pending))
+
+    for decision in pending:
+        account_id = decision.get("account_id") or "alpaca_paper"
+        account = accounts.get(account_id)
+        if account is None:
+            logger.error("Cannot reconcile order %s: account %s is unavailable", decision["order_id"], account_id)
+            continue
+
+        try:
+            order = account.get_order(decision["order_id"])
+            status = str(order.get("status", "unknown")).lower().rsplit(".", 1)[-1]
+            fill_price_value = _positive_finite(order.get("filled_avg_price"))
+            filled_shares_value = _positive_finite(order.get("filled_qty"))
+
+            # A filled status without its economics is not actionable. Leave
+            # it pending so the next reconciliation retries instead of writing
+            # an invented price or silently losing the outcome.
+            if status == "filled" and (fill_price_value is None or filled_shares_value is None):
+                logger.error("Filled order %s is missing fill price/quantity; will retry", decision["order_id"])
+                continue
+
+            # Record a full-exit outcome before making the order terminal in the
+            # journal. If this process stops between the two writes, the order
+            # remains pending and reconciliation safely retries; close_trade()
+            # will not match an already-closed buy a second time.
+            snapshot = decision.get("reasoning_snapshot") or {}
+            if status == "filled" and decision["action"] == "sell" and snapshot.get("full_exit", True):
+                entry_price = _positive_finite(snapshot.get("entry_price"))
+                if entry_price is None:
+                    logger.error("Cannot close filled sell %s: entry price was not captured", decision["ticker"])
+                else:
+                    if fill_price_value is None or filled_shares_value is None:
+                        logger.error("Filled sell %s lost its fill details; will retry", decision["order_id"])
+                        continue
+                    open_buy = db.get_open_buy(decision["ticker"], account_id=account_id)
+                    bench = None
+                    if open_buy and open_buy.get("decided_at"):
+                        try:
+                            bench = fetch_benchmark_return(
+                                open_buy["decided_at"],
+                                date.today().isoformat(),
+                                symbol=config.benchmark_symbol,
+                            )
+                        except Exception as exc:
+                            logger.warning("Benchmark lookup failed for %s: %s", decision["ticker"], exc)
+                    db.close_trade(
+                        decision["ticker"],
+                        exit_decision_id=decision["id"],
+                        entry_price=entry_price,
+                        exit_price=fill_price_value,
+                        shares=filled_shares_value,
+                        account_id=account_id,
+                        benchmark_return=bench,
+                    )
+
+            updated = db.update_order_status(
+                decision["id"],
+                status,
+                fill_price=fill_price_value,
+                filled_shares=filled_shares_value,
+            )
+            if updated is None:
+                continue
+
+            if status in {"canceled", "cancelled", "rejected", "expired"}:
+                try:
+                    from src.notifications import NotificationManager
+
+                    NotificationManager().send_alert(
+                        updated["ticker"],
+                        f"Order {status}: {updated['action'].upper()} order {updated['order_id']}",
+                    )
+                except Exception as exc:
+                    logger.warning("Order failure notification failed for %s: %s", updated["ticker"], exc)
+                continue
+            if status != "filled":
+                continue
+
+            try:
+                from src.notifications import NotificationManager
+
+                NotificationManager().send_alert(
+                    updated["ticker"],
+                    f"Order filled: {updated['action'].upper()} {filled_shares_value:g} shares "
+                    f"at ${fill_price_value:,.2f}",
+                )
+            except Exception as exc:
+                logger.warning("Fill notification failed for %s: %s", updated["ticker"], exc)
+        except Exception as exc:
+            logger.error("Order reconciliation failed for %s: %s", decision["order_id"], exc)
 
 
 def weekly_auto_trade():
@@ -485,8 +616,8 @@ def weekly_auto_trade():
     Weekly auto-trade job using Haiku pre-screening + the Phase C regime-driven
     deployment engine (src/deployment.py).
 
-    Runs Friday at 18:00 (after market close at 16:00 ET).
-    Orders placed now will queue for Monday open via Alpaca.
+    Runs Friday at 16:15 America/New_York, after the regular U.S. session.
+    Orders are reconciled separately; submission is never treated as a fill.
     Cost: ~$0.10-0.20/week (Haiku only, no Sonnet).
 
     - Loads watchlist from weekly_screen, Haiku quick-screens top candidates
@@ -530,15 +661,25 @@ def weekly_auto_trade():
         # Decision journal: persists every buy/sell with reasoning + realized outcome.
         db = Database()
 
-        # Market regime at decision time — now drives target invested %, not
-        # just journaling context (best-effort; never block trading on it).
+        # Clear any fills/cancellations from earlier runs before inspecting
+        # positions or attempting a new order for the same symbol.
+        reconcile_broker_orders()
+
+        # Market regime drives target invested %. A missing classification means
+        # sizing policy is unknown, so the cycle fails closed.
         regime_label = None
         try:
             from src.bubble_detector import classify_market_regime
 
-            regime_label = classify_market_regime().regime
+            regime_result = classify_market_regime()
+            regime_label = regime_result.regime
+            if regime_label not in {"euphoria", "overvalued", "fair_value", "correction", "crisis"}:
+                raise ValueError(f"unknown market regime {regime_label!r}")
+            if not regime_result.signals:
+                raise ValueError("market regime has no successfully fetched evidence")
         except Exception as e:
-            logger.warning(f"Could not classify market regime: {e}")
+            logger.error("Could not classify market regime — aborting trade cycle: %s", e)
+            return
 
         # Load watchlist from weekly_screen
         watchlist_path = Path("./data/watchlist.json")
@@ -575,11 +716,28 @@ def weekly_auto_trade():
                 except Exception as e:
                     logger.warning(f"Haiku screen failed for {val.symbol}: {e}")
                     continue
-                if not result["worth_analysis"]:
+                if not result.get("worth_analysis", False):
+                    continue
+                if result.get("valid") is not True:
+                    logger.warning("Skipping %s: quick-screen output was not validated", val.symbol)
+                    continue
+                margin_value = val.margin_of_safety
+                fair_value_value = val.average_fair_value
+                if margin_value is None or fair_value_value is None:
+                    logger.warning("Skipping %s: incomplete valuation", val.symbol)
+                    continue
+                price = float(val.current_price)
+                margin = float(margin_value)
+                fair_value = float(fair_value_value)
+                if not all(math.isfinite(v) for v in (price, margin, fair_value)) or price <= 0 or fair_value <= 0:
+                    logger.warning("Skipping %s: invalid price or fair value", val.symbol)
+                    continue
+                da = db.get_valid_deep_analysis(val.symbol)
+                tier = da.get("tier") if da else None
+                if tier not in ("S", "A"):
+                    logger.info("Skipping %s: automated buys require a current S/A deep-analysis tier", val.symbol)
                     continue
                 valuations_by_symbol[val.symbol] = val
-                da = db.get_latest_deep_analysis(val.symbol)
-                tier = da.get("tier") if da else None
                 candidates.append(DeployCandidate(symbol=val.symbol, margin_of_safety=val.margin_of_safety, tier=tier))
         else:
             logger.info("No candidate stocks passed the quality ceiling this week")
@@ -630,54 +788,90 @@ def weekly_auto_trade():
 
             sells = plan_sells(state.equity, held, candidates, cfg=config)
             sold_symbols: set[str] = set()
+            pending_sell = False
             for sell in sells:
                 pos = next(p for p in positions if p.symbol == sell.symbol)
-                sell_order = account.sell(sell.symbol, reason=sell.reason)
+                sell_order = account.sell(sell.symbol, reason=sell.reason, quantity=sell.quantity)
                 if not sell_order:
                     continue
-                sold_symbols.add(sell.symbol)
-                logger.info(f"Sold {sell.symbol}: {sell.reason}")
+                status = sell_order.get("status", "submitted")
+                filled_price = _positive_finite(sell_order.get("filled_avg_price"))
+                filled_qty = _positive_finite(sell_order.get("filled_qty"))
+                filled = status == "filled" and filled_price is not None and filled_qty is not None
+                journal_status = status
+                if status == "filled" and not filled:
+                    journal_status = "filled_pending_details"
+                    logger.error("Filled sell %s is missing fill details; deferring reconciliation", sell.symbol)
+                elif filled and sell.quantity is None:
+                    # Keep a full exit nonterminal until close_trade succeeds.
+                    # If outcome persistence fails, reconciliation can safely
+                    # retry it from the broker's already-filled order.
+                    journal_status = "filled_pending_outcome"
+                if not filled and journal_status not in {"canceled", "cancelled", "rejected", "expired", "replaced"}:
+                    pending_sell = True
+                if sell.quantity is None and filled:
+                    sold_symbols.add(sell.symbol)
+                logger.info("Sell order submitted for %s (status=%s): %s", sell.symbol, status, sell.reason)
                 try:
+                    requested_qty = pos.shares if sell.quantity is None else sell.quantity
                     exit_id = db.log_decision(
                         sell.symbol,
                         "sell",
-                        price=pos.price,
-                        shares=pos.shares,
-                        notional=pos.market_value,
+                        price=filled_price if filled else None,
+                        shares=filled_qty if filled else requested_qty,
+                        notional=(
+                            filled_price * filled_qty if filled_price is not None and filled_qty is not None else None
+                        ),
                         order_id=sell_order.get("order_id"),
+                        order_status=journal_status,
+                        account_id=account.account_id,
                         reason=sell.reason,
                         regime=regime_label,
+                        reasoning_snapshot={
+                            "entry_price": pos.avg_cost,
+                            "position_shares": pos.shares,
+                            "full_exit": sell.quantity is None,
+                        },
                     )
-                    # Benchmark return over the exact hold window (fetched here,
-                    # not in the DB layer, to keep that module offline).
-                    open_buy = db.get_open_buy(sell.symbol)
-                    bench = None
-                    if open_buy and open_buy.get("decided_at"):
-                        bench = fetch_benchmark_return(
-                            open_buy["decided_at"],
-                            date.today().isoformat(),
-                            symbol=config.benchmark_symbol,
-                        )
-                    if bench is None:
-                        # The trade still journals, but without a benchmark
-                        # there is no alpha — and nothing retries on its own.
-                        # Say so loudly; scripts.backfill_trade_alpha repairs it.
-                        logger.warning(
-                            "No benchmark return for %s over [%s..%s] — trade will have no alpha. "
-                            "Repair with: python -m scripts.backfill_trade_alpha --ticker %s --apply",
+                    if filled and sell.quantity is None and filled_price is not None and filled_qty is not None:
+                        # Benchmark return over the exact hold window (fetched
+                        # here, not in the DB layer, to keep it offline).
+                        open_buy = db.get_open_buy(sell.symbol, account_id=account.account_id)
+                        bench = None
+                        if open_buy and open_buy.get("decided_at"):
+                            bench = fetch_benchmark_return(
+                                open_buy["decided_at"],
+                                date.today().isoformat(),
+                                symbol=config.benchmark_symbol,
+                            )
+                        if bench is None:
+                            logger.warning(
+                                "No benchmark return for %s over [%s..%s] — trade will have no alpha. "
+                                "Repair with: python -m scripts.backfill_trade_alpha --ticker %s --apply",
+                                sell.symbol,
+                                (open_buy or {}).get("decided_at", "?"),
+                                date.today().isoformat(),
+                                sell.symbol,
+                            )
+                        db.close_trade(
                             sell.symbol,
-                            (open_buy or {}).get("decided_at", "?"),
-                            date.today().isoformat(),
-                            sell.symbol,
+                            exit_decision_id=exit_id,
+                            entry_price=pos.avg_cost,
+                            exit_price=filled_price,
+                            shares=filled_qty,
+                            account_id=account.account_id,
+                            benchmark_return=bench,
                         )
-                    db.close_trade(
-                        sell.symbol,
-                        exit_decision_id=exit_id,
-                        entry_price=pos.avg_cost,
-                        exit_price=pos.price,
-                        shares=pos.shares,
-                        benchmark_return=bench,
-                    )
+                        db.update_order_status(
+                            exit_id,
+                            "filled",
+                            fill_price=filled_price,
+                            filled_shares=filled_qty,
+                        )
+                    elif filled:
+                        logger.info("Partial trim for %s filled; position remains open", sell.symbol)
+                    else:
+                        logger.info("Sell %s is pending; outcome will not be recorded as a fill", sell.symbol)
                 except Exception as e:
                     logger.warning(f"Failed to journal sell for {sell.symbol}: {e}")
 
@@ -685,6 +879,9 @@ def weekly_auto_trade():
             # Re-fetch state — cash/buying_power moved if anything sold.
             if sold_symbols:
                 state = account.get_state()
+            if pending_sell:
+                logger.info("Pending sell order(s) — deferring buys until broker fills are reconciled")
+                continue
             # Quarantined holdings must not consume one of max_positions —
             # they can never be sold, so counting them would permanently
             # starve deployment by one slot.
@@ -707,19 +904,39 @@ def weekly_auto_trade():
                 order = account.buy(buy.symbol, buy.amount)
                 if not order:
                     continue
-                logger.info(f"Bought {buy.symbol}: ${buy.amount:,.0f} (tier={buy.tier or '?'})")
+                order_status = order.get("status", "submitted")
+                fill_price = _positive_finite(order.get("filled_avg_price"))
+                filled_qty = _positive_finite(order.get("filled_qty"))
+                filled = order_status == "filled" and fill_price is not None and filled_qty is not None
+                journal_status = order_status
+                if order_status == "filled" and not filled:
+                    journal_status = "filled_pending_details"
+                    logger.error("Filled buy %s is missing fill details; deferring reconciliation", buy.symbol)
+                logger.info(
+                    "Buy order submitted for %s: $%.0f (tier=%s, status=%s)",
+                    buy.symbol,
+                    buy.amount,
+                    buy.tier or "?",
+                    order_status,
+                )
                 try:
-                    val = valuations_by_symbol.get(buy.symbol)
-                    snapshot, tier = _build_reasoning_snapshot(db, buy.symbol, val) if val else ({}, buy.tier)
+                    buy_valuation = valuations_by_symbol.get(buy.symbol)
+                    snapshot, tier = (
+                        _build_reasoning_snapshot(db, buy.symbol, buy_valuation) if buy_valuation else ({}, buy.tier)
+                    )
                     snapshot["deploy_regime"] = plan.regime
                     snapshot["deploy_target_pct"] = plan.target_pct
                     snapshot["deploy_gap_at_decision"] = plan.gap
                     db.log_decision(
                         buy.symbol,
                         "buy",
+                        account_id=account.account_id,
                         tier=tier or buy.tier,
+                        price=fill_price if filled else None,
+                        shares=filled_qty if filled else None,
                         notional=buy.amount,
                         order_id=order.get("order_id"),
+                        order_status=journal_status,
                         reason=f"Weekly auto-trade: regime={plan.regime}, target={plan.target_pct:.0%} invested",
                         regime=regime_label,
                         reasoning_snapshot=snapshot,
@@ -963,6 +1180,10 @@ def wednesday_haiku_batch():
     Reads fundamentals from the DB populated by Monday's refresh — no
     fresh yfinance calls needed.
     """
+    if not config.wednesday_haiku_enabled:
+        logger.info("WEDNESDAY_HAIKU_ENABLED=false — skipping Haiku batch")
+        return
+
     logger.info("=" * 50)
     logger.info("WEDNESDAY HAIKU BATCH")
     logger.info("=" * 50)
@@ -1015,6 +1236,9 @@ def wednesday_haiku_batch():
             symbol = result.get("symbol", "")
             if not symbol:
                 continue
+            if result.get("valid") is not True:
+                logger.warning("Haiku result for %s was invalid; leaving it eligible for retry", symbol)
+                continue
             db.save_haiku_result(
                 symbol,
                 passed=result.get("worth_analysis", False),
@@ -1022,14 +1246,20 @@ def wednesday_haiku_batch():
                 summary=result.get("reason", ""),
             )
 
-        passed = sum(1 for r in batch_results if r.get("worth_analysis"))
+        valid_results = [r for r in batch_results if r.get("valid") is True]
+        passed = sum(1 for r in valid_results if r.get("worth_analysis"))
         db.complete_run(
             run_id,
             stocks_screened=len(batch_results),
             haiku_calls=len(batch_results),
             total_cost_usd=len(batch_results) * _HAIKU_COST_USD,
         )
-        logger.info("Wednesday Haiku batch complete: %d screened, %d passed", len(batch_results), passed)
+        logger.info(
+            "Wednesday Haiku batch complete: %d valid, %d invalid, %d passed",
+            len(valid_results),
+            len(batch_results) - len(valid_results),
+            passed,
+        )
 
     except Exception as e:
         logger.error("Wednesday Haiku batch failed: %s", e)
@@ -1049,6 +1279,10 @@ def friday_sonnet_batch():
 
     Cost: up to $0.25 (10 × $0.025) in a week with untiered holdings.
     """
+    if not config.friday_sonnet_enabled:
+        logger.info("FRIDAY_SONNET_ENABLED=false — skipping Sonnet batch")
+        return
+
     logger.info("=" * 50)
     logger.info("FRIDAY SONNET BATCH")
     logger.info("=" * 50)
@@ -1115,13 +1349,23 @@ def friday_sonnet_batch():
             old_tier = old_da.get("tier") if old_da else None
 
             external_val = None
-            if analysis.target_entry_price is None:
-                try:
-                    external_val = aggregator.get_valuation(ticker)
-                except Exception as exc:
-                    logger.debug("External valuation failed for %s: %s", ticker, exc)
+            try:
+                # Always supply deterministic market data. assign_tier treats
+                # this price as authoritative over any price repeated by the
+                # model, while still using the model's target when present.
+                external_val = aggregator.get_valuation(ticker)
+            except Exception as exc:
+                logger.warning("External valuation failed for %s: %s", ticker, exc)
+            if external_val is None or not external_val.has_valid_price:
+                logger.error("Skipping tier update for %s: no valid deterministic market price", ticker)
+                continue
 
-            tier_assignment = assign_tier(analysis, external_valuation=external_val)
+            universe_row = db.get_universe_stock(ticker) or {}
+            tier_assignment = assign_tier(
+                analysis,
+                external_valuation=external_val,
+                quality_score=universe_row.get("quality_score"),
+            )
             resolved_target = tier_assignment.target_entry_price
             resolved_price = tier_assignment.current_price or analysis.current_price
 
@@ -1196,6 +1440,10 @@ def daily_news_monitor():
 
     Kill switch: job is silently skipped if FINNHUB_API_KEY is not set.
     """
+    if not config.daily_news_analysis_enabled:
+        logger.info("DAILY_NEWS_ANALYSIS_ENABLED=false — skipping news analysis")
+        return
+
     logger.info("=" * 50)
     logger.info("DAILY NEWS MONITOR")
     logger.info("=" * 50)
@@ -1219,8 +1467,8 @@ def daily_news_monitor():
             from src.notifications import NotificationManager
 
             notifier = NotificationManager()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Notifications unavailable for the news monitor: %s", type(exc).__name__)
 
         stats = run_news_pipeline(db, analyzer, fetcher, notifier=notifier)
         logger.info(
@@ -1239,6 +1487,9 @@ def run_scheduler():
 
     auto_trade = config.auto_trade_enabled
     auto_briefing = config.monthly_briefing_enabled
+    haiku_enabled = config.wednesday_haiku_enabled
+    sonnet_enabled = config.friday_sonnet_enabled
+    news_enabled = config.daily_news_analysis_enabled
 
     logger.info("=" * 60)
     logger.info("BUFFETT BOT SCHEDULER")
@@ -1246,14 +1497,23 @@ def run_scheduler():
     logger.info("")
     logger.info("SCHEDULED JOBS:")
     logger.info("  - Monday maintenance:  Every Monday at 02:00   (yfinance, free)")
-    logger.info("  - Wednesday Haiku:     Every Wednesday at 07:00 (Haiku batch, ~$0.05/wk)")
-    logger.info("  - Friday Sonnet:       Every Friday at 07:00   (Sonnet batch, ~$0.13/wk)")
+    logger.info(
+        f"  - Wednesday Haiku:     Every Wednesday at 07:00 (Haiku batch, ~$0.05/wk) "
+        f"[{'ON' if haiku_enabled else 'OFF'}]"
+    )
+    logger.info(
+        f"  - Friday Sonnet:       Every Friday at 07:00   (Sonnet batch, ~$0.13/wk) "
+        f"[{'ON' if sonnet_enabled else 'OFF'}]"
+    )
     logger.info("  - Weekly screen:       Every Friday at 17:00   (yfinance, free)")
     logger.info(
-        f"  - Weekly auto-trade:   Every Friday at 18:00   (Haiku ~$0.10-0.20) [{'ON' if auto_trade else 'OFF'}]"
+        f"  - Weekly auto-trade:   Friday 16:15 New York   (Haiku ~$0.10-0.20) [{'ON' if auto_trade else 'OFF'}]"
     )
     logger.info("  - Daily check:         Every day at 08:00      (yfinance, free)")
-    logger.info("  - Daily news monitor:  Every day at 20:00      (Haiku+Sonnet, ~$0.30/wk max)")
+    logger.info(
+        f"  - Daily news monitor:  Every day at 20:00      (Haiku+Sonnet, ~$0.30/wk max) "
+        f"[{'ON' if news_enabled else 'OFF'}]"
+    )
     logger.info("  - Daily snapshot:      Every day at 22:00      (yfinance, free)")
     logger.info("  - Daily health check:  Every day at 22:30      (SQL only, free)")
     logger.info(
@@ -1269,6 +1529,9 @@ def run_scheduler():
     logger.info("KILL SWITCHES (in .env):")
     logger.info(f"  AUTO_TRADE_ENABLED={auto_trade}        — disable weekly auto-trading")
     logger.info(f"  MONTHLY_BRIEFING_ENABLED={auto_briefing} — disable monthly briefing")
+    logger.info(f"  WEDNESDAY_HAIKU_ENABLED={haiku_enabled} — disable Wednesday Haiku batch")
+    logger.info(f"  FRIDAY_SONNET_ENABLED={sonnet_enabled}  — disable Friday Sonnet batch")
+    logger.info(f"  DAILY_NEWS_ANALYSIS_ENABLED={news_enabled} — disable paid news analysis")
     logger.info("")
     logger.info("MANUAL TRIGGER:")
     logger.info("  docker compose run --rm buffett-bot")
@@ -1279,11 +1542,14 @@ def run_scheduler():
 
     # Phase D: weekly cadence (DB-based)
     schedule.every().monday.at("02:00").do(monday_maintenance)
-    schedule.every().wednesday.at("07:00").do(wednesday_haiku_batch)
-    schedule.every().friday.at("07:00").do(friday_sonnet_batch)
+    if haiku_enabled:
+        schedule.every().wednesday.at("07:00").do(wednesday_haiku_batch)
+    if sonnet_enabled:
+        schedule.every().friday.at("07:00").do(friday_sonnet_batch)
 
     # Phase E: daily news pipeline (DB-based, requires FINNHUB_API_KEY)
-    schedule.every().day.at("20:00").do(daily_news_monitor)
+    if news_enabled:
+        schedule.every().day.at("20:00").do(daily_news_monitor)
 
     # Legacy free operations (watchlist.json-based)
     schedule.every().friday.at("17:00").do(weekly_screen)
@@ -1296,9 +1562,15 @@ def run_scheduler():
     # sees the day's data. Free — no LLM, no broker calls.
     schedule.every().day.at("22:30").do(daily_health_check)
 
+    # Broker orders are asynchronous. Reconcile after each U.S. session and
+    # only then mark fills/realized outcomes in the decision journal.
+    schedule.every().day.at("16:30", "America/New_York").do(reconcile_broker_orders)
+
     # Paid operations (have their own kill switches)
-    schedule.every().friday.at("18:00").do(weekly_auto_trade)
-    schedule.every().day.at("09:00").do(monthly_briefing)  # Only actually runs on the 1st
+    if auto_trade:
+        schedule.every().friday.at("16:15", "America/New_York").do(weekly_auto_trade)
+    if auto_briefing:
+        schedule.every().day.at("09:00").do(monthly_briefing)  # Only actually runs on the 1st
 
     logger.info("Scheduler running. Press Ctrl+C to stop.")
     logger.info(f"Next scheduled job: {schedule.next_run()}")
@@ -1310,5 +1582,4 @@ def run_scheduler():
 
 
 if __name__ == "__main__":
-    load_dotenv()
     run_scheduler()

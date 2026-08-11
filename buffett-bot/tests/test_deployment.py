@@ -12,6 +12,8 @@ Pure module — no mocking needed. Covers:
 
 from datetime import datetime, timezone
 
+import pytest
+
 from src.accounts.base import AccountState, PositionState
 from src.config import Config
 from src.deployment import (
@@ -101,6 +103,15 @@ class TestPlanBuys:
         assert plan.gap == -5_000.0
         assert plan.buys == []
 
+    @pytest.mark.parametrize("field", ["equity", "invested_value", "buying_power"])
+    def test_non_finite_account_state_is_rejected(self, field):
+        values = {"equity": 100_000.0, "invested_value": 50_000.0, "buying_power": 50_000.0}
+        values[field] = float("nan")
+        state = _state(**values)
+
+        with pytest.raises(ValueError, match="finite"):
+            plan_buys(state, [], "fair_value", current_position_count=1, cfg=CFG)
+
     def test_single_candidate_sized_by_tier_weight(self):
         # gap = 90k - 50k = 40k. max_position_value = 100k * 0.20 = 20k.
         # S-tier weight 1.0 -> amount = min(20k, 40k, buying_power) = 20k (capped by max_position_value)
@@ -118,24 +129,23 @@ class TestPlanBuys:
         assert plan.buys[0].amount == 5_000.0
 
     def test_ranks_tier_above_margin_of_safety(self):
-        # B-tier with huge margin should still rank below A-tier with modest margin.
+        # B-tier with a huge margin is not buyable; A remains eligible.
         state = _state(equity=100_000.0, invested_value=0.0, buying_power=1_000_000.0)
         candidates = [
             DeployCandidate(symbol="BIGMARGIN", margin_of_safety=0.50, tier="B"),
             DeployCandidate(symbol="TIERED", margin_of_safety=0.05, tier="A"),
         ]
         plan = plan_buys(state, candidates, "fair_value", current_position_count=0, cfg=CFG)
-        assert plan.buys[0].symbol == "TIERED"
+        assert [buy.symbol for buy in plan.buys] == ["TIERED"]
 
-    def test_unranked_candidate_sorts_below_b_tier(self):
+    def test_unanalysed_and_b_tier_candidates_are_not_bought(self):
         state = _state(equity=100_000.0, invested_value=0.0, buying_power=1_000_000.0)
         candidates = [
             DeployCandidate(symbol="FRESH", margin_of_safety=0.10, tier=None),
             DeployCandidate(symbol="BTIER", margin_of_safety=0.05, tier="B"),
         ]
         plan = plan_buys(state, candidates, "fair_value", current_position_count=0, cfg=CFG)
-        order = [b.symbol for b in plan.buys]
-        assert order.index("BTIER") < order.index("FRESH")
+        assert plan.buys == []
 
     def test_c_tier_candidates_are_never_bought(self):
         # A known-C name is one the bot has already judged and rejected.
@@ -159,6 +169,13 @@ class TestPlanBuys:
         assert "TOOEXPENSIVE" not in symbols_bought
         assert "TOOEXPENSIVE" in plan.skipped_ceiling
         assert "OKPREMIUM" in symbols_bought
+
+    @pytest.mark.parametrize("margin", [None, float("nan"), float("inf")])
+    def test_missing_or_non_finite_margin_is_not_bought(self, margin):
+        state = _state(equity=100_000.0, invested_value=0.0, buying_power=100_000.0)
+        candidates = [DeployCandidate(symbol="INVALID", margin_of_safety=margin, tier="S")]
+
+        assert plan_buys(state, candidates, "fair_value", current_position_count=0, cfg=CFG).buys == []
 
     def test_held_symbols_excluded_from_candidates(self):
         state = _state(equity=100_000.0, invested_value=0.0, buying_power=1_000_000.0)
@@ -226,6 +243,8 @@ class TestPlanSells:
         sells = plan_sells(100_000.0, held, [], cfg=CFG)
         assert len(sells) == 1
         assert "overweight" in sells[0].reason.lower()
+        # Trim only the $5k excess above the 20% cap: 50 shares at $100.
+        assert sells[0].quantity == pytest.approx(50.0)
 
     def test_does_not_sell_overweight_when_not_near_fair_value(self):
         # Overweight but still deeply undervalued — let the winner run.
@@ -296,11 +315,12 @@ class TestPlanSellsQuarantine:
 class TestPlanSellsFirstAnalysisC:
     """
     A thesis breaker requires a thesis. The bot buys unanalysed candidates
-    (TIER_RANK ranks None above C), holdings then jump the Sonnet queue, and
-    the resulting first analysis used to fire an immediate "thesis breaker".
+    in legacy journal data; holdings then jump the Sonnet queue, and the
+    resulting first analysis used to fire an immediate "thesis breaker".
     AD was bought 2026-07-02 unanalysed, rated C the next morning and sold that
     afternoon for -3.67% — a round trip on an opinion the bot formed after
-    buying, not on any thesis failing.
+    buying, not on any thesis failing. New buys now require S/A up front, but
+    the sell logic still has to handle existing rows correctly.
     """
 
     def test_first_analysis_c_does_not_emergency_sell(self):
@@ -337,7 +357,7 @@ class TestPlanSellsFirstAnalysisC:
         path once the emergency exit was removed.
         """
         deep_discount = HeldPosition(position=_position("CHEAP"), tier="C", margin_of_safety=0.60)
-        candidates = [DeployCandidate(symbol="BETTER", margin_of_safety=0.10, tier="B")]
+        candidates = [DeployCandidate(symbol="BETTER", margin_of_safety=0.10, tier="A")]
         assert len(plan_sells(100_000.0, [deep_discount], candidates, cfg=CFG)) == 1
 
     def test_non_c_tiers_still_respect_the_near_fair_value_gate(self):

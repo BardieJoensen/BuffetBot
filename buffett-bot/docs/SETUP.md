@@ -34,14 +34,14 @@ FINNHUB_API_KEY=your_key_here
 ### 3. Run with Docker (Recommended)
 
 ```bash
-# Build and start
-docker-compose up -d
+# Build and start the free-by-default scheduler
+docker compose up -d scheduler
 
 # Check logs
-docker logs buffett-bot
+docker compose logs scheduler
 
 # Run first briefing manually
-docker exec buffett-bot python -m scripts.run_monthly_briefing
+docker compose run --rm buffett-bot
 ```
 
 ### 4. Run Without Docker
@@ -67,7 +67,7 @@ After running, check `./data/briefings/` for your reports:
 
 - `briefing_YYYY_MM.txt` - Human-readable tiered watchlist report
 - `briefing_YYYY_MM.html` - Styled HTML version
-- `briefing_YYYY_MM.json` - Machine-readable data (schema v2)
+- `briefing_YYYY_MM.json` - Machine-readable data (schema v3)
 
 ### Sample Briefing Output
 
@@ -81,24 +81,25 @@ Deploy capital normally — focus on quality businesses at reasonable prices.
 
 ## EXECUTIVE SUMMARY
 
-Stocks Analyzed: 10
-Tier 1 (Buy Zone):  2
-Tier 2 (Watch):     4
-Tier 3 (Monitor):   3
+Stocks Analyzed:    10
+S-tier (Wonderful): 1
+A-tier (Buy Zone):  2
+B-tier (Watchlist): 4
+C-tier (Monitor):   3
 
 ## WATCHLIST MOVEMENTS
-  NEW  → MSFT entered Tier 2 (wide moat, above target entry)
-  ↑ UP → V moved from Tier 2 → Tier 1 (price dropped to target)
+  NEW  → MSFT entered B tier (wide moat, above target entry)
+  ↑ UP → V moved from B → S (price dropped to target)
 
 ## APPROACHING TARGET
   ⚡ COST is 8.2% above target entry ($785.00) — close to buy zone
 
 ----------------------------------------------------------------------
-## TIER 1: BUY ZONE
+## S-TIER: WONDERFUL BUSINESS
 ----------------------------------------------------------------------
 
 ### V: Visa Inc
-Tier: 1 (Buy Zone) | Quality Score: 87.2 | Confidence: 0.92
+Tier: S (Wonderful) | Quality Score: 87.2 | Confidence: 0.92
 
 QUALITATIVE ASSESSMENT:
 ┌──────────────────────────────────────────────────────────────┐
@@ -115,11 +116,11 @@ STAGED ENTRY:
 [... more details ...]
 
 ----------------------------------------------------------------------
-## TIER 2: WATCH
+## B-TIER: WATCHLIST
 ----------------------------------------------------------------------
 
 ### MSFT: Microsoft Corporation
-Tier: 2 (Watch) | Quality Score: 91.5 | Confidence: 0.95
+Tier: B (Watchlist) | Quality Score: 91.5 | Confidence: 0.95
 Gap to target: +15.3% above entry price
 [... summary ...]
 ```
@@ -169,16 +170,30 @@ The v2.0 scoring philosophy: quality metrics (ROIC, consistency, durability) are
 
 ```bash
 # Start scheduler container
-docker-compose up -d scheduler
+docker compose up -d scheduler
 
 # Check it's running
-docker logs buffett-bot-scheduler
+docker compose logs scheduler
 ```
 
 Default schedule:
 - **Weekly (Friday 17:00):** Update watchlist with fresh screen (free — yfinance only)
-- **Monthly (1st at 09:00):** Full briefing with LLM analysis
 - **Daily (08:00):** Check watchlist prices for margin-of-safety alerts
+- **Daily:** Portfolio snapshot, broker-order reconciliation, and health checks
+
+Paid and order-submitting jobs are disabled by default. Opt in independently
+in `.env`:
+
+```bash
+WEDNESDAY_HAIKU_ENABLED=true
+FRIDAY_SONNET_ENABLED=true
+DAILY_NEWS_ANALYSIS_ENABLED=true
+MONTHLY_BRIEFING_ENABLED=true
+AUTO_TRADE_ENABLED=true  # Alpaca paper account only
+BRIEFING_PAPER_TRADES_ENABLED=true  # optional orders during a manual briefing
+```
+
+The scheduler prints every switch and weekly API budget cap when it starts.
 
 ### Option B: Use Cron (More Control)
 
@@ -231,13 +246,13 @@ If Alpaca paper trading is configured, the bot will pull positions from Alpaca a
 |----------|---------|-------------|
 | `ANTHROPIC_API_KEY` | (required) | Claude API key |
 | `USE_BATCH_API` | `true` | Use Batch API for 50% cost reduction |
-| `USE_OPUS_SECOND_OPINION` | `false` | Run Opus contrarian review on Tier 1 picks |
+| `USE_OPUS_SECOND_OPINION` | `false` | Run Opus contrarian review on S-tier picks |
 | `BENCHMARK_SYMBOL` | `SPY` | Benchmark to compare picks against |
 | `PORTFOLIO_VALUE` | `50000` | Portfolio size for position sizing |
 | `MAX_POSITIONS` | `8` | Maximum concentrated positions (ASK) |
 | `ASK_CONTRIBUTION_LIMIT` | `135900` | Annual ASK contribution limit (DKK) |
-| `MARGIN_OF_SAFETY_PCT` | `25` | Minimum margin of safety for Tier 1 |
-| `TIER1_PROXIMITY_ALERT_PCT` | `10` | Alert when Tier 2 stock is within this % of target |
+| `MARGIN_OF_SAFETY_PCT` | `25` | Base margin-of-safety target used by tier assignment |
+| `TIER1_PROXIMITY_ALERT_PCT` | `10` | Legacy-named threshold for B-tier target alerts |
 
 See `.env.example` for the full list including notification and Alpaca settings.
 
@@ -262,11 +277,11 @@ See `.env.example` for the full list including notification and Alpaca settings.
 ### Container won't start
 ```bash
 # Check logs
-docker-compose logs buffett-bot
+docker compose logs scheduler
 
 # Rebuild if needed
-docker-compose build --no-cache
-docker-compose up -d
+docker compose build --no-cache
+docker compose up -d scheduler
 ```
 
 ---
@@ -288,8 +303,8 @@ Batch API (enabled by default) reduces Claude costs by ~50%.
 ## Next Steps
 
 1. Run your first briefing
-2. Review the tiered output and understand Tier 1/2/3 classification
-3. Paper trade Tier 1 picks using staged entry for 3-6 months
+2. Review the tiered output and understand S/A/B/C classification
+3. Paper trade S/A picks using staged entry for 3-6 months
 4. Track performance vs. benchmark (SPY comparison included in briefing)
 5. Adjust quality weights based on what you learn
 6. Consider real money only after validating the system

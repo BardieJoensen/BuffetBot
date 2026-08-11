@@ -40,10 +40,26 @@ from typing import Any, Optional, cast
 from anthropic import Anthropic
 from anthropic.types import TextBlock
 
-from .analysis_parser import AnalysisParseError, parse_analysis, parse_quick_screen
+from .analysis_parser import AnalysisParseError, QuickScreenParseError, parse_analysis, parse_quick_screen
 from .config import config
 
 logger = logging.getLogger(__name__)
+
+
+class NewsScreenParseError(ValueError):
+    """Raised when a news-risk response lacks the required verdict fields."""
+
+
+def _failed_quick_screen(symbol: str, reason: str) -> dict:
+    """Return an explicitly ineligible result for an unavailable LLM screen."""
+    return {
+        "symbol": symbol,
+        "worth_analysis": False,
+        "moat_hint": 0,
+        "quality_hint": 0,
+        "reason": reason,
+        "valid": False,
+    }
 
 
 def _first_text(content: list) -> str:
@@ -475,10 +491,9 @@ class CompanyAnalyzer:
             max_tokens=4096,
             # Thinking disabled: these prompts demand a rigid, string-parsed
             # output format, and thinking competes with max_tokens. A truncated
-            # response doesn't raise — analysis_parser degrades silently into
-            # pessimistic defaults (NONE moat, LOW conviction), which would look
-            # like every stock suddenly being bad. Enable deliberately, with a
-            # raised max_tokens, if the quality tradeoff is worth measuring.
+            # response doesn't raise at the API boundary; analysis_parser's
+            # structural gate rejects it. Enable deliberately, with a raised
+            # max_tokens, if the quality tradeoff is worth measuring.
             thinking={"type": "disabled"},
             system=[
                 {
@@ -564,12 +579,8 @@ Focus especially on whether the moat and durability assessments are realistic.""
         response = self.client.messages.create(
             model=self.model_opus,
             max_tokens=2048,
-            # Thinking disabled: these prompts demand a rigid, string-parsed
-            # output format, and thinking competes with max_tokens. A truncated
-            # response doesn't raise — analysis_parser degrades silently into
-            # pessimistic defaults (NONE moat, LOW conviction), which would look
-            # like every stock suddenly being bad. Enable deliberately, with a
-            # raised max_tokens, if the quality tradeoff is worth measuring.
+            # Thinking disabled because the response is rigid and string-parsed;
+            # it otherwise competes with the output token budget.
             thinking={"type": "disabled"},
             system=[
                 {
@@ -805,12 +816,8 @@ Assess business quality regardless of current valuation."""
             response = self.client.messages.create(
                 model=self.model_light,
                 max_tokens=256,
-                # Thinking disabled: these prompts demand a rigid, string-parsed
-                # output format, and thinking competes with max_tokens. A truncated
-                # response doesn't raise — analysis_parser degrades silently into
-                # pessimistic defaults (NONE moat, LOW conviction), which would look
-                # like every stock suddenly being bad. Enable deliberately, with a
-                # raised max_tokens, if the quality tradeoff is worth measuring.
+                # Thinking disabled because the response is rigid and
+                # string-parsed; it otherwise competes with the output budget.
                 thinking={"type": "disabled"},
                 system=[
                     {
@@ -827,14 +834,7 @@ Assess business quality regardless of current valuation."""
 
         except Exception as e:
             logger.warning(f"Haiku quick-screen failed for {symbol}: {e}")
-            # On failure, assume worth analyzing (fail open)
-            return {
-                "symbol": symbol,
-                "worth_analysis": True,
-                "moat_hint": 3,
-                "quality_hint": 3,
-                "reason": f"Quick-screen error: {e}",
-            }
+            return _failed_quick_screen(symbol, f"Quick-screen error: {e}")
 
     def check_news_for_red_flags(
         self, symbol: str, investment_thesis: str, thesis_risks: list[str], recent_news: str
@@ -868,12 +868,8 @@ Analyze the news and determine:
         response = self.client.messages.create(
             model=self.model_light,
             max_tokens=1024,
-            # Thinking disabled: these prompts demand a rigid, string-parsed
-            # output format, and thinking competes with max_tokens. A truncated
-            # response doesn't raise — analysis_parser degrades silently into
-            # pessimistic defaults (NONE moat, LOW conviction), which would look
-            # like every stock suddenly being bad. Enable deliberately, with a
-            # raised max_tokens, if the quality tradeoff is worth measuring.
+            # Thinking disabled because the response is rigid and string-parsed;
+            # the parser below rejects incomplete output instead of assuming HOLD.
             thinking={"type": "disabled"},
             system=[
                 {
@@ -886,16 +882,23 @@ Analyze the news and determine:
         )
 
         text: str = _first_text(response.content)
-        has_flags = "RED FLAGS DETECTED: YES" in text.upper()
+        flags_match = re.search(r"^RED FLAGS DETECTED:\s*(YES|NO)\s*$", text, re.IGNORECASE | re.MULTILINE)
+        recommendation_match = re.search(
+            r"^RECOMMENDATION:\s*(HOLD|REVIEW|SELL)\s*$",
+            text,
+            re.IGNORECASE | re.MULTILINE,
+        )
+        if flags_match is None or recommendation_match is None:
+            raise NewsScreenParseError(
+                f"{symbol}: news screen must contain RED FLAGS DETECTED: YES/NO and RECOMMENDATION: HOLD/REVIEW/SELL"
+            )
 
-        # Extract recommendation
-        rec = "HOLD"
-        if "RECOMMENDATION: SELL" in text.upper():
-            rec = "SELL"
-        elif "RECOMMENDATION: REVIEW" in text.upper():
-            rec = "REVIEW"
-
-        return {"has_red_flags": has_flags, "analysis": text, "recommendation": rec}
+        return {
+            "has_red_flags": flags_match.group(1).upper() == "YES",
+            "analysis": text,
+            "recommendation": recommendation_match.group(1).upper(),
+            "valid": True,
+        }
 
     # ─────────────────────────────────────────────────────────────
     # Batch API methods (50% discount on all requests)
@@ -969,28 +972,20 @@ Assess business quality regardless of current valuation."""
         for result in self.client.messages.batches.results(batch.id):
             symbol = result.custom_id
             if result.result.type == "succeeded":
-                text: str = _first_text(result.result.message.content)
-                results_map[symbol] = parse_quick_screen(text, symbol)
+                try:
+                    text: str = _first_text(result.result.message.content)
+                    results_map[symbol] = parse_quick_screen(text, symbol)
+                except (QuickScreenParseError, ValueError) as exc:
+                    logger.warning("Batch quick-screen parse failed for %s: %s", symbol, exc)
+                    results_map[symbol] = _failed_quick_screen(symbol, f"Quick-screen parse error: {exc}")
             else:
                 logger.warning(f"Batch quick-screen failed for {symbol}: {result.result.type}")
-                results_map[symbol] = {
-                    "symbol": symbol,
-                    "worth_analysis": True,
-                    "moat_hint": 3,
-                    "quality_hint": 3,
-                    "reason": f"Batch error: {result.result.type}",
-                }
+                results_map[symbol] = _failed_quick_screen(symbol, f"Batch error: {result.result.type}")
 
         return [
             results_map.get(
                 s,
-                {
-                    "symbol": s,
-                    "worth_analysis": True,
-                    "moat_hint": 3,
-                    "quality_hint": 3,
-                    "reason": "Missing from batch",
-                },
+                _failed_quick_screen(s, "Missing from batch"),
             )
             for s in symbol_order
         ]

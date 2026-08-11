@@ -126,16 +126,17 @@ class TestQuickScreenParsing:
         assert result["moat_hint"] == 4
         assert result["quality_hint"] == 5
 
-    def test_fails_open_when_no_text_block(self):
+    def test_fails_closed_when_no_text_block(self):
         """
-        Documents the existing fail-open contract: a screening failure must let
-        the stock through to deeper analysis rather than silently dropping it.
+        A screening failure must not fabricate a neutral passing score that can
+        later reach automated trading.
         """
         analyzer = _analyzer_with_response([_FakeThinkingBlock()])
 
         result = analyzer.quick_screen("AAPL", "some filing text")
 
-        assert result["worth_analysis"] is True
+        assert result["worth_analysis"] is False
+        assert result["valid"] is False
         assert "error" in result["reason"].lower()
 
     def test_uses_the_light_model(self):
@@ -158,13 +159,19 @@ class TestNewsRedFlagParsing:
         assert result["has_red_flags"] is True
         assert result["recommendation"] == "SELL"
 
-    def test_defaults_to_hold(self):
-        analyzer = self._response("RED FLAGS DETECTED: NO\nEXPLANATION: routine")
+    def test_parses_explicit_hold(self):
+        analyzer = self._response("RED FLAGS DETECTED: NO\nRECOMMENDATION: HOLD\nEXPLANATION: routine")
 
         result = analyzer.check_news_for_red_flags("AAPL", "thesis", [], "news")
 
         assert result["has_red_flags"] is False
         assert result["recommendation"] == "HOLD"
+
+    def test_missing_recommendation_raises_instead_of_defaulting_to_hold(self):
+        analyzer = self._response("RED FLAGS DETECTED: NO\nEXPLANATION: routine")
+
+        with pytest.raises(ValueError, match="news screen must contain"):
+            analyzer.check_news_for_red_flags("AAPL", "thesis", [], "news")
 
     def test_detects_review_recommendation(self):
         analyzer = self._response("RED FLAGS DETECTED: YES\nRECOMMENDATION: REVIEW")
@@ -243,7 +250,7 @@ class TestBatchResultParsing:
         assert out[0]["moat_hint"] == 5
         assert out[0]["quality_hint"] == 4
 
-    def test_fails_open_on_errored_result(self):
+    def test_fails_closed_on_errored_result(self):
         errored = MagicMock()
         errored.custom_id = "AAPL"
         errored.result.type = "errored"
@@ -251,7 +258,16 @@ class TestBatchResultParsing:
 
         out = analyzer.batch_quick_screen([("AAPL", "filing text")])
 
-        assert out[0]["worth_analysis"] is True
+        assert out[0]["worth_analysis"] is False
+        assert out[0]["valid"] is False
+
+    def test_fails_closed_on_malformed_success(self):
+        analyzer = self._batch_analyzer([self._succeeded("AAPL", [_FakeTextBlock("looks good")])])
+
+        out = analyzer.batch_quick_screen([("AAPL", "filing text")])
+
+        assert out[0]["worth_analysis"] is False
+        assert out[0]["valid"] is False
 
     def test_preserves_input_order(self):
         analyzer = self._batch_analyzer(
