@@ -23,6 +23,7 @@ tier name the way falling short of 25% undervalued used to.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Optional
 
@@ -30,13 +31,12 @@ from .accounts.base import AccountState, PositionState
 from .config import Config
 from .config import config as default_config
 
-# Tier rank: higher = more conviction, used both to rank buy candidates and
-# to compare a held position against what else is available. A stock with no
-# tier yet (not through Sonnet deep-analysis) ranks between C and B — a fresh
-# undervalued find from this week's screen shouldn't be disadvantaged below a
-# stock that was already analyzed and downgraded.
+# Tier rank: higher = more conviction, used to compare held positions and
+# already validated S/A buy candidates. B/None/C remain in the map so legacy
+# holdings can be ranked for rotation, but they are never eligible to buy.
 TIER_RANK: dict[Optional[str], int] = {"S": 4, "A": 3, "B": 2, None: 1, "C": 0}
 TIER_WEIGHT: dict[Optional[str], float] = {"S": 1.0, "A": 0.85, "B": 0.65, None: 0.55, "C": 0.45}
+BUYABLE_TIERS = frozenset({"S", "A"})
 
 # Regime -> the Config field holding its target invested %.
 _REGIME_TARGET_FIELD = {
@@ -88,6 +88,7 @@ class BuyIntent:
 class SellIntent:
     symbol: str
     reason: str
+    quantity: Optional[float] = None  # None means exit the entire position
 
 
 @dataclass
@@ -133,6 +134,23 @@ def plan_buys(
     remainder is left as cash (gap simply isn't fully closed this run).
     """
     target_pct = target_invested_pct(regime, cfg=cfg)
+    state_values = (state.equity, state.invested_value, state.buying_power, target_pct)
+    if not all(math.isfinite(value) for value in state_values):
+        raise ValueError("account state and deployment target must be finite")
+    if state.equity <= 0 or state.invested_value < 0 or state.buying_power < 0:
+        raise ValueError("account equity must be positive and balances non-negative")
+    if not 0 <= target_pct <= 1:
+        raise ValueError("deployment target must be between 0 and 1")
+    config_values = (cfg.max_position_pct, cfg.min_trade_usd, cfg.quality_ceiling_pct)
+    if (
+        not all(math.isfinite(value) for value in config_values)
+        or not 0 < cfg.max_position_pct <= 1
+        or cfg.min_trade_usd <= 0
+        or cfg.quality_ceiling_pct < 0
+        or cfg.max_positions < 1
+    ):
+        raise ValueError("position and minimum-trade configuration is invalid")
+
     target_value = state.equity * target_pct
     gap = target_value - state.invested_value
 
@@ -152,9 +170,12 @@ def plan_buys(
     for c in candidates:
         if c.symbol in held_symbols:
             continue
-        # plan_sells treats a held C-tier as a thesis break and always sells
-        # it — buying one here would just be churn queued for next week.
-        if c.tier == "C":
+        # Defense in depth: the scheduler applies the same gate before building
+        # candidates, but the pure planner must also reject unanalysed/B/C names
+        # so another caller cannot bypass the deep-analysis requirement.
+        if c.tier not in BUYABLE_TIERS:
+            continue
+        if c.margin_of_safety is None or not math.isfinite(c.margin_of_safety):
             continue
         if c.margin_of_safety is not None and c.margin_of_safety < -cfg.quality_ceiling_pct:
             plan.skipped_ceiling.append(c.symbol)
@@ -208,7 +229,7 @@ def plan_sells(
     problem, is held — never sold to cash.
     """
     held_symbols = {h.position.symbol for h in held}
-    open_candidates = [c for c in candidates if c.symbol not in held_symbols]
+    open_candidates = [c for c in candidates if c.symbol not in held_symbols and c.tier in BUYABLE_TIERS]
     best_open_key = max((_rank_key(c.tier, c.margin_of_safety) for c in open_candidates), default=None)
 
     sells: list[SellIntent] = []
@@ -249,10 +270,16 @@ def plan_sells(
         better_candidate_waiting = best_open_key is not None and best_open_key > _rank_key(h.tier, h.margin_of_safety)
 
         if overweight:
+            target_value = equity * cfg.max_position_pct
+            excess_value = max(0.0, pos.market_value - target_value)
+            if pos.price <= 0 or excess_value < cfg.min_trade_usd:
+                continue
+            trim_quantity = min(pos.shares, excess_value / pos.price)
             sells.append(
                 SellIntent(
                     symbol=pos.symbol,
                     reason=f"Rotate: overweight at {pos.market_value / equity:.1%} of equity, near fair value",
+                    quantity=trim_quantity,
                 )
             )
         elif better_candidate_waiting:

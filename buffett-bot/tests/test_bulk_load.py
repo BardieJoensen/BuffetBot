@@ -522,6 +522,33 @@ class TestStep4HaikuBatchDryRun:
         )
         assert "NODATA" not in result
 
+    def test_invalid_result_is_returned_but_not_cached(self, tmp_path):
+        db = _make_db(tmp_path)
+        mock_analyzer = MagicMock()
+        mock_analyzer.batch_quick_screen.return_value = [
+            {
+                "symbol": "RETRY",
+                "worth_analysis": False,
+                "moat_hint": 0,
+                "quality_hint": 0,
+                "reason": "Malformed response",
+                "valid": False,
+            }
+        ]
+
+        result = step4_haiku_batch(
+            mock_analyzer,
+            priority=["RETRY"],
+            data_map={"RETRY": {"name": "Retry Inc"}},
+            conviction_notes={},
+            db=db,
+            dry_run=False,
+            limit=10,
+        )
+
+        assert result["RETRY"]["valid"] is False
+        assert db.get_latest_haiku("RETRY") is None
+
     def test_respects_limit(self, tmp_path):
         db = _make_db(tmp_path)
         mock_analyzer = MagicMock()

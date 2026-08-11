@@ -47,7 +47,18 @@ from typing import Optional
 import pandas as pd
 import yfinance as yf
 
+from .tier_engine import Tier, normalize_tier
+
 logger = logging.getLogger(__name__)
+
+
+def _canonical_tier_value(value) -> Optional[str]:
+    """Normalize current and legacy snapshot tiers for grouped reporting."""
+    try:
+        return normalize_tier(value).value
+    except ValueError:
+        return None
+
 
 _backtest_dir = Path("data/backtest")
 
@@ -574,14 +585,14 @@ def track_watchlist_performance() -> dict:
                 snapshot_result["tracked_count"] = len(changes)
 
                 # By tier
-                for tier_num in [1, 2, 3]:
+                for tier in Tier:
                     tier_changes = [
                         s["price_change"]
                         for s in snapshot_result["stocks"]
-                        if s.get("tier") == tier_num and s["price_change"] is not None
+                        if _canonical_tier_value(s.get("tier")) == tier.value and s["price_change"] is not None
                     ]
                     if tier_changes:
-                        snapshot_result[f"tier{tier_num}_avg_return"] = sum(tier_changes) / len(tier_changes)
+                        snapshot_result[f"tier_{tier.value}_avg_return"] = sum(tier_changes) / len(tier_changes)
 
             results.append(snapshot_result)
 
@@ -667,10 +678,10 @@ def generate_validation_report(
             lines.append(f"Snapshot: {snap_date} ({count} stocks tracked)")
             if avg_ret is not None:
                 lines.append(f"  Avg return since snapshot: {avg_ret:+.1%}")
-                for tier_num in [1, 2, 3]:
-                    tier_ret = snap.get(f"tier{tier_num}_avg_return")
+                for tier in Tier:
+                    tier_ret = snap.get(f"tier_{tier.value}_avg_return")
                     if tier_ret is not None:
-                        lines.append(f"  Tier {tier_num} avg return: {tier_ret:+.1%}")
+                        lines.append(f"  {tier.value}-tier avg return: {tier_ret:+.1%}")
                 lines.append(f"  Best:  {snap.get('best', 0):+.1%}")
                 lines.append(f"  Worst: {snap.get('worst', 0):+.1%}")
             lines.append("")

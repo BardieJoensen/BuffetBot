@@ -35,8 +35,10 @@ Output:
 
 import json
 import logging
+import math
 from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import Optional
 
@@ -44,15 +46,25 @@ from .config import config
 
 logger = logging.getLogger(__name__)
 
+
+class Tier(StrEnum):
+    """Canonical investment tier persisted and exchanged across the app."""
+
+    S = "S"
+    A = "A"
+    B = "B"
+    C = "C"
+
+
 # Tier ordering: lower number = better tier (used for movement comparison)
-TIER_ORDER: dict[str, int] = {"S": 0, "A": 1, "B": 2, "C": 3}
+TIER_ORDER: dict[Tier, int] = {Tier.S: 0, Tier.A: 1, Tier.B: 2, Tier.C: 3}
 
 # Position sizing constraints by tier
-TIER_CONFIG: dict[str, dict] = {
-    "S": {"max_position_pct": 0.25, "num_tranches": 3, "label": "Wonderful"},
-    "A": {"max_position_pct": 0.15, "num_tranches": 2, "label": "Good Enough"},
-    "B": {"max_position_pct": 0.00, "num_tranches": 0, "label": "Watch"},
-    "C": {"max_position_pct": 0.00, "num_tranches": 0, "label": "Monitor"},
+TIER_CONFIG: dict[Tier, dict] = {
+    Tier.S: {"max_position_pct": 0.25, "num_tranches": 3, "label": "Wonderful"},
+    Tier.A: {"max_position_pct": 0.15, "num_tranches": 2, "label": "Good Enough"},
+    Tier.B: {"max_position_pct": 0.00, "num_tranches": 0, "label": "Watch"},
+    Tier.C: {"max_position_pct": 0.00, "num_tranches": 0, "label": "Monitor"},
 }
 
 # Gap threshold for "approaching target" alerts (within 10% of target entry)
@@ -62,9 +74,50 @@ DEFAULT_PROXIMITY_ALERT_PCT: float = config.tier1_proximity_alert_pct
 EXTREME_PREMIUM_THRESHOLD: float = 0.50
 
 
-def _tier_rank(tier: str) -> int:
+def normalize_tier(value, *, moat: Optional[str] = None, conviction: Optional[str] = None) -> Tier:
+    """
+    Convert persisted/current tier representations to :class:`Tier`.
+
+    Numeric values are legacy v1 data.  Old Tier 1 covered both the new S and
+    A definitions, so use the stored moat/conviction where available; without
+    that context, retain the historical migration behavior (1 -> S).
+    """
+    if isinstance(value, Tier):
+        return value
+    if isinstance(value, str):
+        candidate = value.strip().upper()
+        if candidate in Tier._value2member_map_:
+            return Tier(candidate)
+        if candidate.isdigit():
+            value = int(candidate)
+    if value == 1:
+        if moat is not None or conviction is not None:
+            moat_value = (moat or "").lower()
+            conviction_value = (conviction or "").upper()
+            return Tier.S if moat_value == "wide" and conviction_value == "HIGH" else Tier.A
+        return Tier.S
+    if value == 2:
+        return Tier.B
+    if value in (0, 3):
+        return Tier.C
+    raise ValueError(f"Unknown tier value: {value!r}")
+
+
+def _tier_rank(tier) -> int:
     """Lower = better. S=0 is best; unknown tier = 99."""
-    return TIER_ORDER.get(tier, 99)
+    try:
+        return TIER_ORDER[normalize_tier(tier)]
+    except ValueError:
+        return 99
+
+
+def _positive_finite(value) -> Optional[float]:
+    """Return a positive finite float, otherwise None."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and number > 0 else None
 
 
 @dataclass
@@ -72,13 +125,16 @@ class TierAssignment:
     """Result of tier assignment for a single stock."""
 
     symbol: str
-    tier: str  # S, A, B, or C
+    tier: Tier  # S, A, B, or C
     quality_level: str  # "wonderful", "good", "moderate", "low"
     tier_reason: str
     target_entry_price: Optional[float] = None
     current_price: Optional[float] = None
     price_gap_pct: Optional[float] = None  # (current - target) / target; negative = below target
     approaching_target: bool = False  # True when B-tier stock within proximity_alert_pct of target
+
+    def __post_init__(self) -> None:
+        self.tier = normalize_tier(self.tier)
 
 
 @dataclass
@@ -88,8 +144,8 @@ class WatchlistMovement:
     symbol: str
     change_type: str  # "new", "removed", "tier_up", "tier_down", "approaching"
     detail: str
-    previous_tier: Optional[str] = None
-    current_tier: Optional[str] = None
+    previous_tier: Optional[Tier] = None
+    current_tier: Optional[Tier] = None
 
 
 # ─── Assignment Logic ──────────────────────────────────────────────────────
@@ -122,21 +178,26 @@ def assign_tier(
     symbol = analysis.symbol
 
     # Resolve target entry price and current price
-    target = getattr(analysis, "target_entry_price", None)
-    current = getattr(analysis, "current_price", None)
+    target = _positive_finite(getattr(analysis, "target_entry_price", None))
+    current = _positive_finite(getattr(analysis, "current_price", None))
 
-    if target is None and external_valuation:
-        avg_fv = external_valuation.average_fair_value
+    if target is None and external_valuation is not None:
+        avg_fv = _positive_finite(external_valuation.average_fair_value)
         if avg_fv:
-            target = avg_fv * (1 - config.margin_of_safety_pct)
+            target = _positive_finite(avg_fv * (1 - config.margin_of_safety_pct))
 
-    if current is None and external_valuation:
-        current = external_valuation.current_price
+    # A deterministic market-data price is authoritative. The LLM may repeat a
+    # price in its prose, but that value can be stale or hallucinated.
+    if external_valuation is not None:
+        # Supplying an external valuation is an explicit request to use its
+        # deterministic quote. An invalid quote must remove, not fall back to,
+        # the model's potentially stale or hallucinated price.
+        current = _positive_finite(external_valuation.current_price)
 
     # Compute gap: positive = above target (overpriced), negative = below (buyable)
     gap: Optional[float] = None
     approaching = False
-    if target and current and target > 0:
+    if target is not None and current is not None:
         gap = float(current - target) / float(target)
         # approaching_target is meaningful for B-tier: stock is close to becoming buyable
         approaching = 0 < gap <= proximity_alert_pct
@@ -155,7 +216,7 @@ def assign_tier(
     if quality == "low":
         return TierAssignment(
             symbol=symbol,
-            tier="C",
+            tier=Tier.C,
             quality_level=quality,
             tier_reason="Low quality: no moat and low conviction — monitor passively",
             target_entry_price=target,
@@ -167,7 +228,7 @@ def assign_tier(
     if quality == "moderate":
         return TierAssignment(
             symbol=symbol,
-            tier="C",
+            tier=Tier.C,
             quality_level=quality,
             tier_reason=f"Moderate quality: {moat} moat, {conviction} conviction",
             target_entry_price=target,
@@ -181,7 +242,7 @@ def assign_tier(
         # No price data — can't confirm the price is right. Watch it.
         return TierAssignment(
             symbol=symbol,
-            tier="B",
+            tier=Tier.B,
             quality_level=quality,
             tier_reason=f"{quality.title()} quality ({moat} moat, {conviction}), no price data — watching",
             target_entry_price=target,
@@ -194,7 +255,7 @@ def assign_tier(
         if quality == "wonderful":
             return TierAssignment(
                 symbol=symbol,
-                tier="S",
+                tier=Tier.S,
                 quality_level=quality,
                 tier_reason=f"Wonderful business at/below target entry (${current:,.0f} ≤ ${target:,.0f})",
                 target_entry_price=target,
@@ -205,7 +266,7 @@ def assign_tier(
         else:  # "good"
             return TierAssignment(
                 symbol=symbol,
-                tier="A",
+                tier=Tier.A,
                 quality_level=quality,
                 tier_reason=f"Good business at/below target entry (${current:,.0f} ≤ ${target:,.0f})",
                 target_entry_price=target,
@@ -220,7 +281,7 @@ def assign_tier(
     if quality == "wonderful" and 0 < gap <= 0.10 and quality_score is not None and quality_score >= 80:
         return TierAssignment(
             symbol=symbol,
-            tier="A",
+            tier=Tier.A,
             quality_level=quality,
             tier_reason=(
                 f"Fair price exception: wonderful business {gap:+.1%} above target "
@@ -236,7 +297,7 @@ def assign_tier(
     if gap < EXTREME_PREMIUM_THRESHOLD:
         return TierAssignment(
             symbol=symbol,
-            tier="B",
+            tier=Tier.B,
             quality_level=quality,
             tier_reason=(f"{quality.title()} quality but {gap:+.0%} above target ${target:,.0f} — watching"),
             target_entry_price=target,
@@ -248,7 +309,7 @@ def assign_tier(
     # Gap ≥ 50% — extreme premium, defer to C
     return TierAssignment(
         symbol=symbol,
-        tier="C",
+        tier=Tier.C,
         quality_level=quality,
         tier_reason=(f"{quality.title()} quality but {gap:+.0%} above target — extreme premium, monitor passively"),
         target_entry_price=target,
@@ -263,7 +324,7 @@ def assign_tier(
 
 def staged_entry_suggestion(
     target_entry_price: float,
-    tier: str = "A",
+    tier: Tier | str = Tier.A,
     step_pct: float = 0.05,
 ) -> list[dict]:
     """
@@ -277,7 +338,11 @@ def staged_entry_suggestion(
 
     Returns list of dicts with tranche label, price, and allocation fraction.
     """
-    num_tranches = TIER_CONFIG.get(tier, {}).get("num_tranches", 2)
+    try:
+        canonical_tier = normalize_tier(tier)
+    except ValueError:
+        canonical_tier = Tier.A
+    num_tranches = TIER_CONFIG.get(canonical_tier, {}).get("num_tranches", 2)
     if num_tranches == 0:
         return []  # B/C tiers don't buy
 

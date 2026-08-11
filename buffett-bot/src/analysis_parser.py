@@ -18,8 +18,7 @@ So structural failure is now an exception, not a default: if the response does
 not contain enough of the expected headers to be the format we asked for,
 parse_analysis raises AnalysisParseError. Individual fields still degrade
 gracefully — one missing section shouldn't discard a good analysis — but every
-defaulted rating is counted and logged, and the survivable-but-suspicious case
-is surfaced via AnalysisV2.parse_confidence for the health check to trend.
+defaulted rating is counted and logged so systemic parser drift is visible.
 """
 
 import logging
@@ -58,6 +57,10 @@ class AnalysisParseError(ValueError):
     Distinct from a partial parse: this means returning *anything* would be
     fabricating an opinion the model never expressed.
     """
+
+
+class QuickScreenParseError(ValueError):
+    """Raised when a quick-screen response is incomplete or malformed."""
 
 
 def extract_section(text: str, header: str, next_header: Optional[str] = None) -> str:
@@ -322,29 +325,39 @@ def parse_analysis(symbol: str, company_name: str, analysis_text: str, sector: s
 
 
 def parse_quick_screen(text: str, symbol: str) -> dict:
-    """Parse a quick-screen response into a result dict."""
+    """Parse and validate an exact three-line quick-screen response."""
     lines = [line.strip() for line in text.strip().split("\n") if line.strip()]
 
-    moat_hint = 3
-    quality_hint = 3
-    reason = "Unable to parse response"
+    moat_hint: Optional[int] = None
+    quality_hint: Optional[int] = None
+    reason = ""
 
     for line in lines:
         upper = line.upper()
         if upper.startswith("MOAT:"):
             try:
-                moat_hint = int(line.split(":")[-1].strip()[0])
-                moat_hint = max(1, min(5, moat_hint))
-            except (ValueError, IndexError):
-                pass
+                moat_hint = int(line.split(":", 1)[1].strip())
+            except (ValueError, IndexError) as exc:
+                raise QuickScreenParseError(f"{symbol}: invalid MOAT line: {line!r}") from exc
         elif upper.startswith("QUALITY:"):
             try:
-                quality_hint = int(line.split(":")[-1].strip()[0])
-                quality_hint = max(1, min(5, quality_hint))
-            except (ValueError, IndexError):
-                pass
+                quality_hint = int(line.split(":", 1)[1].strip())
+            except (ValueError, IndexError) as exc:
+                raise QuickScreenParseError(f"{symbol}: invalid QUALITY line: {line!r}") from exc
         elif upper.startswith("REASON:"):
             reason = line.split(":", 1)[-1].strip()
+
+    if (
+        moat_hint is None
+        or quality_hint is None
+        or moat_hint not in range(1, 6)
+        or quality_hint not in range(1, 6)
+        or not reason
+    ):
+        raise QuickScreenParseError(
+            f"{symbol}: expected MOAT and QUALITY in 1..5 plus a non-empty REASON; "
+            f"got moat={moat_hint!r}, quality={quality_hint!r}, reason={reason!r}"
+        )
 
     worth_analysis = (moat_hint + quality_hint) >= 6
 
@@ -354,4 +367,5 @@ def parse_quick_screen(text: str, symbol: str) -> dict:
         "moat_hint": moat_hint,
         "quality_hint": quality_hint,
         "reason": reason,
+        "valid": True,
     }

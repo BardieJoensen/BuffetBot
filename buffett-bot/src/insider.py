@@ -88,8 +88,9 @@ def _fetch_transactions(symbol: str, key: str) -> Optional[list]:
         if resp.status_code == 200:
             return resp.json().get("data", []) or []
         logger.debug(f"Finnhub insider {symbol} returned {resp.status_code}")
-    except Exception as e:
-        logger.debug(f"Finnhub insider error for {symbol}: {e}")
+    except Exception as exc:
+        # Requests exceptions may include the prepared URL and its token.
+        logger.debug("Finnhub insider error for %s (%s)", symbol, type(exc).__name__)
     return None
 
 

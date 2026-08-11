@@ -308,7 +308,9 @@ class FinnhubNewsFetcher:
             data = resp.json()
             return data if isinstance(data, list) else []
         except Exception as exc:
-            logger.warning("Finnhub fetch failed for %s: %s", symbol, exc)
+            # Requests exceptions include the fully prepared URL, including
+            # the token query parameter. Log the type only.
+            logger.warning("Finnhub fetch failed for %s (%s)", symbol, type(exc).__name__)
             return []
 
     def get_news_for_tickers(
@@ -479,21 +481,37 @@ def run_news_pipeline(
             )
             continue
 
-        has_red_flags = haiku_result.get("has_red_flags", False)
-        recommendation = haiku_result.get("recommendation", "HOLD")
+        has_red_flags = haiku_result.get("has_red_flags")
+        recommendation = haiku_result.get("recommendation")
+        if not isinstance(has_red_flags, bool) or recommendation not in {"HOLD", "REVIEW", "SELL"}:
+            logger.warning("Haiku news check returned an invalid verdict for %s; leaving it eligible for retry", ticker)
+            db.log_news_event(
+                ticker,
+                top_item.get("headline", ""),
+                source=top_item.get("source"),
+                published_at=_ts_to_iso(top_item.get("datetime")),
+                event_type=top_item.get("event_type"),
+                haiku_material=None,
+            )
+            continue
 
-        # Log event to DB regardless of red-flag result
-        db.log_news_event(
+        needs_sonnet = has_red_flags or recommendation != "HOLD"
+
+        # NULL sonnet_triggered means the workflow is incomplete and the
+        # headline remains eligible for retry. A clean HOLD is complete now;
+        # a REVIEW/SELL is marked complete only after Sonnet and persistence.
+        event_id = db.log_news_event(
             ticker,
             top_item.get("headline", ""),
             source=top_item.get("source"),
             published_at=_ts_to_iso(top_item.get("datetime")),
             event_type=top_item.get("event_type"),
-            haiku_material=has_red_flags,
+            haiku_material=needs_sonnet,
+            sonnet_triggered=False if not needs_sonnet else None,
             summary=(haiku_result.get("analysis", "") or "")[:500],
         )
 
-        if not has_red_flags and recommendation == "HOLD":
+        if not needs_sonnet:
             logger.info("%s: Haiku — no red flags, HOLD", ticker)
             continue
 
@@ -529,7 +547,27 @@ def run_news_pipeline(
         # Persist new analysis and tier
         old_da = db.get_latest_deep_analysis(ticker)
         old_tier = (old_da or {}).get("tier")
-        tier_assignment = assign_tier(analysis)
+        from .valuation import ValuationAggregator
+
+        external_val = None
+        try:
+            external_val = ValuationAggregator().get_valuation(ticker)
+        except Exception as exc:
+            logger.warning("External valuation failed during news re-analysis for %s: %s", ticker, exc)
+        if external_val is None or not external_val.has_valid_price:
+            logger.error("Skipping news-triggered tier update for %s: no valid deterministic market price", ticker)
+            continue
+        tier_assignment = assign_tier(
+            analysis,
+            external_valuation=external_val,
+            quality_score=(u or {}).get("quality_score"),
+        )
+        resolved_target = getattr(tier_assignment, "target_entry_price", None)
+        if not isinstance(resolved_target, (int, float)):
+            resolved_target = analysis.target_entry_price
+        resolved_price = getattr(tier_assignment, "current_price", None)
+        if not isinstance(resolved_price, (int, float)):
+            resolved_price = external_val.current_price
 
         fair_value_mid = (
             ((analysis.estimated_fair_value_low or 0) + (analysis.estimated_fair_value_high or 0)) / 2
@@ -542,7 +580,7 @@ def run_news_pipeline(
             moat_rating=analysis.moat_rating.value.upper(),
             moat_sources=analysis.moat_sources,
             fair_value=fair_value_mid,
-            target_entry=analysis.target_entry_price,
+            target_entry=resolved_target,
             investment_thesis=analysis.summary,
             key_risks=analysis.key_risks,
             thesis_breakers=analysis.thesis_risks,
@@ -561,15 +599,16 @@ def run_news_pipeline(
         # the next day's get_price_alerts(tiers=["S","A","B"]) query.
         # Without this, a B→C downgrade leaves a stale B-tier alert and the
         # stock continues to consume Haiku budget on subsequent news cycles.
-        entries = staged_entry_suggestion(analysis.target_entry_price or 0, tier_assignment.tier)
+        entries = staged_entry_suggestion(resolved_target or 0, tier_assignment.tier)
         db.upsert_price_alert(
             ticker,
             tier=tier_assignment.tier,
-            target_entry=analysis.target_entry_price,
+            target_entry=resolved_target,
             staged_entries=entries or None,
-            last_price=analysis.current_price,
+            last_price=resolved_price,
             gap_pct=tier_assignment.price_gap_pct,
         )
+        db.mark_news_event_complete(event_id, sonnet_triggered=True)
 
         # 5. Notify on tier change
         if old_tier != tier_assignment.tier:

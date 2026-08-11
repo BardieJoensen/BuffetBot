@@ -4,10 +4,11 @@ Briefing Generator Package
 Combines quantitative data and qualitative analysis into
 a human-readable monthly briefing document.
 
-v2.0 — Tiered Watchlist Format:
-- Tier 1: Wonderful business at/below fair value -> staged entry
-- Tier 2: Wonderful business, overpriced -> watch and wait
-- Tier 3: Good business worth monitoring -> re-evaluate next cycle
+v3.0 — S/A/B/C Watchlist Format:
+- S: Wonderful business at/below fair value -> three-stage entry
+- A: Good business at/below target -> two-stage entry
+- B: Quality business, wait for price
+- C: Monitor passively
 - Movement log: what changed since last briefing
 - Market regime summary
 - Approaching-target alerts
@@ -20,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from ..tier_engine import WatchlistMovement
+from ..tier_engine import Tier, WatchlistMovement, normalize_tier
 from ..valuation import AggregatedValuation
 from .db_briefing import generate_briefing_from_db
 from .html_formatter import generate_html_report
@@ -53,7 +54,7 @@ class StockBriefing:
     analysis: object
 
     # Tier assignment (from tier_engine)
-    tier: int = 2  # 1, 2, 3, 0=excluded
+    tier: Tier = Tier.B
     tier_reason: str = ""
     target_entry_price: Optional[float] = None
     price_gap_pct: Optional[float] = None
@@ -73,12 +74,15 @@ class StockBriefing:
 
     generated_at: datetime = field(default_factory=datetime.now)
 
+    def __post_init__(self) -> None:
+        self.tier = normalize_tier(self.tier)
+
     @property
     def recommendation(self) -> str:
         """Backward-compatible recommendation derived from tier."""
-        if self.tier == 1:
+        if self.tier in (Tier.S, Tier.A):
             return "BUY"
-        elif self.tier in (2, 3):
+        if self.tier == Tier.B:
             return "WATCHLIST"
         return "PASS"
 
@@ -182,21 +186,20 @@ def _build_json_output(
     movements: Optional[list[WatchlistMovement]] = None,
 ) -> dict:
     """Build JSON structure for programmatic access."""
-    tier1 = [b for b in briefings if b.tier == 1]
-    tier2 = [b for b in briefings if b.tier == 2]
-    tier3 = [b for b in briefings if b.tier == 3]
+    by_tier = {tier: [b for b in briefings if b.tier == tier] for tier in Tier}
 
     return {
-        "schema_version": "v2",
+        "schema_version": "v3",
         "generated_at": datetime.now().isoformat(),
         "market_temperature": market_temp,
         "benchmark": benchmark_data,
         "summary": {
             "total_analyzed": len(briefings),
-            "tier1_count": len(tier1),
-            "tier2_count": len(tier2),
-            "tier3_count": len(tier3),
-            "approaching_target": sum(1 for b in tier2 if b.approaching_target),
+            "s_tier_count": len(by_tier[Tier.S]),
+            "a_tier_count": len(by_tier[Tier.A]),
+            "b_tier_count": len(by_tier[Tier.B]),
+            "c_tier_count": len(by_tier[Tier.C]),
+            "approaching_target": sum(1 for b in by_tier[Tier.B] if b.approaching_target),
             "bubble_warnings": len(bubble_warnings) if bubble_warnings else 0,
             "radar": len(radar_stocks) if radar_stocks else 0,
         },
@@ -212,9 +215,7 @@ def _build_json_output(
             }
             for m in (movements or [])
         ],
-        "tier1": [_briefing_to_dict(b) for b in tier1],
-        "tier2": [_briefing_to_dict(b) for b in tier2],
-        "tier3": [_briefing_to_dict(b) for b in tier3],
+        "tiers": {tier.value: [_briefing_to_dict(b) for b in by_tier[tier]] for tier in Tier},
         "radar": radar_stocks or [],
         "bubble_watch": [w.to_dict() if hasattr(w, "to_dict") else w for w in (bubble_warnings or [])],
     }

@@ -30,15 +30,15 @@ LLM Layer (Claude) → Data Services (APIs) → Tier Engine → Output (Briefing
 - Convenience `@property` accessors (moat_rating, conviction_level, etc.) used by tier_engine and opus_second_opinion
 
 ### 4. **Tier Engine** (`src/tier_engine.py`)
-- Assigns stocks to tiers: Tier 1 (buy zone), Tier 2 (watch), Tier 3 (monitor), 0 (excluded)
-- Tier 1 = high quality (wide/narrow moat + HIGH/MEDIUM conviction) + price ≤ target entry
-- Staged entry suggestions: 3 tranches at descending prices from target
+- Assigns the canonical S/A/B/C tiers: S/A (buy zone), B (watch), C (monitor/pass)
+- S = wide moat + HIGH conviction at/below target; A = qualifying quality at/below target
+- Staged entry suggestions: three tranches for S and two for A
 - Movement tracking: detects new/removed/tier_up/tier_down/approaching changes between runs
 
-### 5. **Briefing Layer** (`src/briefing.py`)
-- Tiered watchlist format: Market Regime → Portfolio → Executive Summary → Movements → Tier 1/2/3
-- Tier 1 stocks include staged entry suggestions and Opus second opinions
-- Outputs text, HTML (with tier-specific CSS), and JSON (`schema_version: "v2"`)
+### 5. **Briefing Layer** (`src/briefing/`)
+- Tiered watchlist format: Market Regime → Portfolio → Executive Summary → Movements → S/A/B/C
+- S/A stocks include staged entry suggestions; optional Opus reviews apply to S tier
+- Outputs text, HTML (with tier-specific CSS), and JSON (`schema_version: "v3"`)
 
 ### 6. **Market Regime** (`src/bubble_detector.py`)
 - `classify_market_regime()`: Euphoria / Overvalued / Fair Value / Correction / Crisis
@@ -72,12 +72,12 @@ LLM Layer (Claude) → Data Services (APIs) → Tier Engine → Output (Briefing
 ```bash
 python scripts/run_monthly_briefing.py
 ```
-10-step pipeline: market regime → screen by quality → bubbles → Haiku pre-screen → Sonnet analysis → valuations → tier engine → portfolio check → Opus on Tier 1 → generate tiered briefing
+10-step pipeline: market regime → screen by quality → bubbles → Haiku pre-screen → Sonnet analysis → valuations → tier engine → portfolio check → Opus on S tier → generate tiered briefing
 
 ### Using Docker (Recommended)
 ```bash
-docker-compose up -d  # Starts scheduler
-docker exec buffett-bot python -m scripts.run_monthly_briefing  # Manual run
+docker compose up -d scheduler
+docker compose run --rm buffett-bot  # Manual, paid briefing run
 ```
 
 ### Configuration
@@ -113,11 +113,12 @@ Example: `Position.to_dict()` converts to JSON-serializable dict; `Position.from
 - Batch API: `batch_quick_screen()` and `batch_analyze_companies()` for 50% discount
 - AnalysisV2 has `@property` accessors (moat_rating, conviction_level, etc.) used by tier_engine and opus
 
-### 4. **Tier System** (replaces BUY/WATCHLIST/PASS)
-- Tier 1: Buy zone — high quality + price below target entry
-- Tier 2: Watch — high quality but price above target
-- Tier 3: Monitor — moderate quality, needs more research
-- Tier 0: Excluded — low quality or thesis broken
+### 4. **Tier System**
+- S: Wonderful business — wide moat + high conviction at/below target
+- A: Buy zone — qualifying quality and valuation, with a smaller size cap
+- B: Watch — quality business above target
+- C: Monitor/pass — low conviction, uncertain quality, or extreme premium
+- Numeric tiers exist only at legacy persistence boundaries and must be normalized on read
 
 ### 5. **Caching Strategy**
 - Weekly watchlist cached in `data/watchlist.json` with timestamp
@@ -131,6 +132,7 @@ Example: `Position.to_dict()` converts to JSON-serializable dict; `Position.from
 - Return `None` for unavailable data (e.g., private companies have no P/E)
 - Historical trend metrics individually wrapped in try/except for graceful degradation
 - Use optional types: `Optional[float]` in dataclasses
+- Fail closed at decision boundaries: invalid LLM output, broker reads, prices, fair values, or market regime must never authorize an order
 
 ### 7. **Thesis Tracking**
 - Each position has `thesis` (why bought) and `conviction` (HIGH/MEDIUM/LOW)

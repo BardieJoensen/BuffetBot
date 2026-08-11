@@ -338,27 +338,34 @@ class TestPacedAllowance:
 
 class TestGetRecentHeadlines:
     def test_returns_logged_headlines(self, db):
-        db.log_news_event("AAPL", "AAPL under SEC investigation")
+        db.log_news_event("AAPL", "AAPL under SEC investigation", sonnet_triggered=False)
         assert db.get_recent_headlines("AAPL") == {"AAPL under SEC investigation"}
 
     def test_scoped_per_ticker(self, db):
-        db.log_news_event("AAPL", "AAPL news")
-        db.log_news_event("MSFT", "MSFT news")
+        db.log_news_event("AAPL", "AAPL news", sonnet_triggered=False)
+        db.log_news_event("MSFT", "MSFT news", sonnet_triggered=False)
         assert db.get_recent_headlines("AAPL") == {"AAPL news"}
 
     def test_empty_for_unknown_ticker(self, db):
         assert db.get_recent_headlines("ZZZZ") == set()
 
     def test_excludes_headlines_outside_the_window(self, db):
-        db.log_news_event("AAPL", "old story")
+        db.log_news_event("AAPL", "old story", sonnet_triggered=False)
         with _open(db.path) as conn:
             conn.execute("UPDATE news_events SET detected_at = datetime('now', '-30 days')")
         assert db.get_recent_headlines("AAPL", days=7) == set()
 
     def test_deduplicates_repeats(self, db):
-        db.log_news_event("AAPL", "same story")
-        db.log_news_event("AAPL", "same story")
+        db.log_news_event("AAPL", "same story", sonnet_triggered=False)
+        db.log_news_event("AAPL", "same story", sonnet_triggered=False)
         assert db.get_recent_headlines("AAPL") == {"same story"}
+
+    def test_incomplete_workflow_remains_eligible_for_retry(self, db):
+        event_id = db.log_news_event("AAPL", "retry story", haiku_material=True)
+
+        assert db.get_recent_headlines("AAPL") == set()
+        assert db.mark_news_event_complete(event_id, sonnet_triggered=True) is True
+        assert db.get_recent_headlines("AAPL") == {"retry story"}
 
 
 # ─── Column migrations ────────────────────────────────────────────────────
@@ -657,6 +664,18 @@ class TestAnalysisStorage:
 
     def test_no_analysis_returns_none(self, db):
         assert db.get_latest_deep_analysis("UNKNOWN") is None
+
+    def test_valid_analysis_excludes_same_day_expired_latest_row(self, db):
+        db.save_deep_analysis("STALE", tier="A")
+        expired = (datetime.now() - timedelta(minutes=1)).isoformat()
+        with _open(db.path) as conn:
+            conn.execute(
+                "UPDATE deep_analyses SET expires_at = ? WHERE ticker = ?",
+                (expired, "STALE"),
+            )
+
+        assert db.get_latest_deep_analysis("STALE") is not None
+        assert db.get_valid_deep_analysis("STALE") is None
 
     def test_expiring_analyses_detected(self, db):
         """An analysis that expires in 10 days should appear in get_expiring_analyses(30)."""

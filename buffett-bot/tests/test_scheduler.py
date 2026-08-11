@@ -15,6 +15,7 @@ External dependencies (yfinance, Anthropic API, Alpaca) are always mocked.
 
 import logging
 import sys
+from dataclasses import replace
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
@@ -188,6 +189,20 @@ class TestGetUnscreenedTickers:
         result = db.get_unscreened_tickers()
         assert "AAPL" in result
 
+    def test_includes_ticker_with_same_day_expired_haiku(self, db):
+        _upsert_stock(db, "AAPL")
+        _save_haiku(db, "AAPL")
+        expired = (datetime.now() - timedelta(minutes=1)).isoformat()
+        from src.database import _open
+
+        with _open(db.path) as conn:
+            conn.execute(
+                "UPDATE haiku_screens SET expires_at = ? WHERE ticker = ?",
+                (expired, "AAPL"),
+            )
+
+        assert "AAPL" in db.get_unscreened_tickers()
+
     def test_ranked_by_quality_score_descending(self, db):
         _upsert_stock(db, "LOW_Q", quality_score=30.0)
         _upsert_stock(db, "HIGH_Q", quality_score=90.0)
@@ -310,6 +325,44 @@ class TestGetPortfolioTickersNeedingAnalysis:
         db.log_decision("ACVA", "buy", notional=8886.76)
         db.log_decision("ACVA", "sell", price=7.29, shares=1219.0)
         assert "ACVA" not in db.get_portfolio_tickers_needing_analysis()
+
+    def test_rejected_buy_is_not_treated_as_held(self, db):
+        db.log_decision("NOFILL", "buy", notional=1000.0, order_status="rejected")
+        assert "NOFILL" not in db.get_portfolio_tickers_needing_analysis()
+
+    def test_rejected_sell_does_not_remove_holding(self, db):
+        db.log_decision("STILLHELD", "buy", notional=1000.0, order_status="filled")
+        db.log_decision(
+            "STILLHELD",
+            "sell",
+            shares=10.0,
+            order_status="rejected",
+            reasoning_snapshot={"full_exit": True},
+        )
+        assert "STILLHELD" in db.get_portfolio_tickers_needing_analysis()
+
+    def test_partial_trim_does_not_remove_holding(self, db):
+        db.log_decision("TRIMMED", "buy", notional=1000.0, order_status="filled")
+        db.log_decision(
+            "TRIMMED",
+            "sell",
+            shares=2.0,
+            order_status="filled",
+            reasoning_snapshot={"full_exit": False},
+        )
+        assert "TRIMMED" in db.get_portfolio_tickers_needing_analysis()
+
+    def test_sell_in_another_account_does_not_remove_holding(self, db):
+        db.log_decision("MULTI", "buy", account_id="account_a", notional=1000.0, order_status="filled")
+        db.log_decision(
+            "MULTI",
+            "sell",
+            account_id="account_b",
+            shares=10.0,
+            order_status="filled",
+            reasoning_snapshot={"full_exit": True},
+        )
+        assert "MULTI" in db.get_portfolio_tickers_needing_analysis()
 
     def test_old_unheld_buy_excluded(self, db):
         db.log_decision("OLDBUY", "buy", notional=1000.0)
@@ -565,6 +618,12 @@ class TestMondayMaintenance:
 
 
 class TestWednesdayHaikuBatch:
+    @pytest.fixture(autouse=True)
+    def _enable_job(self, monkeypatch):
+        import scripts.scheduler as scheduler
+
+        monkeypatch.setattr(scheduler, "config", replace(scheduler.config, wednesday_haiku_enabled=True))
+
     def test_skips_when_budget_exhausted(self, tmp_path):
         """batch_quick_screen must NOT be called when budget is at max."""
         from scripts.scheduler import wednesday_haiku_batch
@@ -598,7 +657,16 @@ class TestWednesdayHaikuBatch:
         _upsert_stock(db, "AAPL", quality_score=85.0)
         db.save_fundamentals("AAPL", {"price": 195.0, "roe": 0.17}, as_of_date="2026-03-03")
 
-        fake_result = [{"symbol": "AAPL", "worth_analysis": True, "moat_hint": 4, "reason": "Wide moat"}]
+        fake_result = [
+            {
+                "symbol": "AAPL",
+                "worth_analysis": True,
+                "moat_hint": 4,
+                "quality_hint": 4,
+                "reason": "Wide moat",
+                "valid": True,
+            }
+        ]
 
         with patch("src.database.Database", return_value=db), patch("src.analyzer.CompanyAnalyzer") as MockAnalyzer:
             MockAnalyzer.return_value.batch_quick_screen.return_value = fake_result
@@ -608,6 +676,30 @@ class TestWednesdayHaikuBatch:
         assert haiku is not None
         assert haiku["passed"] == 1
         assert haiku["moat_estimate"] == "WIDE"
+
+    def test_invalid_result_is_not_cached(self, tmp_path):
+        """Transient API/parser failures remain eligible for the next run."""
+        from scripts.scheduler import wednesday_haiku_batch
+
+        db = Database(tmp_path / "test.db")
+        _upsert_stock(db, "AAPL", quality_score=85.0)
+        fake_result = [
+            {
+                "symbol": "AAPL",
+                "worth_analysis": False,
+                "moat_hint": 0,
+                "quality_hint": 0,
+                "reason": "API failure",
+                "valid": False,
+            }
+        ]
+
+        with patch("src.database.Database", return_value=db), patch("src.analyzer.CompanyAnalyzer") as MockAnalyzer:
+            MockAnalyzer.return_value.batch_quick_screen.return_value = fake_result
+            wednesday_haiku_batch()
+
+        assert db.get_latest_haiku("AAPL") is None
+        assert db.get_unscreened_tickers() == ["AAPL"]
 
     def test_budget_is_consumed_by_batch_count(self, tmp_path):
         """Exactly N slots should be consumed for an N-ticker batch."""
@@ -619,7 +711,15 @@ class TestWednesdayHaikuBatch:
             db.save_fundamentals(sym, {"price": 100.0}, as_of_date="2026-03-03")
 
         fake_results = [
-            {"symbol": s, "worth_analysis": True, "moat_hint": 3, "reason": "ok"} for s in ["AAPL", "MSFT", "GOOG"]
+            {
+                "symbol": s,
+                "worth_analysis": True,
+                "moat_hint": 3,
+                "quality_hint": 3,
+                "reason": "ok",
+                "valid": True,
+            }
+            for s in ["AAPL", "MSFT", "GOOG"]
         ]
 
         with patch("src.database.Database", return_value=db), patch("src.analyzer.CompanyAnalyzer") as MockAnalyzer:
@@ -645,6 +745,18 @@ class TestWednesdayHaikuBatch:
 
 
 class TestFridaySonnetBatch:
+    @pytest.fixture(autouse=True)
+    def _enable_job(self, monkeypatch):
+        import scripts.scheduler as scheduler
+
+        monkeypatch.setattr(scheduler, "config", replace(scheduler.config, friday_sonnet_enabled=True))
+        aggregator = MagicMock()
+        aggregator.return_value.get_valuation.return_value = MagicMock(
+            current_price=100.0,
+            average_fair_value=110.0,
+        )
+        monkeypatch.setattr("src.valuation.ValuationAggregator", aggregator)
+
     def test_skips_when_budget_exhausted(self, tmp_path):
         from scripts.scheduler import friday_sonnet_batch
 
@@ -1026,6 +1138,9 @@ class TestQuarantineReporting:
     def _run(self, db, account, notifier):
         from scripts.scheduler import daily_snapshot
 
+        if notifier.send_alert.side_effect is None and isinstance(notifier.send_alert.return_value, MagicMock):
+            notifier.send_alert.return_value = {"discord": True}
+
         with (
             patch("src.database.Database", return_value=db),
             patch("src.accounts.get_accounts", return_value=[account]),
@@ -1086,6 +1201,17 @@ class TestQuarantineReporting:
 
         assert notifier.send_alert.call_count == 2
 
+    def test_false_channel_results_do_not_consume_alert(self, tmp_path):
+        db = Database(tmp_path / "test.db")
+        notifier = MagicMock()
+        notifier.send_alert.return_value = {"discord": False, "telegram": False}
+        account = TestDailySnapshot()._mock_account_with_quarantine()
+
+        self._run(db, account, notifier)
+        self._run(db, account, notifier)
+
+        assert notifier.send_alert.call_count == 2
+
     def test_notification_failure_does_not_block_snapshot(self, tmp_path):
         db = Database(tmp_path / "test.db")
         notifier = MagicMock()
@@ -1132,6 +1258,161 @@ class TestQuarantineReporting:
         assert db.get_quarantined("alpaca_paper") == []
 
 
+# ─── broker order reconciliation ──────────────────────────────────────────────
+
+
+class TestBrokerOrderReconciliation:
+    def test_filled_sell_is_closed_at_broker_fill_price(self, tmp_path):
+        from scripts.scheduler import reconcile_broker_orders
+
+        db = Database(tmp_path / "test.db")
+        db.log_decision(
+            "AAPL",
+            "buy",
+            account_id="alpaca_paper",
+            tier="A",
+            price=80.0,
+            shares=10.0,
+            order_id="buy-1",
+            order_status="filled",
+            reasoning_snapshot={"fair_value": 100.0},
+        )
+        db.log_decision(
+            "AAPL",
+            "sell",
+            account_id="alpaca_paper",
+            order_id="sell-1",
+            order_status="accepted",
+            reasoning_snapshot={"entry_price": 80.0, "full_exit": True},
+        )
+        account = MagicMock(account_id="alpaca_paper")
+        account.get_order.return_value = {
+            "status": "filled",
+            "filled_avg_price": 95.0,
+            "filled_qty": 10.0,
+        }
+        notifier = MagicMock()
+        notifier.send_alert.return_value = {"discord": True}
+
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.accounts.get_accounts", return_value=[account]),
+            patch("src.benchmark.fetch_benchmark_return", return_value=0.05),
+            patch("src.notifications.NotificationManager", return_value=notifier),
+        ):
+            reconcile_broker_orders()
+
+        decision = db.get_decision_log("AAPL")[0]
+        assert decision["order_status"] == "filled"
+        assert decision["price"] == 95.0
+        trade = db.get_closed_trades("AAPL")[0]
+        assert trade["exit_price"] == 95.0
+        assert trade["realized_pl"] == pytest.approx(150.0)
+
+    def test_filled_without_fill_data_remains_pending(self, tmp_path):
+        from scripts.scheduler import reconcile_broker_orders
+
+        db = Database(tmp_path / "test.db")
+        db.log_decision(
+            "AAPL",
+            "buy",
+            account_id="alpaca_paper",
+            order_id="buy-1",
+            order_status="accepted",
+        )
+        account = MagicMock(account_id="alpaca_paper")
+        account.get_order.return_value = {
+            "status": "filled",
+            "filled_avg_price": None,
+            "filled_qty": None,
+        }
+
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.accounts.get_accounts", return_value=[account]),
+        ):
+            reconcile_broker_orders()
+
+        assert db.get_pending_order_decisions()[0]["order_status"] == "accepted"
+
+    def test_non_finite_fill_data_remains_pending(self, tmp_path):
+        from scripts.scheduler import reconcile_broker_orders
+
+        db = Database(tmp_path / "test.db")
+        db.log_decision(
+            "AAPL",
+            "buy",
+            account_id="alpaca_paper",
+            order_id="buy-1",
+            order_status="accepted",
+        )
+        account = MagicMock(account_id="alpaca_paper")
+        account.get_order.return_value = {
+            "status": "filled",
+            "filled_avg_price": float("nan"),
+            "filled_qty": float("inf"),
+        }
+
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.accounts.get_accounts", return_value=[account]),
+        ):
+            reconcile_broker_orders()
+
+        assert db.get_pending_order_decisions()[0]["order_status"] == "accepted"
+
+    def test_retry_after_status_write_failure_does_not_duplicate_closed_trade(self, tmp_path):
+        from scripts.scheduler import reconcile_broker_orders
+
+        db = Database(tmp_path / "test.db")
+        db.log_decision(
+            "AAPL",
+            "buy",
+            account_id="alpaca_paper",
+            order_id="buy-1",
+            order_status="filled",
+            price=80.0,
+            shares=10.0,
+        )
+        db.log_decision(
+            "AAPL",
+            "sell",
+            account_id="alpaca_paper",
+            order_id="sell-1",
+            order_status="accepted",
+            reasoning_snapshot={"entry_price": 80.0, "full_exit": True},
+        )
+        account = MagicMock(account_id="alpaca_paper")
+        account.get_order.return_value = {
+            "status": "filled",
+            "filled_avg_price": 95.0,
+            "filled_qty": 10.0,
+        }
+        real_update = db.update_order_status
+
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.accounts.get_accounts", return_value=[account]),
+            patch("src.benchmark.fetch_benchmark_return", return_value=0.05),
+            patch.object(db, "update_order_status", side_effect=RuntimeError("write failed")),
+        ):
+            reconcile_broker_orders()
+
+        assert len(db.get_closed_trades("AAPL")) == 1
+        assert db.get_pending_order_decisions()[0]["order_status"] == "accepted"
+
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.accounts.get_accounts", return_value=[account]),
+            patch("src.benchmark.fetch_benchmark_return", return_value=0.05),
+            patch.object(db, "update_order_status", wraps=real_update),
+        ):
+            reconcile_broker_orders()
+
+        assert len(db.get_closed_trades("AAPL")) == 1
+        assert db.get_pending_order_decisions() == []
+
+
 # ─── weekly_auto_trade (Phase C: deployment engine) ────────────────────────────
 
 
@@ -1154,8 +1435,20 @@ class TestWeeklyAutoTrade:
             as_of=datetime.now(timezone.utc),
         )
         account.get_positions.return_value = positions
-        account.buy.return_value = {"symbol": "BUY", "order_id": "buy-1"}
-        account.sell.return_value = {"symbol": "SELL", "order_id": "sell-1"}
+        account.buy.return_value = {
+            "symbol": "BUY",
+            "order_id": "buy-1",
+            "status": "filled",
+            "filled_avg_price": 100.0,
+            "filled_qty": 10.0,
+        }
+        account.sell.return_value = {
+            "symbol": "SELL",
+            "order_id": "sell-1",
+            "status": "filled",
+            "filled_avg_price": 40.0,
+            "filled_qty": 10.0,
+        }
         return account
 
     def _mock_valuation(self, symbol, margin_of_safety, fair_value=100.0, price=90.0):
@@ -1191,6 +1484,52 @@ class TestWeeklyAutoTrade:
         ):
             weekly_auto_trade()  # should not raise
 
+    def test_unknown_market_regime_aborts_before_account_sizing(self):
+        from scripts.scheduler import weekly_auto_trade
+
+        account = self._mock_account(
+            equity=100_000.0,
+            cash=100_000.0,
+            buying_power=100_000.0,
+            invested_value=0.0,
+            positions=[],
+        )
+        with (
+            patch("src.database.Database"),
+            patch("src.accounts.get_accounts", return_value=[account]),
+            patch("src.paper_trader.PaperTrader.auto_trade_enabled", return_value=True),
+            patch("src.bubble_detector.classify_market_regime") as mock_regime,
+        ):
+            mock_regime.return_value.regime = "unknown"
+            weekly_auto_trade()
+
+        account.get_state.assert_not_called()
+        account.buy.assert_not_called()
+
+    def test_market_regime_without_evidence_aborts_before_account_sizing(self):
+        from scripts.scheduler import weekly_auto_trade
+
+        account = self._mock_account(
+            equity=100_000.0,
+            cash=100_000.0,
+            buying_power=100_000.0,
+            invested_value=0.0,
+            positions=[],
+        )
+        with (
+            patch("scripts.scheduler.reconcile_broker_orders"),
+            patch("src.database.Database"),
+            patch("src.accounts.get_accounts", return_value=[account]),
+            patch("src.paper_trader.PaperTrader.auto_trade_enabled", return_value=True),
+            patch("src.bubble_detector.classify_market_regime") as mock_regime,
+        ):
+            mock_regime.return_value.regime = "fair_value"
+            mock_regime.return_value.signals = []
+            weekly_auto_trade()
+
+        account.get_state.assert_not_called()
+        account.buy.assert_not_called()
+
     def test_deploys_toward_regime_target(self, tmp_path, monkeypatch):
         from scripts.scheduler import weekly_auto_trade
 
@@ -1198,6 +1537,7 @@ class TestWeeklyAutoTrade:
         self._write_watchlist(tmp_path, ["AAPL"])
 
         db = Database(tmp_path / "test.db")
+        _save_deep_analysis(db, "AAPL", tier="A")
         account = self._mock_account(
             equity=100_000.0, cash=100_000.0, buying_power=100_000.0, invested_value=0.0, positions=[]
         )
@@ -1217,18 +1557,92 @@ class TestWeeklyAutoTrade:
                 "worth_analysis": True,
                 "moat_hint": 4,
                 "quality_hint": 4,
+                "valid": True,
             }
             mock_regime.return_value.regime = "fair_value"
             weekly_auto_trade()
 
         # equity 100k, fair_value target 90% -> gap 90k; max_position_value =
-        # 100k*0.15=15k; unranked (no tier) weight 0.55 -> amount = 15k*0.55=8250
-        account.buy.assert_called_once_with("AAPL", pytest.approx(8250.0))
+        # 100k*0.15=15k; A-tier weight 0.85 -> amount = 12,750.
+        account.buy.assert_called_once_with("AAPL", pytest.approx(12_750.0))
         log = db.get_decision_log("AAPL")
         assert len(log) == 1
         assert log[0]["action"] == "buy"
         assert log[0]["regime"] == "fair_value"
         assert log[0]["reasoning_snapshot"]["deploy_regime"] == "fair_value"
+
+    def test_rejects_unvalidated_quick_screen(self, tmp_path, monkeypatch):
+        from scripts.scheduler import weekly_auto_trade
+
+        monkeypatch.chdir(tmp_path)
+        self._write_watchlist(tmp_path, ["AAPL"])
+        db = Database(tmp_path / "test.db")
+        _save_deep_analysis(db, "AAPL", tier="A")
+        account = self._mock_account(
+            equity=100_000.0,
+            cash=100_000.0,
+            buying_power=100_000.0,
+            invested_value=0.0,
+            positions=[],
+        )
+        val = self._mock_valuation("AAPL", margin_of_safety=0.20)
+
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.accounts.get_accounts", return_value=[account]),
+            patch("src.paper_trader.PaperTrader.auto_trade_enabled", return_value=True),
+            patch("src.valuation.screen_for_undervalued", return_value=[val]),
+            patch("src.analyzer.CompanyAnalyzer") as MockAnalyzer,
+            patch("src.bubble_detector.classify_market_regime") as mock_regime,
+        ):
+            MockAnalyzer.return_value.quick_screen.return_value = {
+                "worth_analysis": False,
+                "moat_hint": 0,
+                "quality_hint": 0,
+                "valid": False,
+                "reason": "API failure",
+            }
+            mock_regime.return_value.regime = "fair_value"
+            weekly_auto_trade()
+
+        account.buy.assert_not_called()
+
+    def test_expired_deep_analysis_cannot_authorize_buy(self, tmp_path, monkeypatch):
+        from scripts.scheduler import weekly_auto_trade
+
+        monkeypatch.chdir(tmp_path)
+        self._write_watchlist(tmp_path, ["AAPL"])
+        db = Database(tmp_path / "test.db")
+        _save_deep_analysis(db, "AAPL", tier="A", expires_delta_days=-1)
+        account = self._mock_account(
+            equity=100_000.0,
+            cash=100_000.0,
+            buying_power=100_000.0,
+            invested_value=0.0,
+            positions=[],
+        )
+        val = self._mock_valuation("AAPL", margin_of_safety=0.20)
+
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.accounts.get_accounts", return_value=[account]),
+            patch("src.paper_trader.PaperTrader.auto_trade_enabled", return_value=True),
+            patch("src.valuation.screen_for_undervalued", return_value=[val]),
+            patch("src.analyzer.CompanyAnalyzer") as MockAnalyzer,
+            patch("yfinance.Ticker"),
+            patch("src.bubble_detector.classify_market_regime") as mock_regime,
+        ):
+            MockAnalyzer.return_value.quick_screen.return_value = {
+                "worth_analysis": True,
+                "moat_hint": 4,
+                "quality_hint": 4,
+                "valid": True,
+            }
+            mock_regime.return_value.regime = "fair_value"
+            mock_regime.return_value.signals = ["Market P/E available"]
+            weekly_auto_trade()
+
+        account.buy.assert_not_called()
 
     def test_thesis_break_sells_before_buying(self, tmp_path, monkeypatch):
         from scripts.scheduler import weekly_auto_trade
@@ -1238,6 +1652,7 @@ class TestWeeklyAutoTrade:
         self._write_watchlist(tmp_path, ["NEWCO"])
 
         db = Database(tmp_path / "test.db")
+        _save_deep_analysis(db, "NEWCO", tier="A")
         _save_deep_analysis(db, "OLDCO", tier="C")
         # A real downgrade, not a first-ever analysis: only a name that fell
         # from a better tier is a thesis breaker.
@@ -1271,6 +1686,7 @@ class TestWeeklyAutoTrade:
                 "worth_analysis": True,
                 "moat_hint": 5,
                 "quality_hint": 5,
+                "valid": True,
             }
             mock_regime.return_value.regime = "fair_value"
             MockAggregator.return_value.get_valuation.return_value = MagicMock(margin_of_safety=-0.10)
@@ -1287,6 +1703,76 @@ class TestWeeklyAutoTrade:
 
         account.buy.assert_called_once()
         assert account.buy.call_args[0][0] == "NEWCO"
+
+    def test_immediate_full_sell_retries_if_outcome_write_fails(self, tmp_path, monkeypatch):
+        from scripts.scheduler import reconcile_broker_orders, weekly_auto_trade
+        from src.accounts.base import PositionState
+
+        monkeypatch.chdir(tmp_path)
+        self._write_watchlist(tmp_path, ["NEWCO"])
+        db = Database(tmp_path / "test.db")
+        db.log_decision(
+            "OLDCO",
+            "buy",
+            account_id="alpaca_paper",
+            price=50.0,
+            shares=10.0,
+            order_id="buy-1",
+            order_status="filled",
+        )
+        _save_deep_analysis(db, "OLDCO", tier="C")
+        db.log_tier_change("OLDCO", new_tier="C", old_tier="B", trigger="scheduled")
+        held = PositionState(
+            symbol="OLDCO",
+            shares=10.0,
+            avg_cost=50.0,
+            price=40.0,
+            market_value=400.0,
+            unrealized_pl=-100.0,
+            unrealized_pl_pct=-0.20,
+        )
+        account = self._mock_account(
+            equity=50_400.0,
+            cash=50_000.0,
+            buying_power=50_000.0,
+            invested_value=400.0,
+            positions=[held],
+        )
+
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.accounts.get_accounts", return_value=[account]),
+            patch("src.paper_trader.PaperTrader.auto_trade_enabled", return_value=True),
+            patch("src.valuation.screen_for_undervalued", return_value=[]),
+            patch("src.bubble_detector.classify_market_regime") as mock_regime,
+            patch("src.valuation.ValuationAggregator") as MockAggregator,
+            patch.object(db, "close_trade", side_effect=RuntimeError("write failed")),
+        ):
+            mock_regime.return_value.regime = "fair_value"
+            mock_regime.return_value.signals = ["Market P/E available"]
+            MockAggregator.return_value.get_valuation.return_value = MagicMock(margin_of_safety=-0.10)
+            weekly_auto_trade()
+
+        pending = db.get_pending_order_decisions()
+        assert len(pending) == 1
+        assert pending[0]["order_status"] == "filled_pending_outcome"
+        assert db.get_closed_trades("OLDCO") == []
+
+        account.get_order.return_value = {
+            "status": "filled",
+            "filled_avg_price": 40.0,
+            "filled_qty": 10.0,
+        }
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.accounts.get_accounts", return_value=[account]),
+            patch("src.benchmark.fetch_benchmark_return", return_value=0.0),
+            patch("src.notifications.NotificationManager"),
+        ):
+            reconcile_broker_orders()
+
+        assert db.get_pending_order_decisions() == []
+        assert len(db.get_closed_trades("OLDCO")) == 1
 
 
 # ─── weekly_auto_trade: quarantined holdings ───────────────────────────────
@@ -1346,6 +1832,7 @@ class TestWeeklyAutoTradeQuarantine:
                 "worth_analysis": True,
                 "moat_hint": 4,
                 "quality_hint": 4,
+                "valid": True,
             }
             mock_regime.return_value.regime = "fair_value"
             weekly_auto_trade()
@@ -1384,6 +1871,7 @@ class TestWeeklyAutoTradeQuarantine:
                 "worth_analysis": True,
                 "moat_hint": 4,
                 "quality_hint": 4,
+                "valid": True,
             }
             mock_regime.return_value.regime = "fair_value"
             weekly_auto_trade()
@@ -1406,6 +1894,7 @@ class TestWeeklyAutoTradeQuarantine:
         helper._write_watchlist(tmp_path, ["NEWCO"])
 
         db = Database(tmp_path / "test.db")
+        _save_deep_analysis(db, "NEWCO", tier="A")
         account = helper._mock_account(
             equity=50_000.0,
             cash=42_757.97,
@@ -1430,6 +1919,7 @@ class TestWeeklyAutoTradeQuarantine:
                 "worth_analysis": True,
                 "moat_hint": 4,
                 "quality_hint": 4,
+                "valid": True,
             }
             mock_regime.return_value.regime = "fair_value"
             weekly_auto_trade()
@@ -1472,6 +1962,7 @@ class TestWeeklyAutoTradeQuarantine:
                 "worth_analysis": True,
                 "moat_hint": 5,
                 "quality_hint": 5,
+                "valid": True,
             }
             mock_regime.return_value.regime = "fair_value"
             weekly_auto_trade()
@@ -1491,6 +1982,9 @@ class TestDailyHealthCheck:
 
     def _run(self, db, notifier):
         from scripts.scheduler import daily_health_check
+
+        if notifier.send_alert.side_effect is None and isinstance(notifier.send_alert.return_value, MagicMock):
+            notifier.send_alert.return_value = {"discord": True}
 
         with (
             patch("src.database.Database", return_value=db),
@@ -1569,6 +2063,17 @@ class TestDailyHealthCheck:
 
         self._run(db, notifier)
         notifier.send_alert.side_effect = None
+        self._run(db, notifier)
+
+        assert notifier.send_alert.call_count == 2
+
+    def test_false_channel_results_retry_next_run(self, tmp_path):
+        db = Database(tmp_path / "test.db")
+        self._broken_state(db)
+        notifier = MagicMock()
+        notifier.send_alert.return_value = {"discord": False}
+
+        self._run(db, notifier)
         self._run(db, notifier)
 
         assert notifier.send_alert.call_count == 2

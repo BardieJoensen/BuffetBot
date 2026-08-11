@@ -11,7 +11,7 @@ import html as html_module
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from ..tier_engine import WatchlistMovement, staged_entry_suggestion
+from ..tier_engine import Tier, WatchlistMovement, staged_entry_suggestion
 
 if TYPE_CHECKING:
     from ..bubble_detector import BubbleWarning
@@ -35,10 +35,12 @@ def generate_html_report(
     month_str = now.strftime("%B %Y")
     e = html_module.escape
 
-    tier1 = sorted([b for b in briefings if b.tier == 1], key=lambda x: abs(x.price_gap_pct or 0))
-    tier2 = sorted([b for b in briefings if b.tier == 2], key=lambda x: abs(x.price_gap_pct or 999))
-    tier3 = [b for b in briefings if b.tier == 3]
-    approaching = [b for b in tier2 if b.approaching_target]
+    s_tier = sorted([b for b in briefings if b.tier == Tier.S], key=lambda x: abs(x.price_gap_pct or 0))
+    a_tier = sorted([b for b in briefings if b.tier == Tier.A], key=lambda x: abs(x.price_gap_pct or 0))
+    b_tier = sorted([b for b in briefings if b.tier == Tier.B], key=lambda x: abs(x.price_gap_pct or 999))
+    c_tier = [b for b in briefings if b.tier == Tier.C]
+    buy_tiers = s_tier + a_tier
+    approaching = [b for b in b_tier if b.approaching_target]
 
     # Market temperature colors
     temp_colors = {
@@ -80,17 +82,19 @@ h2{{font-size:1.2rem;color:#1a237e;border-bottom:2px solid #e8eaf6;
 .summary-card .label{{font-size:.8rem;color:#666;text-transform:uppercase}}
 .stock-card{{border:1px solid #e0e0e0;border-radius:8px;padding:20px;margin-bottom:16px;
   border-left:4px solid #ccc}}
-.stock-card.tier1{{border-left-color:#4CAF50}}
-.stock-card.tier2{{border-left-color:#FF9800}}
-.stock-card.tier3{{border-left-color:#90A4AE}}
+.stock-card.s-tier{{border-left-color:#7B1FA2}}
+.stock-card.a-tier{{border-left-color:#1565C0}}
+.stock-card.b-tier{{border-left-color:#FF9800}}
+.stock-card.c-tier{{border-left-color:#90A4AE}}
 .stock-card.approaching{{border-left-color:#E91E63;border-left-width:6px}}
 .stock-card.bubble{{border-left-color:#F44336}}
 .stock-card h3{{font-size:1.1rem;margin-bottom:4px}}
 .tier-badge{{display:inline-block;padding:2px 10px;border-radius:12px;
   font-size:.75rem;font-weight:600;color:#fff;margin-bottom:12px}}
-.tier-1{{background:#4CAF50}}
-.tier-2{{background:#FF9800}}
-.tier-3{{background:#90A4AE}}
+.tier-s{{background:#7B1FA2}}
+.tier-a{{background:#1565C0}}
+.tier-b{{background:#FF9800}}
+.tier-c{{background:#90A4AE}}
 .tier-approaching{{background:#E91E63}}
 table{{width:100%;border-collapse:collapse;margin:12px 0;font-size:.9rem}}
 table th{{text-align:left;padding:8px 12px;background:#f5f5f5;border-bottom:2px solid #ddd;
@@ -158,13 +162,16 @@ footer{{text-align:center;padding:16px;font-size:.8rem;color:#999}}
         f'<div class="summary-card"><div class="num">{len(briefings)}</div><div class="label">Analyzed</div></div>'
     )
     parts.append(
-        f'<div class="summary-card"><div class="num" style="color:#4CAF50">{len(tier1)}</div><div class="label">Tier 1</div></div>'
+        f'<div class="summary-card"><div class="num" style="color:#7B1FA2">{len(s_tier)}</div><div class="label">S-tier</div></div>'
     )
     parts.append(
-        f'<div class="summary-card"><div class="num" style="color:#FF9800">{len(tier2)}</div><div class="label">Tier 2</div></div>'
+        f'<div class="summary-card"><div class="num" style="color:#1565C0">{len(a_tier)}</div><div class="label">A-tier</div></div>'
     )
     parts.append(
-        f'<div class="summary-card"><div class="num" style="color:#90A4AE">{len(tier3)}</div><div class="label">Tier 3</div></div>'
+        f'<div class="summary-card"><div class="num" style="color:#FF9800">{len(b_tier)}</div><div class="label">B-tier</div></div>'
+    )
+    parts.append(
+        f'<div class="summary-card"><div class="num" style="color:#90A4AE">{len(c_tier)}</div><div class="label">C-tier</div></div>'
     )
     if approaching:
         parts.append(
@@ -194,7 +201,7 @@ footer{{text-align:center;padding:16px;font-size:.8rem;color:#999}}
         )
 
     # Benchmark comparison
-    if benchmark_data and (tier1 or tier2):
+    if benchmark_data and (buy_tiers or b_tier):
         bm_name = html_module.escape(benchmark_data.get("name", benchmark_data.get("symbol", "SPY")))
         bm_pe = benchmark_data.get("pe_ratio")
         bm_ytd = benchmark_data.get("ytd_return")
@@ -209,13 +216,13 @@ footer{{text-align:center;padding:16px;font-size:.8rem;color:#999}}
             parts.append(f"<span>1Y: <strong>{bm_1y:+.1%}</strong></span>")
         parts.append("</div>")
         parts.append("<table><tr><th>Stock</th><th>Tier</th><th>Price</th><th>Target</th><th>Gap</th></tr>")
-        for b in (tier1 + tier2)[:15]:
+        for b in (buy_tiers + b_tier)[:15]:
             gap_str = f"{b.price_gap_pct:+.0%}" if b.price_gap_pct is not None else "N/A"
             target_str = f"${b.target_entry_price:,.0f}" if b.target_entry_price else "N/A"
             gap_color = ' style="color:#4CAF50"' if (b.price_gap_pct or 0) <= 0 else ""
             parts.append(
                 f"<tr><td><strong>{e(b.symbol)}</strong></td>"
-                f"<td>T{b.tier}</td>"
+                f"<td>{b.tier}</td>"
                 f"<td>${b.current_price:,.0f}</td>"
                 f"<td>{target_str}</td>"
                 f"<td{gap_color}>{gap_str}</td></tr>"
@@ -249,13 +256,13 @@ footer{{text-align:center;padding:16px;font-size:.8rem;color:#999}}
         parts.append('<section><h2 style="color:#E91E63">Approaching Target Price</h2>')
         parts.append(
             '<p style="font-size:.9rem;color:#666;margin-bottom:12px">'
-            "These Tier 2 companies are within striking distance of buy range.</p>"
+            "These B-tier companies are within striking distance of buy range.</p>"
         )
         for b in approaching:
             gap = b.price_gap_pct or 0
             parts.append('<div class="stock-card approaching">')
             parts.append(f"<h3>{e(b.symbol)}: {e(b.company_name)}</h3>")
-            parts.append('<span class="tier-badge tier-approaching">APPROACHING T1</span>')
+            parts.append('<span class="tier-badge tier-approaching">APPROACHING S/A</span>')
             parts.append(f"<table><tr><td>Current Price</td><td>${b.current_price:,.2f}</td></tr>")
             parts.append(
                 f"<tr><td>Target Entry</td><td>${b.target_entry_price:,.2f}</td></tr>" if b.target_entry_price else ""
@@ -311,11 +318,11 @@ footer{{text-align:center;padding:16px;font-size:.8rem;color:#999}}
             parts.append("</div>")
         parts.append("</section>")
 
-    # Tier 1 Picks
-    if tier1:
-        parts.append("<section><h2>Tier 1: Buy Zone</h2>")
-        for b in tier1:
-            parts.append(_html_stock_card(b, "tier1"))
+    # S/A Picks
+    if buy_tiers:
+        parts.append("<section><h2>S/A Tiers: Buy Zone</h2>")
+        for b in buy_tiers:
+            parts.append(_html_stock_card(b, f"{b.tier.value.lower()}-tier"))
         parts.append("</section>")
 
     # Second Opinion (Opus)
@@ -353,21 +360,21 @@ footer{{text-align:center;padding:16px;font-size:.8rem;color:#999}}
             parts.append("</div>")
         parts.append("</section>")
 
-    # Tier 2 Watchlist
-    if tier2:
-        parts.append("<section><h2>Tier 2: Watchlist</h2>")
-        for b in tier2:
-            parts.append(_html_stock_card(b, "tier2"))
+    # B-tier Watchlist
+    if b_tier:
+        parts.append("<section><h2>B-tier: Watchlist</h2>")
+        for b in b_tier:
+            parts.append(_html_stock_card(b, "b-tier"))
         parts.append("</section>")
 
-    # Tier 3 Monitoring
-    if tier3:
-        parts.append("<section><h2>Tier 3: Monitoring</h2>")
+    # C-tier Monitoring
+    if c_tier:
+        parts.append("<section><h2>C-tier: Monitoring</h2>")
         parts.append(
             '<p style="font-size:.9rem;color:#666;margin-bottom:12px">Good businesses to re-evaluate next cycle.</p>'
         )
         parts.append("<table><tr><th>Stock</th><th>Moat</th><th>Conviction</th><th>P/E</th><th>FCF Yield</th></tr>")
-        for b in tier3:
+        for b in c_tier:
             moat = getattr(b.analysis, "moat_rating", None)
             moat_str = moat.value.upper() if moat else "N/A"
             conv = getattr(b.analysis, "conviction_level", "N/A")
@@ -431,7 +438,7 @@ footer{{text-align:center;padding:16px;font-size:.8rem;color:#999}}
 You make the final investment decision. Past performance does not guarantee future results.
 Patience is the strategy.</p>
 </section>
-<footer>Buffett Bot v2.0 &middot; {e(month_str)}</footer>
+<footer>Buffett Bot v3.0 &middot; {e(month_str)}</footer>
 </div>
 </body>
 </html>""")
@@ -440,10 +447,10 @@ Patience is the strategy.</p>
 
 
 def _html_stock_card(briefing: StockBriefing, card_type: str) -> str:
-    """Build an HTML card for a stock (tier1, tier2, or tier3)."""
+    """Build an HTML card for an S/A/B-tier stock."""
     e = html_module.escape
-    tier_class = {"tier1": "tier-1", "tier2": "tier-2", "tier3": "tier-3"}.get(card_type, "tier-2")
-    tier_label = {"tier1": "TIER 1", "tier2": "TIER 2", "tier3": "TIER 3"}.get(card_type, f"TIER {briefing.tier}")
+    tier_class = f"tier-{briefing.tier.value.lower()}"
+    tier_label = f"{briefing.tier}-TIER"
 
     lines = [f'<div class="stock-card {card_type}">']
     lines.append(f"<h3>{e(briefing.symbol)}: {e(briefing.company_name)}</h3>")
@@ -451,8 +458,8 @@ def _html_stock_card(briefing: StockBriefing, card_type: str) -> str:
     if briefing.tier_reason:
         lines.append(f'<span style="font-size:.85rem;color:#666;margin-left:8px">{e(briefing.tier_reason)}</span>')
 
-    # Position sizing for Tier 1
-    if card_type == "tier1" and briefing.position_size:
+    # Position sizing for buy tiers
+    if card_type in ("s-tier", "a-tier") and briefing.position_size:
         sz = briefing.position_size
         lines.append(
             f'<div class="sizing"><strong>Position Sizing ({e(str(sz.get("conviction", "MEDIUM")))} conviction):</strong> '
@@ -460,9 +467,9 @@ def _html_stock_card(briefing: StockBriefing, card_type: str) -> str:
             f"Max {sz.get('max_pct', 0):.0%} (${sz.get('max_amount', 0):,.0f})</div>"
         )
 
-    # Staged entry for Tier 1
-    if card_type == "tier1" and briefing.target_entry_price:
-        tranches = staged_entry_suggestion(briefing.target_entry_price)
+    # Staged entry for buy tiers
+    if card_type in ("s-tier", "a-tier") and briefing.target_entry_price:
+        tranches = staged_entry_suggestion(briefing.target_entry_price, briefing.tier)
         lines.append('<div class="staged-entry"><strong>Staged Entry Plan:</strong><br>')
         for t in tranches:
             lines.append(f"&bull; {e(t['label'])}<br>")
@@ -510,8 +517,8 @@ def _html_stock_card(briefing: StockBriefing, card_type: str) -> str:
             lines.append(f"<tr><td>{e(est.source)}</td><td>${est.fair_value:.2f}</td></tr>")
         lines.append("</table></details>")
 
-    # Bear case callout for Tier 2 (why you're not buying yet)
-    if card_type == "tier2":
+    # Bear case callout for B-tier (why you're not buying yet)
+    if card_type == "b-tier":
         moat_risks = getattr(briefing.analysis, "moat_risks", "")
         key_risks_t2 = getattr(briefing.analysis, "key_risks", [])
         bear_parts = []

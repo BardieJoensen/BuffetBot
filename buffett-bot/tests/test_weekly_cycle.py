@@ -21,6 +21,7 @@ check_news_for_red_flags, analyze_company) and Finnhub HTTP are mocked.
 
 import sqlite3
 import sys
+from dataclasses import replace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -39,6 +40,7 @@ for _pkg in (
 
 from src.database import Database
 from src.news_fetcher import FinnhubNewsFetcher, run_news_pipeline
+from src.valuation import AggregatedValuation
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -96,6 +98,16 @@ class TestFullWeeklyCycle:
     news_events.
     """
 
+    @pytest.fixture(autouse=True)
+    def _enable_scheduled_analysis(self, monkeypatch):
+        import scripts.scheduler as scheduler
+
+        monkeypatch.setattr(
+            scheduler,
+            "config",
+            replace(scheduler.config, wednesday_haiku_enabled=True, friday_sonnet_enabled=True),
+        )
+
     def test_b_to_a_promotion_via_news(self, tmp_path):
         """
         Happy path for a B-tier stock promoted to A by a news-triggered Sonnet:
@@ -136,7 +148,9 @@ class TestFullWeeklyCycle:
                 "symbol": "ORCL",
                 "worth_analysis": True,
                 "moat_hint": 4,
+                "quality_hint": 4,
                 "reason": "Cloud DB switching costs create durable moat",
+                "valid": True,
             }
         ]
         with patch("src.database.Database", return_value=db), patch("src.analyzer.CompanyAnalyzer") as MockAnalyzer:
@@ -159,10 +173,14 @@ class TestFullWeeklyCycle:
         with (
             patch("src.database.Database", return_value=db),
             patch("src.analyzer.CompanyAnalyzer") as MockAnalyzer,
+            patch("src.valuation.ValuationAggregator") as MockValuation,
             patch(
                 "src.tier_engine.assign_tier", wraps=__import__("src.tier_engine", fromlist=["assign_tier"]).assign_tier
             ),
         ):
+            MockValuation.return_value.get_valuation.return_value = AggregatedValuation(
+                symbol="ORCL", current_price=160.0
+            )
             MockAnalyzer.return_value.batch_analyze_companies.return_value = [b_tier_mock]
             friday_sonnet_batch()
 
@@ -213,7 +231,11 @@ class TestFullWeeklyCycle:
         a_tier_mock.thesis_risks = ["major cloud provider bundles competing DB free"]
         analyzer.analyze_company.return_value = a_tier_mock
 
-        stats = run_news_pipeline(db, analyzer, fetcher)
+        with patch("src.valuation.ValuationAggregator") as MockValuation:
+            MockValuation.return_value.get_valuation.return_value = AggregatedValuation(
+                symbol="ORCL", current_price=145.0
+            )
+            stats = run_news_pipeline(db, analyzer, fetcher)
 
         # ── Verify: pipeline stats ────────────────────────────────────────────
         assert stats["tickers_checked"] == 1  # only ORCL in B-tier alerts
@@ -286,8 +308,8 @@ class TestFullWeeklyCycle:
         conn.close()
         assert news_row is not None, "news_events should have a row for ORCL"
         assert "oracle" in news_row["headline"].lower() or "ai" in news_row["headline"].lower()
-        assert news_row["haiku_material"] == 0  # no red flags (just REVIEW)
-        assert news_row["sonnet_triggered"] is None  # field not set by pipeline
+        assert news_row["haiku_material"] == 1  # REVIEW requires deeper analysis
+        assert news_row["sonnet_triggered"] == 1  # Sonnet workflow completed
 
         # ── Verify: analyzer called with correct args ─────────────────────────
         analyzer.check_news_for_red_flags.assert_called_once()

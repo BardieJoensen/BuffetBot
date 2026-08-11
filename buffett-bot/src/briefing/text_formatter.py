@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from ..tier_engine import WatchlistMovement, staged_entry_suggestion
+from ..tier_engine import Tier, WatchlistMovement, staged_entry_suggestion
 
 if TYPE_CHECKING:
     from ..bubble_detector import BubbleWarning
@@ -41,10 +41,12 @@ def generate_text_report(
     output.append("")
 
     # Categorize by tier
-    tier1 = [b for b in briefings if b.tier == 1]
-    tier2 = [b for b in briefings if b.tier == 2]
-    tier3 = [b for b in briefings if b.tier == 3]
-    approaching = [b for b in tier2 if b.approaching_target]
+    s_tier = [b for b in briefings if b.tier == Tier.S]
+    a_tier = [b for b in briefings if b.tier == Tier.A]
+    b_tier = [b for b in briefings if b.tier == Tier.B]
+    c_tier = [b for b in briefings if b.tier == Tier.C]
+    buy_tiers = s_tier + a_tier
+    approaching = [b for b in b_tier if b.approaching_target]
 
     # MARKET TEMPERATURE
     if market_temp:
@@ -111,9 +113,10 @@ def generate_text_report(
     output.append("## EXECUTIVE SUMMARY")
     output.append("")
     output.append(f"Stocks Analyzed:    {len(briefings)}")
-    output.append(f"Tier 1 (Buy Zone):  {len(tier1)}")
-    output.append(f"Tier 2 (Watchlist): {len(tier2)}")
-    output.append(f"Tier 3 (Monitor):   {len(tier3)}")
+    output.append(f"S-tier (Wonderful): {len(s_tier)}")
+    output.append(f"A-tier (Buy Zone):  {len(a_tier)}")
+    output.append(f"B-tier (Watchlist): {len(b_tier)}")
+    output.append(f"C-tier (Monitor):   {len(c_tier)}")
     output.append(f"Approaching Target: {len(approaching)}")
     output.append(f"Bubble Watch:       {len(bubble_warnings) if bubble_warnings else 0}")
     output.append(f"Radar:              {len(radar_stocks) if radar_stocks else 0}")
@@ -141,26 +144,25 @@ def generate_text_report(
             output.append(f"Stale (>{cp.get('max_age_days', 180)}d): {', '.join(stale[:10])}")
         output.append("")
 
-    if tier1:
-        output.append("Tier 1 Opportunities (at/below target entry):")
-        for b in tier1:
+    if buy_tiers:
+        output.append("Buy-zone opportunities (at/below target entry):")
+        for b in buy_tiers:
             conv = getattr(b.analysis, "conviction_level", "N/A")
-            output.append(
-                f"  [T1] {b.symbol}: ${b.current_price:,.0f} (target ${b.target_entry_price:,.0f}), {conv} conviction"
-            )
+            target = f"${b.target_entry_price:,.0f}" if b.target_entry_price else "N/A"
+            output.append(f"  [{b.tier}] {b.symbol}: ${b.current_price:,.0f} (target {target}), {conv} conviction")
         output.append("")
     elif approaching:
-        output.append("No Tier 1 picks yet, but these are approaching target:")
+        output.append("No S/A picks yet, but these B-tier names are approaching target:")
         for b in approaching:
             gap = b.price_gap_pct or 0
             output.append(f"  [!] {b.symbol}: {gap:+.0%} from target ${b.target_entry_price:,.0f}")
         output.append("")
     else:
-        output.append("No Tier 1 picks this month. Patience is the strategy.")
+        output.append("No S/A picks this month. Patience is the strategy.")
         output.append("")
 
     # BENCHMARK COMPARISON
-    if benchmark_data and (tier1 or tier2):
+    if benchmark_data and (buy_tiers or b_tier):
         output.append("-" * 70)
         output.append("## BENCHMARK COMPARISON")
         output.append("")
@@ -179,14 +181,14 @@ def generate_text_report(
         if bm_div is not None:
             output.append(f"  Dividend Yield: {bm_div:.2%}")
         output.append("")
-        picks = tier1 + tier2
+        picks = buy_tiers + b_tier
         output.append(f"{'Stock':<8} {'Tier':>4} {'P/E':>8} {'Gap':>10} {'Target':>10}")
         output.append(f"{'---':<8} {'---':>4} {'---':>8} {'---':>10} {'---':>10}")
         for b in picks[:15]:
             pe_str = f"{b.pe_ratio:.1f}" if b.pe_ratio else "N/A"
             gap_str = f"{b.price_gap_pct:+.0%}" if b.price_gap_pct is not None else "N/A"
             target = f"${b.target_entry_price:,.0f}" if b.target_entry_price else "N/A"
-            output.append(f"{b.symbol:<8} {'T' + str(b.tier):>4} {pe_str:>8} {gap_str:>10} {target:>10}")
+            output.append(f"{b.symbol:<8} {str(b.tier):>4} {pe_str:>8} {gap_str:>10} {target:>10}")
         output.append("")
 
     # MOVEMENT LOG
@@ -210,7 +212,7 @@ def generate_text_report(
         output.append("-" * 70)
         output.append("## APPROACHING TARGET PRICE")
         output.append("")
-        output.append("These Tier 2 companies are within striking distance of buy range:")
+        output.append("These B-tier companies are within striking distance of buy range:")
         output.append("")
         for b in approaching:
             gap = b.price_gap_pct or 0
@@ -222,13 +224,13 @@ def generate_text_report(
                 output.append(f"       Moat: {moat.value.upper()} | {b.tier_reason}")
         output.append("")
 
-    # TIER 1: BUY ZONE
-    if tier1:
+    # S/A: BUY ZONE
+    if buy_tiers:
         output.append("-" * 70)
-        output.append("## TIER 1: BUY ZONE (At/Below Target Entry)")
+        output.append("## S/A TIERS: BUY ZONE (At/Below Target Entry)")
         output.append("")
-        for briefing in tier1:
-            output.append(_format_tier1_briefing(briefing))
+        for briefing in buy_tiers:
+            output.append(_format_buy_briefing(briefing))
             output.append("")
 
     # SECOND OPINION (Opus contrarian review)
@@ -254,22 +256,22 @@ def generate_text_report(
                 output.append(f"   Summary: {summary[:200]}")
             output.append("")
 
-    # TIER 2: WATCHLIST
-    if tier2:
+    # B: WATCHLIST
+    if b_tier:
         output.append("-" * 70)
-        output.append("## TIER 2: WATCHLIST (Wonderful Business, Wait for Price)")
+        output.append("## B-TIER: WATCHLIST (Quality Business, Wait for Price)")
         output.append("")
-        for briefing in sorted(tier2, key=lambda x: abs(x.price_gap_pct or 999)):
-            output.append(_format_tier2_item(briefing))
+        for briefing in sorted(b_tier, key=lambda x: abs(x.price_gap_pct or 999)):
+            output.append(_format_b_tier_item(briefing))
             output.append("")
 
-    # TIER 3: MONITORING
-    if tier3:
+    # C: MONITORING
+    if c_tier:
         output.append("-" * 70)
-        output.append("## TIER 3: MONITORING (Re-evaluate Next Cycle)")
+        output.append("## C-TIER: MONITORING (Re-evaluate Next Cycle)")
         output.append("")
-        for briefing in tier3:
-            output.append(_format_tier3_item(briefing))
+        for briefing in c_tier:
+            output.append(_format_c_tier_item(briefing))
         output.append("")
 
     # RADAR
@@ -339,12 +341,12 @@ def generate_text_report(
     return "\n".join(output)
 
 
-def _format_tier1_briefing(briefing: StockBriefing) -> str:
-    """Format a full Tier 1 briefing with staged entry."""
+def _format_buy_briefing(briefing: StockBriefing) -> str:
+    """Format a full S/A-tier briefing with staged entry."""
     lines: list[str] = []
 
     lines.append(f"### {briefing.symbol}: {briefing.company_name}")
-    lines.append(f"[TIER 1] {briefing.tier_reason}")
+    lines.append(f"[{briefing.tier}-TIER] {briefing.tier_reason}")
     lines.append("")
 
     # Position sizing
@@ -361,7 +363,7 @@ def _format_tier1_briefing(briefing: StockBriefing) -> str:
 
     # Staged entry
     if briefing.target_entry_price:
-        tranches = staged_entry_suggestion(briefing.target_entry_price)
+        tranches = staged_entry_suggestion(briefing.target_entry_price, briefing.tier)
         lines.append("STAGED ENTRY PLAN:")
         for t in tranches:
             lines.append(f"  * {t['label']}")
@@ -431,8 +433,8 @@ def _format_tier1_briefing(briefing: StockBriefing) -> str:
     return "\n".join(lines)
 
 
-def _format_tier2_item(briefing: StockBriefing) -> str:
-    """Format a Tier 2 watchlist item."""
+def _format_b_tier_item(briefing: StockBriefing) -> str:
+    """Format a B-tier watchlist item."""
     lines: list[str] = []
 
     gap = briefing.price_gap_pct
@@ -443,7 +445,7 @@ def _format_tier2_item(briefing: StockBriefing) -> str:
     moat = getattr(briefing.analysis, "moat_rating", None)
     conv = getattr(briefing.analysis, "conviction_level", "N/A")
 
-    lines.append(f"[T2]{approaching_flag} {briefing.symbol}: {briefing.company_name}")
+    lines.append(f"[B]{approaching_flag} {briefing.symbol}: {briefing.company_name}")
     lines.append(f"   Price: ${briefing.current_price:,.2f} {target_str} {gap_str}")
     lines.append(f"   Moat: {moat.value.upper() if moat else 'N/A'} | Conviction: {conv}")
     lines.append(f"   {briefing.tier_reason}")
@@ -459,8 +461,8 @@ def _format_tier2_item(briefing: StockBriefing) -> str:
     return "\n".join(lines)
 
 
-def _format_tier3_item(briefing: StockBriefing) -> str:
-    """Format a Tier 3 monitoring item (brief) with one distinguishing metric."""
+def _format_c_tier_item(briefing: StockBriefing) -> str:
+    """Format a C-tier monitoring item (brief) with one distinguishing metric."""
     moat = getattr(briefing.analysis, "moat_rating", None)
     conv = getattr(briefing.analysis, "conviction_level", "N/A")
     metrics: list[str] = []
@@ -469,7 +471,7 @@ def _format_tier3_item(briefing: StockBriefing) -> str:
     if briefing.fcf_yield is not None:
         metrics.append(f"FCF: {briefing.fcf_yield:.1%}")
     metrics_str = " | " + " | ".join(metrics) if metrics else ""
-    return f"  [T3] {briefing.symbol}: {moat.value.upper() if moat else 'N/A'} moat, {conv} conviction{metrics_str}"
+    return f"  [C] {briefing.symbol}: {moat.value.upper() if moat else 'N/A'} moat, {conv} conviction{metrics_str}"
 
 
 def _format_bubble_warning(warning: BubbleWarning) -> str:

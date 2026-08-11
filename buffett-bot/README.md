@@ -27,7 +27,7 @@ A quality-first value investing research assistant that combines LLM qualitative
 ┌──────────────────────────▼──────────────────────────────────────┐
 │                   LAYER 3: Tier Engine                          │
 │  • Market regime classification (Euphoria → Crisis)             │
-│  • Tiered watchlist: Tier 1 (buy) / Tier 2 (watch) / Tier 3    │
+│  • Tiered watchlist: S/A (buy) / B (watch) / C (monitor)       │
 │  • Staged entry suggestions (3 tranches)                        │
 │  • Movement tracking between runs                               │
 └──────────────────────────┬──────────────────────────────────────┘
@@ -55,7 +55,7 @@ buffett-bot/
 │   ├── valuation.py         # Aggregate fair value estimates
 │   ├── analyzer.py          # LLM qualitative analysis (Haiku/Sonnet/Opus)
 │   ├── tier_engine.py       # Tiered watchlist assignment & staged entry
-│   ├── briefing.py          # Generate tiered investment reports
+│   ├── briefing/            # Generate tiered investment reports
 │   ├── portfolio.py         # ASK portfolio management & concentration controls
 │   ├── bubble_detector.py   # Market regime classification (Euphoria→Crisis)
 │   ├── notifications.py     # Email/Telegram/ntfy.sh/Discord alerts
@@ -91,9 +91,9 @@ buffett-bot/
 4. **Haiku pre-screen** — cheap LLM filter on top candidates
 5. **Sonnet deep analysis** — AnalysisV2 (moat, management, durability, currency, fair value)
 6. **Valuations** — aggregate fair value estimates for all analyzed stocks
-7. **Tier engine** — assign Tier 1/2/3 based on quality + price vs target entry
+7. **Tier engine** — assign S/A/B/C based on quality + price vs target entry
 8. **Portfolio check** — concentration status, ASK contributions, gap analysis
-9. **Opus second opinion** — contrarian review on Tier 1 picks (optional)
+9. **Opus second opinion** — contrarian review on S-tier picks (optional)
 10. **Tiered briefing** — generate text/HTML/JSON report with movement log
 
 Batch API (50% discount) and prompt caching are enabled by default to reduce costs.
@@ -105,7 +105,7 @@ Batch API (50% discount) and prompt caching are enabled by default to reduce cos
 
 ### Your Decision (manual)
 1. Read monthly briefing
-2. Review Tier 1 picks and staged entry suggestions
+2. Review S/A picks and staged entry suggestions
 3. Execute trades yourself via broker
 
 ## External Services Required
@@ -135,7 +135,7 @@ nano .env
 # 2. Pull the latest image
 docker compose pull
 
-# 3. Start the scheduler (runs free weekly screens automatically)
+# 3. Start the scheduler (paid jobs and paper trading are OFF by default)
 docker compose up -d scheduler
 
 # 4. Run a full briefing manually (costs ~$0.50 in Claude API)
@@ -149,6 +149,14 @@ docker compose up -d scheduler
 ```
 
 Results are saved to `./data/briefings/` and sent via your configured notifications.
+
+The scheduler always runs its free maintenance, screening, snapshot, and
+health-check jobs. Enable paid or order-submitting jobs independently in
+`.env` with `WEDNESDAY_HAIKU_ENABLED`, `FRIDAY_SONNET_ENABLED`,
+`DAILY_NEWS_ANALYSIS_ENABLED`, `MONTHLY_BRIEFING_ENABLED`, and
+`AUTO_TRADE_ENABLED`. Startup logs show the effective state and budget caps.
+Manual briefings submit paper orders only when
+`BRIEFING_PAPER_TRADES_ENABLED=true` is explicitly set.
 
 ## Screening Criteria (v2.0)
 
@@ -198,13 +206,13 @@ Customize in `config/screening_criteria.yaml`
 |----------|---------|-------------|
 | `ANTHROPIC_API_KEY` | (required) | Claude API key |
 | `USE_BATCH_API` | `true` | Use Batch API for 50% cost reduction |
-| `USE_OPUS_SECOND_OPINION` | `false` | Run Opus contrarian review on Tier 1 picks |
+| `USE_OPUS_SECOND_OPINION` | `false` | Run Opus contrarian review on S-tier picks |
 | `BENCHMARK_SYMBOL` | `SPY` | Benchmark to compare picks against |
 | `PORTFOLIO_VALUE` | `50000` | Portfolio size for position sizing |
 | `MAX_POSITIONS` | `8` | Maximum concentrated positions (ASK) |
 | `ASK_CONTRIBUTION_LIMIT` | `135900` | Annual ASK contribution limit (DKK) |
-| `MARGIN_OF_SAFETY_PCT` | `25` | Minimum margin of safety % for Tier 1 |
-| `TIER1_PROXIMITY_ALERT_PCT` | `10` | Alert when Tier 2 stock is within this % of target |
+| `MARGIN_OF_SAFETY_PCT` | `25` | Base margin-of-safety target used by tier assignment |
+| `TIER1_PROXIMITY_ALERT_PCT` | `10` | Legacy-named threshold for B-tier target alerts |
 
 See `.env.example` for the full list including notification and Alpaca settings.
 

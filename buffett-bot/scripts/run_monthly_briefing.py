@@ -12,7 +12,7 @@ Orchestrates the full pipeline:
 7. Fetch supplementary valuations
 8. Tier engine: assign tiers + update registry
 9. Portfolio check
-10. Opus second opinion on Tier 1 picks
+10. Opus second opinion on S-tier picks
 11. Generate tiered briefing with campaign progress
 12. Send notifications
 
@@ -30,6 +30,7 @@ Auto-schedule: scheduler.py runs this on 1st of each month (if enabled)
 import hashlib
 import json
 import logging
+import math
 import os
 import random
 import sys
@@ -50,6 +51,7 @@ from src.portfolio import PortfolioTracker, calculate_position_size
 from src.registry import Registry
 from src.screener import StockScreener, load_criteria_from_yaml
 from src.tier_engine import (
+    Tier,
     assign_tier,
     compute_movements,
     load_previous_watchlist,
@@ -60,6 +62,32 @@ from src.valuation import AggregatedValuation, ValuationAggregator
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
+
+
+def _paper_trade_symbols(
+    tier_assignments: dict,
+    analyzed_symbols: list[str],
+    valuation_lookup: dict[str, AggregatedValuation],
+) -> list[str]:
+    """Return fresh S/A names with deterministic price and valuation evidence."""
+    fresh = set(analyzed_symbols)
+    eligible = []
+    for symbol, assignment in tier_assignments.items():
+        valuation = valuation_lookup.get(symbol)
+        gap = getattr(assignment, "price_gap_pct", None)
+        if (
+            symbol not in fresh
+            or assignment.tier not in (Tier.S, Tier.A)
+            or valuation is None
+            or not valuation.has_valid_price
+            or valuation.margin_of_safety is None
+            or not isinstance(gap, (int, float))
+            or not math.isfinite(gap)
+            or gap > 0
+        ):
+            continue
+        eligible.append(symbol)
+    return eligible
 
 
 def load_cached_watchlist(cache_path: Path) -> list[dict]:
@@ -315,7 +343,16 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
                     )
                 except Exception as ex:
                     logger.warning(f"  {sym}: Haiku screen failed: {ex}")
-                    haiku_results.append({"symbol": sym, "worth_analysis": True, "moat_hint": 3, "quality_hint": 3})
+                    haiku_results.append(
+                        {
+                            "symbol": sym,
+                            "worth_analysis": False,
+                            "moat_hint": 0,
+                            "quality_hint": 0,
+                            "valid": False,
+                            "reason": f"Quick-screen error: {ex}",
+                        }
+                    )
 
         # Record results in registry
         registry.mark_haiku_screened(batch_to_screen, haiku_results, min_score=config.haiku_min_score)
@@ -326,7 +363,7 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
     newly_passed = [
         r["symbol"]
         for r in haiku_results
-        if (r.get("moat_hint", 0) + r.get("quality_hint", 0)) >= config.haiku_min_score
+        if r.get("valid") is True and (r.get("moat_hint", 0) + r.get("quality_hint", 0)) >= config.haiku_min_score
     ]
     haiku_result_map = {r["symbol"]: r for r in haiku_results}
 
@@ -454,9 +491,9 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
             confidence=screener_confidence,
         )
 
-    # Include Tier 1/2 entries from registry that aren't freshly analyzed
-    registry_tier12 = registry.get_tier_entries([1, 2])
-    for sym, entry in registry_tier12.items():
+    # Include active S/A/B entries from registry that aren't freshly analyzed.
+    registry_active = registry.get_tier_entries([Tier.S, Tier.A, Tier.B])
+    for sym, entry in registry_active.items():
         if sym in tier_assignments:
             continue  # Already have fresh analysis
         # Reconstruct a TierAssignment from stored data
@@ -501,7 +538,7 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
         tier_assignments[sym] = TierAssignment(
             symbol=sym,
             tier=entry["tier"],
-            quality_level="high" if entry["tier"] <= 2 else "moderate",
+            quality_level="wonderful" if entry["tier"] == Tier.S else "good",
             tier_reason=entry.get("tier_reason", "") + stale_note,
             target_entry_price=target,
             current_price=current_price,
@@ -549,13 +586,32 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
     logger.info(f"Portfolio: {current_positions} positions, ${portfolio_summary.get('current_value', 0):,.0f} value")
 
     # ─────────────────────────────────────────────────────────────
-    # Step 9.5: Paper trades for Tier 1 picks
+    # Step 9.5: Paper trades for S/A buy-zone picks
     # ─────────────────────────────────────────────────────────────
-    tier1_symbols = [sym for sym, t in tier_assignments.items() if t.tier == 1]
+    # Paper orders are stricter than report inclusion: historical registry
+    # entries can remain visible in the briefing, but only a freshly analyzed
+    # name with a current external quote/fair value and an at-target price may
+    # reach the broker.
+    buy_symbols = _paper_trade_symbols(tier_assignments, analyzed_symbols, valuation_lookup)
+    s_symbols = [sym for sym, t in tier_assignments.items() if t.tier == Tier.S]
+    actionable_regime = market_temp.get("regime") in {
+        "euphoria",
+        "overvalued",
+        "fair_value",
+        "correction",
+        "crisis",
+    } and bool(market_temp.get("signals"))
 
-    if trader.is_enabled() and tier1_symbols:
-        logger.info(f"\n[9.5/11] EXECUTING PAPER TRADES FOR {len(tier1_symbols)} TIER 1 PICKS...")
-        for sym in tier1_symbols:
+    if config.briefing_paper_trades_enabled and actionable_regime and trader.is_enabled() and buy_symbols:
+        available_slots = max(0, config.max_positions - current_positions)
+        symbols_to_buy = buy_symbols[:available_slots]
+        logger.info(
+            "\n[9.5/11] EXECUTING PAPER TRADES FOR %d/%d S/A PICKS (%d slot limit)...",
+            len(symbols_to_buy),
+            len(buy_symbols),
+            available_slots,
+        )
+        for sym in symbols_to_buy:
             analysis_for_trade = analyses.get(sym)
             conv = getattr(analysis_for_trade, "conviction_level", "MEDIUM") if analysis_for_trade else "MEDIUM"
             sizing = calculate_position_size(
@@ -565,21 +621,26 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
             )
             amount = sizing.get("recommended_amount", 0) if isinstance(sizing, dict) else 0
             if amount > 0:
-                trader.buy(sym, amount)
+                order = trader.buy(sym, amount)
+                if order:
+                    current_positions += 1
     else:
-        logger.info("\n[9.5/11] PAPER TRADING SKIPPED (no Tier 1 picks or Alpaca not configured)")
+        logger.info(
+            "\n[9.5/11] PAPER TRADING SKIPPED "
+            "(disabled, no valid market-regime evidence, no S/A picks, or Alpaca not configured)"
+        )
 
     # ─────────────────────────────────────────────────────────────
-    # Step 10: Opus Second Opinion on Tier 1 picks
+    # Step 10: Opus Second Opinion on highest-conviction S-tier picks
     # ─────────────────────────────────────────────────────────────
     use_opus = config.use_opus_second_opinion
     opus_opinions = {}
 
-    if use_opus and tier1_symbols:
-        logger.info(f"\n[10/11] OPUS SECOND OPINION ON {len(tier1_symbols)} TIER 1 PICKS...")
-        logger.info(f"   Cost: ~${len(tier1_symbols) * 0.30:.2f} (Opus)")
+    if use_opus and s_symbols:
+        logger.info(f"\n[10/11] OPUS SECOND OPINION ON {len(s_symbols)} S-TIER PICKS...")
+        logger.info(f"   Cost: ~${len(s_symbols) * 0.30:.2f} (Opus)")
 
-        for sym in tier1_symbols[:5]:
+        for sym in s_symbols[:5]:
             try:
                 filing_text = fetch_company_summary(sym)
                 analysis = analyses[sym]
@@ -598,7 +659,7 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
             except Exception as ex:
                 logger.error(f"  Opus second opinion failed for {sym}: {ex}")
     else:
-        reason = "no Tier 1 picks" if not tier1_symbols else "USE_OPUS_SECOND_OPINION != true"
+        reason = "no S-tier picks" if not s_symbols else "USE_OPUS_SECOND_OPINION != true"
         logger.info(f"\n[10/11] OPUS SECOND OPINION SKIPPED ({reason})")
 
     # ─────────────────────────────────────────────────────────────
@@ -606,7 +667,7 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
     # ─────────────────────────────────────────────────────────────
     logger.info("\n[11/11] GENERATING TIERED BRIEFING...")
 
-    # Build StockBriefing objects for each analyzed stock + registry Tier 1/2
+    # Build StockBriefing objects for each analyzed stock + registry S/A/B
     briefings = []
     briefing_symbols = set()
 
@@ -616,15 +677,15 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
         sc = screened_lookup.get(sym)
         ext_val = valuation_lookup.get(sym)
 
-        if not tier_or_none or tier_or_none.tier == 0:
+        if not tier_or_none:
             continue
 
         tier = tier_or_none
 
-        # Position sizing for Tier 1
+        # Position sizing for S/A buy tiers
         conv = getattr(analysis, "conviction_level", "MEDIUM")
         position_size = None
-        if tier.tier == 1:
+        if tier.tier in (Tier.S, Tier.A):
             position_size = calculate_position_size(
                 portfolio_value=portfolio_value,
                 conviction=conv,
@@ -649,7 +710,7 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
             revenue_growth=sc.revenue_growth if sc else None,
             valuation=ext_val,
             analysis=analysis,
-            tier=tier.tier,  # type: ignore[arg-type]
+            tier=tier.tier,
             tier_reason=tier.tier_reason,
             target_entry_price=tier.target_entry_price,
             price_gap_pct=tier.price_gap_pct,
@@ -664,12 +725,12 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
         briefings.append(briefing)
         briefing_symbols.add(sym)
 
-    # Registry Tier 1/2 entries not already in briefings
-    for sym, entry in registry_tier12.items():
+    # Registry S/A/B entries not already in briefings
+    for sym, entry in registry_active.items():
         if sym in briefing_symbols:
             continue
         tier_info = tier_assignments.get(sym)
-        if not tier_info or tier_info.tier == 0:
+        if not tier_info:
             continue
 
         # Build minimal briefing from registry data
@@ -708,7 +769,7 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
             revenue_growth=None,
             valuation=ext_val,
             analysis=mock_analysis,
-            tier=tier_info.tier,  # type: ignore[arg-type]
+            tier=tier_info.tier,
             tier_reason=tier_info.tier_reason,
             target_entry_price=tier_info.target_entry_price,
             price_gap_pct=tier_info.price_gap_pct,
@@ -774,9 +835,7 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
     # ─────────────────────────────────────────────────────────────
     # Summary
     # ─────────────────────────────────────────────────────────────
-    tier1_count = sum(1 for b in briefings if b.tier == 1)
-    tier2_count = sum(1 for b in briefings if b.tier == 2)
-    tier3_count = sum(1 for b in briefings if b.tier == 3)
+    tier_counts = {tier: sum(1 for b in briefings if b.tier == tier) for tier in Tier}
     approaching_count = sum(1 for b in briefings if b.approaching_target)
 
     logger.info("\n" + "=" * 60)
@@ -784,9 +843,10 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
     logger.info("=" * 60)
     logger.info(f"Market Temperature: {market_temp.get('temperature')}")
     logger.info(f"Stocks Analyzed:    {len(briefings)}")
-    logger.info(f"Tier 1 (Buy Zone):  {tier1_count}")
-    logger.info(f"Tier 2 (Watchlist): {tier2_count}")
-    logger.info(f"Tier 3 (Monitor):   {tier3_count}")
+    logger.info(f"S-tier (Wonderful): {tier_counts[Tier.S]}")
+    logger.info(f"A-tier (Buy Zone):  {tier_counts[Tier.A]}")
+    logger.info(f"B-tier (Watchlist): {tier_counts[Tier.B]}")
+    logger.info(f"C-tier (Monitor):   {tier_counts[Tier.C]}")
     logger.info(f"Approaching Target: {approaching_count}")
     logger.info(f"Movements:          {len(movements)}")
     logger.info(f"Bubble Warnings:    {len(bubble_warnings)}")

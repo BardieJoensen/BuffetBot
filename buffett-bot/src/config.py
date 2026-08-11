@@ -7,7 +7,16 @@ API keys/credentials stay in their respective modules.
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
+
+from dotenv import load_dotenv
+
+# Load local configuration before any dataclass defaults are evaluated.  Docker
+# injects env_file values before Python starts, while direct ``python -m``
+# invocations rely on this call.  load_dotenv never overwrites an already-set
+# process variable, so deployment-provided values remain authoritative.
+load_dotenv(Path.cwd() / ".env")
 
 
 def _optional_float(name: str) -> Optional[float]:
@@ -28,6 +37,9 @@ class Config:
     max_positions: int = int(os.getenv("MAX_POSITIONS", "8"))
     portfolio_value: float = float(os.getenv("PORTFOLIO_VALUE", "50000"))
     ask_contribution_limit_dkk: int = int(os.getenv("ASK_CONTRIBUTION_LIMIT", "135900"))
+
+    # Persistence
+    database_path: Path = Path(os.getenv("DATABASE_PATH", "./data/buffett_bot_v2.db"))
 
     # Tier thresholds (stored as decimals)
     margin_of_safety_pct: float = float(os.getenv("MARGIN_OF_SAFETY_PCT", "25")) / 100
@@ -111,9 +123,14 @@ class Config:
     # stocks that reached C, none ever recovered.
     c_tier_analysis_days: int = int(os.getenv("C_TIER_ANALYSIS_DAYS", "30"))
 
-    # Automation kill switches
-    auto_trade_enabled: bool = os.getenv("AUTO_TRADE_ENABLED", "true").lower() != "false"
-    monthly_briefing_enabled: bool = os.getenv("MONTHLY_BRIEFING_ENABLED", "true").lower() != "false"
+    # Automation kill switches. Paid work and order submission are opt-in: a
+    # missing or incomplete .env must leave the unattended scheduler harmless.
+    auto_trade_enabled: bool = os.getenv("AUTO_TRADE_ENABLED", "false").lower() == "true"
+    briefing_paper_trades_enabled: bool = os.getenv("BRIEFING_PAPER_TRADES_ENABLED", "false").lower() == "true"
+    monthly_briefing_enabled: bool = os.getenv("MONTHLY_BRIEFING_ENABLED", "false").lower() == "true"
+    wednesday_haiku_enabled: bool = os.getenv("WEDNESDAY_HAIKU_ENABLED", "false").lower() == "true"
+    friday_sonnet_enabled: bool = os.getenv("FRIDAY_SONNET_ENABLED", "false").lower() == "true"
+    daily_news_analysis_enabled: bool = os.getenv("DAILY_NEWS_ANALYSIS_ENABLED", "false").lower() == "true"
 
 
 config = Config()

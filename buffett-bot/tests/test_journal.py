@@ -61,6 +61,29 @@ class TestLogDecision:
         log = db.get_decision_log("AAPL")
         assert [r["action"] for r in log] == ["sell", "buy"]
 
+    def test_order_status_update_is_scoped_to_decision_row(self, db):
+        first = db.log_decision(
+            "AAPL",
+            "buy",
+            account_id="account_a",
+            order_id="shared-id",
+            order_status="accepted",
+        )
+        db.log_decision(
+            "AAPL",
+            "buy",
+            account_id="account_b",
+            order_id="shared-id",
+            order_status="accepted",
+        )
+
+        updated = db.update_order_status(first, "filled", fill_price=100.0, filled_shares=2.0)
+
+        assert updated is not None and updated["account_id"] == "account_a"
+        by_account = {row["account_id"]: row for row in db.get_decision_log("AAPL")}
+        assert by_account["account_a"]["order_status"] == "filled"
+        assert by_account["account_b"]["order_status"] == "accepted"
+
 
 # ─── get_open_buy ─────────────────────────────────────────────────────────────
 
@@ -88,6 +111,13 @@ class TestOpenBuy:
         )
         # The only buy is now closed -> no open buy remains.
         assert db.get_open_buy("MSFT") is None
+
+    def test_account_scope_prevents_cross_account_match(self, db):
+        db.log_decision("MSFT", "buy", account_id="account_a", order_status="filled", price=100.0)
+        db.log_decision("MSFT", "buy", account_id="account_b", order_status="filled", price=200.0)
+
+        assert db.get_open_buy("MSFT", account_id="account_a")["price"] == 100.0
+        assert db.get_open_buy("MSFT", account_id="account_b")["price"] == 200.0
 
 
 # ─── close_trade ──────────────────────────────────────────────────────────────

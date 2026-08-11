@@ -34,7 +34,7 @@ services:
           memory: 256M
 
   # =============================================================
-  # BACKGROUND SCHEDULER - FREE (no Claude API calls)
+  # BACKGROUND SCHEDULER - FREE BY DEFAULT
   # =============================================================
   # Start with: docker compose up -d scheduler
   #
@@ -42,7 +42,8 @@ services:
   # - Weekly stock screening (yfinance - free)
   # - Daily watchlist price checks (yfinance - free)
   #
-  # It will NOT run expensive Claude analyses automatically.
+  # Paid analysis and paper trading jobs are opt-in via the independent
+  # *_ENABLED switches in .env. Startup logs show every job's ON/OFF state.
   # =============================================================
   scheduler:
     build: .

@@ -29,7 +29,7 @@ from .config import config
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_DB_PATH = Path("data/buffett_bot_v2.db")
+DEFAULT_DB_PATH = config.database_path
 
 # ─── Schema ────────────────────────────────────────────────────────────────
 
@@ -168,6 +168,7 @@ CREATE TABLE IF NOT EXISTS paper_positions (
 -- never mutated — it is the permanent record of what was decided and why.
 CREATE TABLE IF NOT EXISTS decision_log (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id      TEXT,               -- broker/account that owns this decision
     ticker          TEXT NOT NULL,
     action          TEXT NOT NULL,      -- 'buy' / 'sell'
     decided_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -176,6 +177,8 @@ CREATE TABLE IF NOT EXISTS decision_log (
     shares          REAL,
     notional        REAL,               -- dollar amount (known at buy time even when price isn't)
     order_id        TEXT,
+    order_status    TEXT NOT NULL DEFAULT 'legacy', -- submitted/accepted/filled/rejected/...; legacy=pre-tracking
+    filled_at       TIMESTAMP,
     reason          TEXT,               -- trigger string (e.g. "Take profit: ...")
     regime          TEXT,               -- market regime at decision time
     reasoning_snapshot TEXT             -- JSON: thesis, fair_value, target_entry, margin_of_safety,
@@ -380,6 +383,9 @@ BUDGET_CAPS_DEFAULTS = [
 _COLUMN_MIGRATIONS: list[tuple[str, str, str]] = [
     ("portfolio_snapshots", "gross_equity", "REAL"),
     ("portfolio_snapshots", "untradable_value", "REAL"),
+    ("decision_log", "order_status", "TEXT NOT NULL DEFAULT 'legacy'"),
+    ("decision_log", "filled_at", "TIMESTAMP"),
+    ("decision_log", "account_id", "TEXT"),
 ]
 
 
@@ -621,17 +627,19 @@ class Database:
 
     def get_recent_headlines(self, ticker: str, *, days: int = 7) -> set[str]:
         """
-        Headlines already logged for a ticker, for suppressing repeats.
+        Headlines whose risk-analysis workflow completed, for suppressing repeats.
 
-        news_events is written on every check but never read back, so a story
-        that reappears across consecutive days re-spends budget on an
-        already-answered question.
+        Rows with sonnet_triggered NULL are deliberately excluded: they represent
+        a failed Haiku parse/API call or material news whose Sonnet follow-up did
+        not complete. Those stories must remain eligible for retry.
         """
         with _open(self.path) as conn:
             rows = conn.execute(
                 """
                 SELECT DISTINCT headline FROM news_events
-                WHERE ticker = ? AND detected_at >= datetime('now', ?)
+                WHERE ticker = ?
+                  AND datetime(detected_at) >= datetime('now', ?)
+                  AND sonnet_triggered IS NOT NULL
                 """,
                 (ticker, f"-{int(days)} days"),
             ).fetchall()
@@ -920,6 +928,26 @@ class Database:
             d["thesis_breakers"] = json.loads(d["thesis_breakers"] or "[]")
             return d
 
+    def get_valid_deep_analysis(self, ticker: str) -> Optional[dict]:
+        """Return the latest non-expired deep analysis, or None."""
+        with _open(self.path) as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM deep_analyses
+                WHERE ticker = ? AND datetime(expires_at) > datetime('now')
+                ORDER BY analyzed_at DESC
+                LIMIT 1
+                """,
+                (ticker,),
+            ).fetchone()
+            if not row:
+                return None
+            result = dict(row)
+            result["moat_sources"] = json.loads(result["moat_sources"] or "[]")
+            result["key_risks"] = json.loads(result["key_risks"] or "[]")
+            result["thesis_breakers"] = json.loads(result["thesis_breakers"] or "[]")
+            return result
+
     def get_expiring_analyses(self, within_days: int = 30) -> list[str]:
         """Return tickers whose latest analysis expires within N days."""
         cutoff = (datetime.now() + timedelta(days=within_days)).isoformat()
@@ -927,7 +955,7 @@ class Database:
             rows = conn.execute(
                 """
                 SELECT DISTINCT ticker FROM deep_analyses
-                WHERE expires_at <= ?
+                WHERE datetime(expires_at) <= datetime(?)
                   AND analyzed_at = (
                       SELECT MAX(analyzed_at) FROM deep_analyses d2
                       WHERE d2.ticker = deep_analyses.ticker
@@ -1110,7 +1138,7 @@ class Database:
             rows = conn.execute(
                 """
                 SELECT * FROM news_events
-                WHERE detected_at >= ?
+                WHERE datetime(detected_at) >= datetime(?)
                 ORDER BY detected_at DESC
                 """,
                 (since,),
@@ -1152,9 +1180,9 @@ class Database:
         haiku_material: Optional[bool] = None,
         sonnet_triggered: Optional[bool] = None,
         summary: Optional[str] = None,
-    ) -> None:
+    ) -> int:
         with _open(self.path) as conn:
-            conn.execute(
+            cur = conn.execute(
                 """
                 INSERT INTO news_events
                     (ticker, headline, source, published_at, event_type,
@@ -1172,6 +1200,16 @@ class Database:
                     summary,
                 ),
             )
+            return int(cur.lastrowid) if cur.lastrowid is not None else 0
+
+    def mark_news_event_complete(self, event_id: int, *, sonnet_triggered: bool) -> bool:
+        """Mark a news workflow complete so its headline can be deduplicated."""
+        with _open(self.path) as conn:
+            cur = conn.execute(
+                "UPDATE news_events SET sonnet_triggered = ? WHERE id = ?",
+                (int(sonnet_triggered), event_id),
+            )
+            return cur.rowcount > 0
 
     # ── Paper Positions ───────────────────────────────────────────────────────
 
@@ -1264,11 +1302,13 @@ class Database:
         ticker: str,
         action: str,
         *,
+        account_id: Optional[str] = None,
         tier: Optional[str] = None,
         price: Optional[float] = None,
         shares: Optional[float] = None,
         notional: Optional[float] = None,
         order_id: Optional[str] = None,
+        order_status: str = "legacy",
         reason: str = "",
         regime: Optional[str] = None,
         reasoning_snapshot: Optional[dict] = None,
@@ -1285,11 +1325,12 @@ class Database:
             cur = conn.execute(
                 """
                 INSERT INTO decision_log
-                    (ticker, action, tier, price, shares, notional, order_id,
+                    (account_id, ticker, action, tier, price, shares, notional, order_id, order_status,
                      reason, regime, reasoning_snapshot)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
+                    account_id,
                     ticker,
                     action,
                     tier,
@@ -1297,6 +1338,7 @@ class Database:
                     shares,
                     notional,
                     order_id,
+                    order_status,
                     reason,
                     regime,
                     json.dumps(reasoning_snapshot) if reasoning_snapshot is not None else None,
@@ -1305,26 +1347,107 @@ class Database:
             new_id = cur.lastrowid
             return int(new_id) if new_id is not None else 0
 
-    def get_open_buy(self, ticker: str) -> Optional[dict]:
+    def get_pending_order_decisions(self) -> list[dict]:
+        """Return submitted broker decisions that still need fill reconciliation."""
+        terminal = ("filled", "canceled", "cancelled", "rejected", "expired", "replaced")
+        placeholders = ",".join("?" for _ in terminal)
+        with _open(self.path) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT * FROM decision_log
+                WHERE order_id IS NOT NULL
+                  AND order_status NOT IN ({placeholders})
+                  AND order_status != 'legacy'
+                ORDER BY decided_at, id
+                """,  # nosec B608 -- placeholders are generated from a fixed tuple
+                terminal,
+            ).fetchall()
+            results = []
+            for row in rows:
+                item = dict(row)
+                item["reasoning_snapshot"] = (
+                    json.loads(item["reasoning_snapshot"]) if item["reasoning_snapshot"] else None
+                )
+                results.append(item)
+            return results
+
+    def update_order_status(
+        self,
+        decision_id: int,
+        status: str,
+        *,
+        fill_price: Optional[float] = None,
+        filled_shares: Optional[float] = None,
+    ) -> Optional[dict]:
+        """Persist broker order state for one journal row and return it."""
+        filled = status == "filled"
+        with _open(self.path) as conn:
+            conn.execute(
+                """
+                UPDATE decision_log
+                SET order_status = ?,
+                    price = CASE WHEN ? IS NOT NULL THEN ? ELSE price END,
+                    shares = CASE WHEN ? IS NOT NULL THEN ? ELSE shares END,
+                    filled_at = CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE filled_at END
+                WHERE id = ?
+                """,
+                (
+                    status,
+                    fill_price,
+                    fill_price,
+                    filled_shares,
+                    filled_shares,
+                    int(filled),
+                    decision_id,
+                ),
+            )
+            row = conn.execute("SELECT * FROM decision_log WHERE id = ?", (decision_id,)).fetchone()
+            if row is None:
+                return None
+            item = dict(row)
+            item["reasoning_snapshot"] = json.loads(item["reasoning_snapshot"]) if item["reasoning_snapshot"] else None
+            return item
+
+    def get_open_buy(self, ticker: str, account_id: Optional[str] = None) -> Optional[dict]:
         """
         Return the most recent 'buy' decision for a ticker that has not yet been
         matched to a closed trade, or None. This is the entry that a subsequent
-        sell closes against.
+        sell closes against. When an account is supplied, prefer an exact match
+        and only fall back to pre-migration rows whose account_id is NULL.
         """
         with _open(self.path) as conn:
-            row = conn.execute(
-                """
-                SELECT * FROM decision_log
-                WHERE ticker = ? AND action = 'buy'
-                  AND id NOT IN (
-                      SELECT entry_decision_id FROM closed_trades
-                      WHERE entry_decision_id IS NOT NULL
-                  )
-                ORDER BY decided_at DESC, id DESC
-                LIMIT 1
-                """,
-                (ticker,),
-            ).fetchone()
+            if account_id is None:
+                row = conn.execute(
+                    """
+                    SELECT * FROM decision_log
+                    WHERE ticker = ? AND action = 'buy'
+                      AND order_status IN ('filled', 'legacy')
+                      AND id NOT IN (
+                          SELECT entry_decision_id FROM closed_trades
+                          WHERE entry_decision_id IS NOT NULL
+                      )
+                    ORDER BY decided_at DESC, id DESC
+                    LIMIT 1
+                    """,
+                    (ticker,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """
+                    SELECT * FROM decision_log
+                    WHERE ticker = ? AND action = 'buy'
+                      AND (account_id = ? OR account_id IS NULL)
+                      AND order_status IN ('filled', 'legacy')
+                      AND id NOT IN (
+                          SELECT entry_decision_id FROM closed_trades
+                          WHERE entry_decision_id IS NOT NULL
+                      )
+                    ORDER BY CASE WHEN account_id = ? THEN 0 ELSE 1 END,
+                             decided_at DESC, id DESC
+                    LIMIT 1
+                    """,
+                    (ticker, account_id, account_id),
+                ).fetchone()
             if not row:
                 return None
             d = dict(row)
@@ -1339,6 +1462,7 @@ class Database:
         entry_price: float,
         exit_price: float,
         shares: float,
+        account_id: Optional[str] = None,
         exit_date: Optional[str] = None,
         sell_category: Optional[str] = None,
         benchmark_return: Optional[float] = None,
@@ -1356,7 +1480,7 @@ class Database:
         stays network-free and unit-testable offline). Returns the new
         closed_trades id, or None if no matching open buy exists.
         """
-        open_buy = self.get_open_buy(ticker)
+        open_buy = self.get_open_buy(ticker, account_id=account_id)
         if open_buy is None:
             logger.warning(f"close_trade: no open buy found for {ticker} — skipping")
             return None
@@ -1947,7 +2071,7 @@ class Database:
             cur = conn.execute(
                 """
                 DELETE FROM haiku_screens
-                WHERE expires_at < date('now', '-1 year')
+                WHERE datetime(expires_at) < datetime('now', '-1 year')
                 """
             )
             deleted["haiku_screens"] = cur.rowcount
@@ -1956,7 +2080,7 @@ class Database:
             cur = conn.execute(
                 """
                 DELETE FROM news_events
-                WHERE detected_at < date('now', '-2 years')
+                WHERE datetime(detected_at) < datetime('now', '-2 years')
                 """
             )
             deleted["news_events"] = cur.rowcount
@@ -1975,11 +2099,8 @@ class Database:
         """
         Import existing studies from the old registry.json into the new schema.
 
-        Maps old integer tiers to new letter tiers:
-            1 → S  (Wonderful at fair value — keep as best tier)
-            2 → B  (High quality but overpriced → Watch)
-            3 → C  (Moderate quality → Monitor)
-            0 → C  (Excluded)
+        Accepts both old integer tiers and current S/A/B/C values. Legacy
+        Tier 1 is split into S/A when moat and conviction context is present.
 
         Returns number of studies imported.
         """
@@ -1997,14 +2118,22 @@ class Database:
             logger.info("registry.json has no studies — nothing to migrate")
             return 0
 
-        TIER_MAP = {1: "S", 2: "B", 3: "C", 0: "C"}
+        from .tier_engine import Tier, normalize_tier
+
         count = 0
 
         for ticker, entry in studies.items():
             try:
                 old_tier = entry.get("tier", 0)
-                new_tier = TIER_MAP.get(old_tier, "C")
                 analysis = entry.get("analysis", {})
+                try:
+                    new_tier = normalize_tier(
+                        old_tier,
+                        moat=analysis.get("moat_rating"),
+                        conviction=analysis.get("conviction"),
+                    ).value
+                except ValueError:
+                    new_tier = Tier.C.value
 
                 # Upsert into universe
                 self.upsert_universe_stock(
@@ -2069,7 +2198,7 @@ class Database:
                   AND NOT EXISTS (
                       SELECT 1 FROM haiku_screens h
                       WHERE h.ticker = u.ticker
-                        AND h.expires_at > datetime('now')
+                        AND datetime(h.expires_at) > datetime('now')
                   )
                 ORDER BY u.quality_score DESC NULLS LAST
                 LIMIT ?
@@ -2098,8 +2227,8 @@ class Database:
                       SELECT MAX(screened_at) FROM haiku_screens h2
                       WHERE h2.ticker = u.ticker
                   )
-                  AND h.expires_at > datetime('now')   -- still valid, not yet expired
-                  AND h.expires_at <= ?                -- but expiring soon
+                  AND datetime(h.expires_at) > datetime('now')   -- still valid, not yet expired
+                  AND datetime(h.expires_at) <= datetime(?)      -- but expiring soon
                 ORDER BY u.quality_score DESC NULLS LAST
                 LIMIT ?
                 """,
@@ -2127,11 +2256,11 @@ class Database:
                       WHERE h2.ticker = u.ticker
                   )
                   AND h.passed = 1
-                  AND h.expires_at > datetime('now')
+                  AND datetime(h.expires_at) > datetime('now')
                   AND NOT EXISTS (
                       SELECT 1 FROM deep_analyses da
                       WHERE da.ticker = u.ticker
-                        AND da.expires_at > datetime('now')
+                        AND datetime(da.expires_at) > datetime('now')
                   )
                 ORDER BY u.quality_score DESC NULLS LAST
                 LIMIT ?
@@ -2142,15 +2271,19 @@ class Database:
 
     _HELD_TICKERS_SQL = """
         SELECT ticker FROM paper_positions
-        WHERE last_synced >= datetime('now', '-8 days')
+        WHERE datetime(last_synced) >= datetime('now', '-8 days')
         UNION
         SELECT d.ticker FROM decision_log d
         WHERE d.action = 'buy'
-          AND d.decided_at >= datetime('now', ?)
+          AND datetime(d.decided_at) >= datetime('now', ?)
+          AND d.order_status NOT IN ('canceled', 'cancelled', 'rejected', 'expired', 'replaced')
           AND NOT EXISTS (
               SELECT 1 FROM decision_log s
               WHERE s.ticker = d.ticker
                 AND s.action = 'sell'
+                AND (s.account_id = d.account_id OR d.account_id IS NULL)
+                AND s.order_status IN ('filled', 'legacy')
+                AND COALESCE(json_extract(s.reasoning_snapshot, '$.full_exit'), 1) = 1
                 AND (s.decided_at > d.decided_at
                      OR (s.decided_at = d.decided_at AND s.id > d.id))
           )
@@ -2202,15 +2335,19 @@ class Database:
                 """
                 SELECT t.ticker FROM (
                     SELECT ticker FROM paper_positions
-                    WHERE last_synced >= datetime('now', '-8 days')
+                    WHERE datetime(last_synced) >= datetime('now', '-8 days')
                     UNION
                     SELECT d.ticker FROM decision_log d
                     WHERE d.action = 'buy'
-                      AND d.decided_at >= datetime('now', ?)
+                      AND datetime(d.decided_at) >= datetime('now', ?)
+                      AND d.order_status NOT IN ('canceled', 'cancelled', 'rejected', 'expired', 'replaced')
                       AND NOT EXISTS (
                           SELECT 1 FROM decision_log s
                           WHERE s.ticker = d.ticker
                             AND s.action = 'sell'
+                            AND (s.account_id = d.account_id OR d.account_id IS NULL)
+                            AND s.order_status IN ('filled', 'legacy')
+                            AND COALESCE(json_extract(s.reasoning_snapshot, '$.full_exit'), 1) = 1
                             AND (s.decided_at > d.decided_at
                                  OR (s.decided_at = d.decided_at AND s.id > d.id))
                       )
@@ -2218,7 +2355,7 @@ class Database:
                 WHERE NOT EXISTS (
                     SELECT 1 FROM deep_analyses da
                     WHERE da.ticker = t.ticker
-                      AND da.expires_at > datetime('now')
+                      AND datetime(da.expires_at) > datetime('now')
                 )
                 ORDER BY t.ticker
                 """,
@@ -2256,7 +2393,7 @@ class Database:
                         WHEN u.source = 'conviction' AND da.ticker IS NULL                  THEN 0
                         WHEN u.source = 'conviction'                                         THEN 0
                         WHEN da.ticker IS NULL AND u.quality_score >= 70                    THEN 1
-                        WHEN da.expires_at <= date('now', '+30 days')
+                        WHEN datetime(da.expires_at) <= datetime('now', '+30 days')
                              AND u.quality_score >= 70                                       THEN 2
                         WHEN da.tier IN ('S','A')                                            THEN 3
                         WHEN da.ticker IS NULL AND u.quality_score >= 40                    THEN 4
