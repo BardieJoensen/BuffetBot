@@ -336,9 +336,10 @@ class PortfolioTracker:
 
                 price = info.get("regularMarketPrice") or info.get("currentPrice")
                 if price:
+                    current_value = price * position.shares
                     position.current_price = price
-                    position.current_value = price * position.shares
-                    position.gain_loss = position.current_value - (position.cost_basis * position.shares)
+                    position.current_value = current_value
+                    position.gain_loss = current_value - (position.cost_basis * position.shares)
                     position.gain_loss_pct = (price - position.cost_basis) / position.cost_basis
                     position.dividend_yield = info.get("dividendYield")
 
