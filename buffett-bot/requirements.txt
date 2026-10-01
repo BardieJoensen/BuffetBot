@@ -18,6 +18,9 @@ python-dotenv>=1.0.0
 
 # Scheduling
 schedule>=1.2.0
+# schedule's timezone-aware .at("16:15", "America/New_York") imports pytz lazily.
+# pandas 3 no longer depends on it, so declare it rather than rely on yfinance.
+pytz>=2024.1
 
 # Trading (Alpaca)
 alpaca-py>=0.13.0

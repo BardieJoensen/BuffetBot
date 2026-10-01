@@ -167,8 +167,11 @@ class TelegramNotifier:
         if not self.configured:
             return False
 
-        text = f"*ALERT: {symbol}*\n\n{message}"
-        return self._send_message(text, parse_mode="Markdown")
+        # Plain text on purpose: tier reasons and thesis snippets contain
+        # underscores, asterisks and dollar signs that Telegram's Markdown
+        # parser rejects with a 400, which silently dropped the alert.
+        text = f"ALERT: {symbol}\n\n{message}"
+        return self._send_message(text)
 
     def send_summary(self, summary: dict) -> bool:
         """Send quick summary (good for weekly updates)"""
