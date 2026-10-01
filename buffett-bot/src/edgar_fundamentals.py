@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import date
 from typing import Optional
 
 from src import edgar_fetcher
@@ -138,10 +139,53 @@ def _observations_for_tag(facts_doc: dict, tag: str, unit: str) -> Optional[list
     return None
 
 
+# Accepted duration (days from `start` to `end`, inclusive-ish) per form family.
+# Annual filings run 52 or 53 weeks (364/371 days) or a calendar year; quarterly
+# filings run ~13 weeks. Anything else carried under that form is a Q4 figure,
+# a year-to-date cumulative, or a multi-year total — not the period the form
+# represents, and must never be stored as if it were.
+_ANNUAL_SPAN_DAYS = (340, 380)
+_QUARTER_SPAN_DAYS = (80, 100)
+
+
+def _span_bounds(form: Optional[str]) -> Optional[tuple[int, int]]:
+    """Expected duration bounds for a form, or None if the form implies none."""
+    f = (form or "").upper()
+    if f.startswith("10-K") or f.startswith("20-F") or f.startswith("40-F"):
+        return _ANNUAL_SPAN_DAYS
+    if f.startswith("10-Q"):
+        return _QUARTER_SPAN_DAYS
+    return None
+
+
+def _span_ok(obs: dict) -> bool:
+    """
+    True if a fact's duration matches its form. Instant facts (no `start`:
+    shares outstanding, equity, assets) always pass. A 10-K fact spanning one
+    quarter is Apple's Q4 line, not the fiscal year; a 10-Q fact spanning nine
+    months is a year-to-date cumulative, not the quarter.
+    """
+    start = obs.get("start")
+    if not start:
+        return True
+    bounds = _span_bounds(obs.get("form"))
+    if bounds is None:
+        return True
+    try:
+        days = (date.fromisoformat(obs["end"]) - date.fromisoformat(start)).days
+    except (ValueError, TypeError, KeyError):
+        return False
+    return bounds[0] <= days <= bounds[1]
+
+
 def _originally_filed(observations: list) -> dict[tuple, dict]:
     """
     Reduce observations to the originally-filed value per (period_end, form):
     the one with the earliest `filed` date. Returns {(end, form): obs}.
+
+    Facts whose duration does not match the form are dropped first (see
+    _span_ok). Without that, a 10-K's Q4 fact shares (end, form) with the
+    annual fact and whichever appears first in the JSON would win.
     """
     best: dict[tuple, dict] = {}
     for obs in observations:
@@ -149,6 +193,8 @@ def _originally_filed(observations: list) -> dict[tuple, dict]:
         form = obs.get("form")
         filed = obs.get("filed")
         if not end or not filed or obs.get("val") is None:
+            continue
+        if not _span_ok(obs):
             continue
         key = (end, form)
         if key not in best or filed < best[key].get("filed", "9999"):
