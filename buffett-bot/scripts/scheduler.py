@@ -92,6 +92,14 @@ def _build_reasoning_snapshot(db, symbol: str, val) -> tuple[dict, "str | None"]
     return snapshot, tier
 
 
+def _mark_skipped(db, decision_id: int, symbol: str) -> None:
+    """Close a pre-submission journal row whose order was refused by a pre-flight check."""
+    try:
+        db.update_order_status(decision_id, "skipped")
+    except Exception as e:
+        logger.warning("Failed to mark journal row %s (%s) as skipped: %s", decision_id, symbol, e)
+
+
 def _build_db_summary(ticker: str, db) -> str:
     """
     Build a company summary from DB universe + fundamentals data.
@@ -513,6 +521,27 @@ def reconcile_broker_orders():
     from src.database import Database
 
     db = Database()
+
+    # A row stuck at "submitting" means the process died between the journal
+    # write and the broker's answer: the broker may hold an order the journal
+    # cannot reconcile. Shout, throttled, rather than let it sit silently.
+    try:
+        stale = db.get_stale_submitting_decisions()
+        if stale:
+            fingerprint = ",".join(str(row["id"]) for row in stale)
+            message = (
+                "Journal rows stuck at 'submitting' (order may exist at the broker, check manually): "
+                + ", ".join(f"#{row['id']} {row['action']} {row['ticker']} ({row['decided_at']})" for row in stale)
+            )
+            logger.error(message)
+            if db.should_alert("stale_submitting", fingerprint, realert_days=config.health_realert_days):
+                from src.notifications import NotificationManager
+
+                if _notification_delivered(NotificationManager().send_alert("JOURNAL", message)):
+                    db.mark_alerted("stale_submitting", fingerprint)
+    except Exception as exc:
+        logger.warning("Stale-submission check failed: %s", exc)
+
     pending = db.get_pending_order_decisions()
     if not pending:
         return
@@ -777,12 +806,24 @@ def weekly_auto_trade():
                     mos = val.margin_of_safety if val else None
                 except Exception as e:
                     logger.warning(f"Error pricing {pos.symbol}: {e}")
+                # A thesis break needs a confirmed verdict. A lone news-triggered
+                # C (numeric summary + headlines, no 10-K) overwrote a tier set
+                # with the full prompt and sold the position at Monday's open —
+                # every S/A/B -> C in production history came from that path.
+                # Unconfirmed C holdings are re-checked by the Friday batch.
+                downgraded = db.was_downgraded_to_c(pos.symbol)
+                confirmed = db.is_c_tier_confirmed(pos.symbol) if downgraded else False
+                if tier == "C" and downgraded and not confirmed:
+                    logger.info(
+                        "%s: C verdict is unconfirmed (news-triggered, no 10-K) — holding until the Friday batch re-checks",
+                        pos.symbol,
+                    )
                 held.append(
                     HeldPosition(
                         position=pos,
                         tier=tier,
                         margin_of_safety=mos,
-                        downgraded_to_c=db.was_downgraded_to_c(pos.symbol),
+                        downgraded_to_c=downgraded and confirmed,
                     )
                 )
 
@@ -791,8 +832,32 @@ def weekly_auto_trade():
             pending_sell = False
             for sell in sells:
                 pos = next(p for p in positions if p.symbol == sell.symbol)
+                requested_qty = pos.shares if sell.quantity is None else sell.quantity
+                # Journal BEFORE submitting: an order the broker holds but the
+                # journal never heard of can never be reconciled, so a crash
+                # between submit and journal must leave a row, not a gap. No
+                # journal row means no order.
+                try:
+                    exit_id = db.log_decision(
+                        sell.symbol,
+                        "sell",
+                        shares=requested_qty,
+                        order_status="submitting",
+                        account_id=account.account_id,
+                        reason=sell.reason,
+                        regime=regime_label,
+                        reasoning_snapshot={
+                            "entry_price": pos.avg_cost,
+                            "position_shares": pos.shares,
+                            "full_exit": sell.quantity is None,
+                        },
+                    )
+                except Exception as e:
+                    logger.error("Not submitting sell for %s — journal write failed: %s", sell.symbol, e)
+                    continue
                 sell_order = account.sell(sell.symbol, reason=sell.reason, quantity=sell.quantity)
                 if not sell_order:
+                    _mark_skipped(db, exit_id, sell.symbol)
                     continue
                 status = sell_order.get("status", "submitted")
                 filled_price = _positive_finite(sell_order.get("filled_avg_price"))
@@ -813,25 +878,15 @@ def weekly_auto_trade():
                     sold_symbols.add(sell.symbol)
                 logger.info("Sell order submitted for %s (status=%s): %s", sell.symbol, status, sell.reason)
                 try:
-                    requested_qty = pos.shares if sell.quantity is None else sell.quantity
-                    exit_id = db.log_decision(
-                        sell.symbol,
-                        "sell",
-                        price=filled_price if filled else None,
-                        shares=filled_qty if filled else requested_qty,
+                    db.update_order_status(
+                        exit_id,
+                        journal_status,
+                        order_id=sell_order.get("order_id"),
+                        fill_price=filled_price if filled else None,
+                        filled_shares=filled_qty if filled else None,
                         notional=(
                             filled_price * filled_qty if filled_price is not None and filled_qty is not None else None
                         ),
-                        order_id=sell_order.get("order_id"),
-                        order_status=journal_status,
-                        account_id=account.account_id,
-                        reason=sell.reason,
-                        regime=regime_label,
-                        reasoning_snapshot={
-                            "entry_price": pos.avg_cost,
-                            "position_shares": pos.shares,
-                            "full_exit": sell.quantity is None,
-                        },
                     )
                     if filled and sell.quantity is None and filled_price is not None and filled_qty is not None:
                         # Benchmark return over the exact hold window (fetched
@@ -901,8 +956,32 @@ def weekly_auto_trade():
             )
 
             for buy in plan.buys:
+                # Journal BEFORE submitting (same reasoning as the sell path).
+                try:
+                    buy_valuation = valuations_by_symbol.get(buy.symbol)
+                    snapshot, tier = (
+                        _build_reasoning_snapshot(db, buy.symbol, buy_valuation) if buy_valuation else ({}, buy.tier)
+                    )
+                    snapshot["deploy_regime"] = plan.regime
+                    snapshot["deploy_target_pct"] = plan.target_pct
+                    snapshot["deploy_gap_at_decision"] = plan.gap
+                    entry_id = db.log_decision(
+                        buy.symbol,
+                        "buy",
+                        account_id=account.account_id,
+                        tier=tier or buy.tier,
+                        notional=buy.amount,
+                        order_status="submitting",
+                        reason=f"Weekly auto-trade: regime={plan.regime}, target={plan.target_pct:.0%} invested",
+                        regime=regime_label,
+                        reasoning_snapshot=snapshot,
+                    )
+                except Exception as e:
+                    logger.error("Not submitting buy for %s — journal write failed: %s", buy.symbol, e)
+                    continue
                 order = account.buy(buy.symbol, buy.amount)
                 if not order:
+                    _mark_skipped(db, entry_id, buy.symbol)
                     continue
                 order_status = order.get("status", "submitted")
                 fill_price = _positive_finite(order.get("filled_avg_price"))
@@ -920,26 +999,12 @@ def weekly_auto_trade():
                     order_status,
                 )
                 try:
-                    buy_valuation = valuations_by_symbol.get(buy.symbol)
-                    snapshot, tier = (
-                        _build_reasoning_snapshot(db, buy.symbol, buy_valuation) if buy_valuation else ({}, buy.tier)
-                    )
-                    snapshot["deploy_regime"] = plan.regime
-                    snapshot["deploy_target_pct"] = plan.target_pct
-                    snapshot["deploy_gap_at_decision"] = plan.gap
-                    db.log_decision(
-                        buy.symbol,
-                        "buy",
-                        account_id=account.account_id,
-                        tier=tier or buy.tier,
-                        price=fill_price if filled else None,
-                        shares=filled_qty if filled else None,
-                        notional=buy.amount,
+                    db.update_order_status(
+                        entry_id,
+                        journal_status,
                         order_id=order.get("order_id"),
-                        order_status=journal_status,
-                        reason=f"Weekly auto-trade: regime={plan.regime}, target={plan.target_pct:.0%} invested",
-                        regime=regime_label,
-                        reasoning_snapshot=snapshot,
+                        fill_price=fill_price if filled else None,
+                        filled_shares=filled_qty if filled else None,
                     )
                 except Exception as e:
                     logger.warning(f"Failed to journal buy for {buy.symbol}: {e}")
@@ -1230,7 +1295,12 @@ def wednesday_haiku_batch():
 
         run_id = db.start_run("wednesday_haiku")
         analyzer = CompanyAnalyzer()
-        batch_results = analyzer.batch_quick_screen(to_screen)
+        try:
+            batch_results = analyzer.batch_quick_screen(to_screen)
+        except Exception:
+            refunded = db.refund_batch("weekly_haiku_screen", allowed)
+            logger.error("Haiku batch failed — refunded %d reserved budget slot(s)", refunded)
+            raise
 
         for result in batch_results:
             symbol = result.get("symbol", "")
@@ -1298,10 +1368,15 @@ def friday_sonnet_batch():
         # Portfolio first, then the quality-ranked Haiku-pass queue. On budget
         # truncation (spend_batch below) the portfolio names survive the cut.
         priority = db.get_portfolio_tickers_needing_analysis()
+        # Held names whose only C verdict came from the news path (no 10-K)
+        # are re-checked here with the full prompt, bypassing the file cache,
+        # so the sell engine gets a confirmed verdict within a week.
+        recheck = db.get_held_unconfirmed_c_tickers()
+        recheck_set = set(recheck)
         queue = db.get_haiku_passes_without_analysis(limit=5)
         seen: set[str] = set()
         candidates: list[str] = []
-        for t in priority + queue:
+        for t in priority + recheck + queue:
             if t not in seen:
                 seen.add(t)
                 candidates.append(t)
@@ -1311,6 +1386,8 @@ def friday_sonnet_batch():
             return
         if priority:
             logger.info("Portfolio tickers needing analysis (jump the queue): %s", ", ".join(priority))
+        if recheck:
+            logger.info("Held tickers with an unconfirmed C verdict (full-prompt re-check): %s", ", ".join(recheck))
 
         allowed = db.spend_batch("weekly_sonnet_analysis", len(candidates))
         if allowed == 0:
@@ -1334,12 +1411,20 @@ def friday_sonnet_batch():
                     "company_name": (u or {}).get("company_name", ticker),
                     "filing_text": filing_text,
                     "sector": (u or {}).get("sector", ""),
+                    "use_cache": ticker not in recheck_set,
                 }
             )
 
         run_id = db.start_run("friday_sonnet")
         analyzer = CompanyAnalyzer()
-        analyses = analyzer.batch_analyze_companies(to_analyze)
+        try:
+            analyses = analyzer.batch_analyze_companies(to_analyze)
+        except Exception:
+            # The slots were reserved before submission; a batch that produced
+            # nothing must not consume the week's allowance.
+            refunded = db.refund_batch("weekly_sonnet_analysis", allowed)
+            logger.error("Sonnet batch failed — refunded %d reserved budget slot(s)", refunded)
+            raise
 
         aggregator = ValuationAggregator()
 
