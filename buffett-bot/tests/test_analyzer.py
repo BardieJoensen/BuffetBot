@@ -349,3 +349,89 @@ class TestNewsPathDoesNotPoisonCache:
         with patch("src.analyzer.save_analysis_to_cache") as mock_save:
             analyzer.analyze_company("AAPL", "Apple", "text", use_cache=False, save_cache=False)
         mock_save.assert_not_called()
+
+
+class TestThinkingPerModel:
+    """Sonnet 5.5 rejects {"type": "disabled"}; the off-switch is per generation."""
+
+    def test_sonnet_5_5_uses_between_tools(self):
+        assert analyzer_mod._thinking_kwargs("claude-sonnet-5-5") == {"thinking": {"type": "between_tools"}}
+
+    def test_older_models_still_disable(self):
+        for m in ("claude-sonnet-5", "claude-haiku-4-5", "claude-opus-5"):
+            assert analyzer_mod._thinking_kwargs(m) == {"thinking": {"type": "disabled"}}
+
+    def test_models_that_cannot_disable_use_low_effort(self):
+        assert analyzer_mod._thinking_kwargs("claude-opus-5-5") == {"output_config": {"effort": "low"}}
+        assert "thinking" not in analyzer_mod._thinking_kwargs("claude-fable-5-1")
+
+    def test_default_deep_model_is_sonnet_5_5(self):
+        from src.config import config
+
+        assert config.model_deep == "claude-sonnet-5-5"
+
+    def test_deep_request_sends_between_tools_for_sonnet_5_5(self):
+        analyzer = _analyzer_with_response([_FakeTextBlock("x")])
+        analyzer.model_deep = "claude-sonnet-5-5"
+        with patch("src.analyzer.parse_analysis"), patch("src.analyzer.save_analysis_to_cache"):
+            analyzer.analyze_company("AAPL", "Apple", "text", use_cache=False)
+        kwargs = analyzer.client.messages.create.call_args.kwargs
+        assert kwargs["model"] == "claude-sonnet-5-5"
+        assert kwargs["thinking"] == {"type": "between_tools"}
+        assert "output_config" not in kwargs
+
+    def test_batch_deep_request_sends_between_tools_for_sonnet_5_5(self):
+        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):  # pragma: allowlist secret
+            analyzer = CompanyAnalyzer()
+        analyzer.model_deep = "claude-sonnet-5-5"
+        analyzer.client = MagicMock()
+        batch = MagicMock()
+        batch.id = "batch-1"
+        analyzer.client.messages.batches.create.return_value = batch
+        analyzer.client.messages.batches.results.return_value = []
+        analyzer._wait_for_batch = MagicMock(return_value=batch)
+        with patch("src.analyzer.get_cached_analysis", return_value=None):
+            analyzer.batch_analyze_companies([{"symbol": "AAPL", "filing_text": "x"}])
+        params = analyzer.client.messages.batches.create.call_args.kwargs["requests"][0]["params"]
+        assert params["thinking"] == {"type": "between_tools"}
+
+
+class TestRefusalHandling:
+    def _refused(self, category="general_harms"):
+        response = MagicMock(content=[])
+        response.stop_reason = "refusal"
+        response.stop_details.category = category
+        return response
+
+    def test_deep_analysis_refusal_raises_instead_of_parsing(self):
+        analyzer = _analyzer_with_response([])
+        analyzer.client.messages.create.return_value = self._refused()
+        with pytest.raises(ValueError, match="refusal"):
+            analyzer.analyze_company("AAPL", "Apple", "text", use_cache=False)
+
+    def test_quick_screen_refusal_fails_closed(self):
+        analyzer = _analyzer_with_response([])
+        analyzer.client.messages.create.return_value = self._refused("cyber")
+        out = analyzer.quick_screen("AAPL", "text")
+        assert out["valid"] is False and out["worth_analysis"] is False
+
+    def test_batch_refusal_is_discarded_not_cached(self):
+        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):  # pragma: allowlist secret
+            analyzer = CompanyAnalyzer()
+        analyzer.client = MagicMock()
+        batch = MagicMock()
+        batch.id = "batch-1"
+        refused = MagicMock()
+        refused.custom_id = "AAPL"
+        refused.result.type = "succeeded"
+        refused.result.message = self._refused()
+        analyzer.client.messages.batches.create.return_value = batch
+        analyzer.client.messages.batches.results.return_value = [refused]
+        analyzer._wait_for_batch = MagicMock(return_value=batch)
+        with (
+            patch("src.analyzer.get_cached_analysis", return_value=None),
+            patch("src.analyzer.save_analysis_to_cache") as mock_save,
+        ):
+            out = analyzer.batch_analyze_companies([{"symbol": "AAPL", "filing_text": "x"}])
+        assert out == []
+        mock_save.assert_not_called()
