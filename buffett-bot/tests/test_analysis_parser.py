@@ -90,6 +90,38 @@ class TestPessimisticDefaults:
     def test_extract_rating_keeps_its_old_signature(self):
         assert extract_rating("no rating here", ["STRONG", "WEAK", "NONE"]) == "NONE"
 
+    def test_earliest_rating_wins_over_explanation_vocabulary(self):
+        """
+        The rating comes first and the explanation after. Preferring the longest
+        option found anywhere let words in the explanation overrule the verdict
+        (HIGH became MEDIUM, "LOW - high debt" became HIGH), which silently
+        moved stocks between S, A and C.
+        """
+        levels = ["HIGH", "MEDIUM", "LOW"]
+        assert extract_rating_checked("HIGH - strong brand, though medium-term capex is heavy", levels) == (
+            "HIGH",
+            True,
+        )
+        assert extract_rating_checked("LOW - high debt load and weak moat", levels) == ("LOW", True)
+        assert extract_rating_checked(
+            "STRONG \u2014 moderate erosion risk", ["STRONG", "MODERATE", "WEAK", "NONE"]
+        ) == ("STRONG", True)
+
+    def test_same_position_tie_prefers_longer_option(self):
+        assert extract_rating_checked("PARTIALLY_AGREE with the thesis", ["PARTIALLY_AGREE", "DISAGREE", "AGREE"]) == (
+            "PARTIALLY_AGREE",
+            True,
+        )
+
+    def test_full_analysis_keeps_high_conviction_despite_medium_in_explanation(self):
+        text = well_formed_analysis().replace(
+            "## CONVICTION LEVEL\nHIGH",
+            "## CONVICTION LEVEL\nHIGH - durable franchise with low churn and medium-term tailwinds",
+        )
+        assert "medium-term" in text, "fixture shape changed; adjust the replace target"
+        analysis = parse_analysis("AAPL", "Apple Inc", text)
+        assert analysis.conviction == "HIGH"
+
     def test_defaulted_ratings_are_logged(self, caplog):
         """
         A run where this fires across many tickers is parser drift, not a
