@@ -539,6 +539,9 @@ def run_news_pipeline(
                 context,
                 recent_news=formatted_news,
                 use_cache=False,
+                # A news re-analysis sees no 10-K; keep it out of the file
+                # cache so the Friday batch re-checks with the full prompt.
+                save_cache=False,
             )
         except Exception as exc:
             logger.warning("Sonnet re-analysis failed for %s: %s", ticker, exc)

@@ -123,12 +123,14 @@ class TestBuildCompanySummary:
         result = _build_company_summary("AAPL", data)
         assert "3500" in result or "3,500" in result or "3.5" in result
 
-    def test_debt_equity_large_value_divided(self):
-        """yfinance returns debt/equity as e.g. 45 (percent) not 0.45."""
-        data = {"debt_equity": 45}
+    def test_debt_equity_is_already_a_ratio(self):
+        """The screener normalises yfinance's percent scale at the fetch
+        boundary, so the summary receives 0.45 and must print it unchanged
+        (the old >5 heuristic mis-scaled genuine low-debt names)."""
+        data = {"debt_equity": 0.45}
         result = _build_company_summary("TST", data)
-        # Should show ~0.45× not 45×
         assert "0.45" in result
+        assert "45.00" not in result
 
     def test_uses_real_fcf_yield_over_fcf_yield(self):
         data = {"real_fcf_yield": 0.07, "fcf_yield": 0.09}
@@ -367,7 +369,7 @@ class TestScreenTickers:
             "price": 100.0,
             "market_cap": market_cap,
             "pe_ratio": 20.0,
-            "debt_equity": 30.0,
+            "debt_equity": 0.30,  # ratio: the fetch boundary already divided yfinance's 30.0 by 100
             "roe": 0.18,
             "revenue_growth": 0.10,
             "current_ratio": 1.5,

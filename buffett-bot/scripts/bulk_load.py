@@ -110,9 +110,9 @@ def _build_company_summary(ticker: str, data: dict, notes: str = "") -> str:
 
     de = data.get("debt_equity")
     if de is not None:
-        # yfinance returns debt/equity as a percentage (e.g. 45 → 0.45× ratio)
-        ratio = de / 100.0 if de > 5 else de  # guard against already-ratio values
-        lines.append(f"Debt/Equity: {ratio:.2f}×")
+        # The screener normalises yfinance's percent scale to a ratio at the
+        # fetch boundary, so this is already 0.45x, never 45.
+        lines.append(f"Debt/Equity: {de:.2f}×")
 
     if data.get("revenue_growth") is not None:
         lines.append(f"Revenue Growth (YoY): {data['revenue_growth']:.1%}")

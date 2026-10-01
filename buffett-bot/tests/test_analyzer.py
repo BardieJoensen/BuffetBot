@@ -280,3 +280,72 @@ class TestBatchResultParsing:
         out = analyzer.batch_quick_screen([("AAPL", "t1"), ("MSFT", "t2")])
 
         assert [r["symbol"] for r in out] == ["AAPL", "MSFT"]
+
+
+class TestBatchWaitTimeout:
+    def _analyzer(self):
+        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):  # pragma: allowlist secret
+            analyzer = CompanyAnalyzer()
+        analyzer.client = MagicMock()
+        return analyzer
+
+    def test_timeout_cancels_the_batch_before_raising(self):
+        analyzer = self._analyzer()
+        batch = MagicMock()
+        batch.processing_status = "in_progress"
+        batch.request_counts.succeeded = 0
+        batch.request_counts.errored = 0
+        batch.request_counts.processing = 3
+        analyzer.client.messages.batches.retrieve.return_value = batch
+
+        with patch("src.analyzer.time.sleep"), pytest.raises(TimeoutError):
+            analyzer._wait_for_batch("batch-1", timeout_minutes=0)
+
+        analyzer.client.messages.batches.cancel.assert_called_once_with("batch-1")
+
+    def test_default_timeout_is_two_hours(self):
+        assert CompanyAnalyzer.BATCH_TIMEOUT_MINUTES == 120
+
+
+class TestBatchCacheBypass:
+    def test_use_cache_false_forces_a_fresh_call(self, tmp_path):
+        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):  # pragma: allowlist secret
+            analyzer = CompanyAnalyzer()
+        analyzer.client = MagicMock()
+        batch = MagicMock()
+        batch.id = "batch-1"
+        analyzer.client.messages.batches.create.return_value = batch
+        analyzer.client.messages.batches.results.return_value = []
+        analyzer._wait_for_batch = MagicMock(return_value=batch)
+
+        cached = {"schema_version": "v2", "symbol": "AAPL", "conviction": "LOW"}
+        with patch("src.analyzer.get_cached_analysis", return_value=cached) as mock_cached:
+            analyzer.batch_analyze_companies(
+                [
+                    {"symbol": "AAPL", "filing_text": "x", "use_cache": False},
+                    {"symbol": "MSFT", "filing_text": "y"},
+                ]
+            )
+
+        # Only MSFT consulted the cache; AAPL went straight to the batch.
+        assert [c.args[0] for c in mock_cached.call_args_list] == ["MSFT"]
+        requests = analyzer.client.messages.batches.create.call_args.kwargs["requests"]
+        assert [r["custom_id"] for r in requests] == ["AAPL"]
+
+
+class TestNewsPathDoesNotPoisonCache:
+    def test_save_cache_false_skips_the_file_cache(self):
+        analyzer = _analyzer_with_response(
+            [
+                _FakeTextBlock(
+                    "## MOAT CLASSIFICATION\nDurability: STRONG\n## MANAGEMENT QUALITY\nCapital Allocation: GOOD\n"
+                    "## BUSINESS DURABILITY\nok\n## CURRENCY EXPOSURE\nRisk Level: LOW\n## FAIR VALUE ASSESSMENT\n"
+                    "Estimated Fair Value: $10 - $12\nTarget Entry Price: $8\n## CONVICTION LEVEL\nHIGH - fine\n"
+                    "## INVESTMENT SUMMARY\nok\n## KEY RISKS\n1. a\n## THESIS-BREAKING RISKS\n1. b\n"
+                    "## TOTAL RETURN POTENTIAL\nok\n## DIVIDEND YIELD\n1%\n"
+                )
+            ]
+        )
+        with patch("src.analyzer.save_analysis_to_cache") as mock_save:
+            analyzer.analyze_company("AAPL", "Apple", "text", use_cache=False, save_cache=False)
+        mock_save.assert_not_called()

@@ -2170,3 +2170,232 @@ class TestNotifyTierChange:
 
     def test_handles_an_unrecognised_tier(self):
         assert "TIER CHANGE" in self._notify("B", "Z").send_alert.call_args[0][1]
+
+
+# ─── Audit 2026-10: confirmed-C sell gate, journal-before-submit, refunds ───
+
+
+class TestConfirmedCSellGate(TestWeeklyAutoTrade):
+    """A lone news-triggered C must hold; a 10-K-backed C still sells."""
+
+    def _held(self, symbol="OLDCO"):
+        from src.accounts.base import PositionState
+
+        return PositionState(
+            symbol=symbol,
+            shares=10.0,
+            avg_cost=50.0,
+            price=40.0,
+            market_value=400.0,
+            unrealized_pl=-100.0,
+            unrealized_pl_pct=-0.20,
+        )
+
+    def _run(self, db, account):
+        from scripts.scheduler import weekly_auto_trade
+
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.accounts.get_accounts", return_value=[account]),
+            patch("src.paper_trader.PaperTrader.auto_trade_enabled", return_value=True),
+            patch("src.valuation.screen_for_undervalued", return_value=[]),
+            patch("src.bubble_detector.classify_market_regime") as mock_regime,
+            patch("src.valuation.ValuationAggregator") as MockAggregator,
+        ):
+            mock_regime.return_value.regime = "fair_value"
+            mock_regime.return_value.signals = ["Market P/E available"]
+            MockAggregator.return_value.get_valuation.return_value = MagicMock(margin_of_safety=-0.10)
+            weekly_auto_trade()
+
+    def test_news_triggered_c_does_not_sell(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        self._write_watchlist(tmp_path, ["NEWCO"])
+        db = Database(tmp_path / "test.db")
+        _save_deep_analysis(db, "OLDCO", tier="B")
+        db.log_tier_change("OLDCO", new_tier="B", old_tier=None, trigger="scheduled")
+        _save_deep_analysis(db, "OLDCO", tier="C")
+        db.log_tier_change("OLDCO", new_tier="C", old_tier="B", trigger="news_event")
+        account = self._mock_account(
+            equity=50_400.0, cash=50_000.0, buying_power=50_000.0, invested_value=400.0, positions=[self._held()]
+        )
+
+        self._run(db, account)
+
+        account.sell.assert_not_called()
+        assert db.get_decision_log("OLDCO") == []
+
+    def test_batch_confirmed_c_sells(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        self._write_watchlist(tmp_path, ["NEWCO"])
+        db = Database(tmp_path / "test.db")
+        _save_deep_analysis(db, "OLDCO", tier="B")
+        db.log_tier_change("OLDCO", new_tier="B", old_tier=None, trigger="scheduled")
+        _save_deep_analysis(db, "OLDCO", tier="C")
+        db.log_tier_change("OLDCO", new_tier="C", old_tier="B", trigger="news_event")
+        _save_deep_analysis(db, "OLDCO", tier="C")
+        db.log_tier_change("OLDCO", new_tier="C", old_tier="C", trigger="scheduled")
+        account = self._mock_account(
+            equity=50_400.0, cash=50_000.0, buying_power=50_000.0, invested_value=400.0, positions=[self._held()]
+        )
+
+        self._run(db, account)
+
+        account.sell.assert_called_once()
+        assert "Thesis breaker" in account.sell.call_args.kwargs["reason"]
+
+
+class TestJournalBeforeSubmit(TestWeeklyAutoTrade):
+    def _setup_buy(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        self._write_watchlist(tmp_path, ["AAPL"])
+        db = Database(tmp_path / "test.db")
+        _save_deep_analysis(db, "AAPL", tier="A")
+        account = self._mock_account(
+            equity=100_000.0, cash=100_000.0, buying_power=100_000.0, invested_value=0.0, positions=[]
+        )
+        return db, account
+
+    def _run_buy(self, db, account):
+        from scripts.scheduler import weekly_auto_trade
+
+        val = self._mock_valuation("AAPL", margin_of_safety=0.20)
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.accounts.get_accounts", return_value=[account]),
+            patch("src.paper_trader.PaperTrader.auto_trade_enabled", return_value=True),
+            patch("src.valuation.screen_for_undervalued", return_value=[val]),
+            patch("src.analyzer.CompanyAnalyzer") as MockAnalyzer,
+            patch("yfinance.Ticker"),
+            patch("src.bubble_detector.classify_market_regime") as mock_regime,
+            patch("src.valuation.ValuationAggregator"),
+        ):
+            MockAnalyzer.return_value.quick_screen.return_value = {
+                "worth_analysis": True,
+                "moat_hint": 4,
+                "quality_hint": 4,
+                "valid": True,
+            }
+            mock_regime.return_value.regime = "fair_value"
+            mock_regime.return_value.signals = ["Market P/E available"]
+            weekly_auto_trade()
+
+    def test_journal_write_failure_prevents_submission(self, tmp_path, monkeypatch):
+        db, account = self._setup_buy(tmp_path, monkeypatch)
+        with patch.object(db, "log_decision", side_effect=RuntimeError("disk full")):
+            self._run_buy(db, account)
+        account.buy.assert_not_called()
+
+    def test_refused_order_leaves_a_skipped_row(self, tmp_path, monkeypatch):
+        db, account = self._setup_buy(tmp_path, monkeypatch)
+        account.buy.return_value = None  # pre-flight check refused it
+        self._run_buy(db, account)
+        log = db.get_decision_log("AAPL")
+        assert len(log) == 1
+        assert log[0]["order_status"] == "skipped"
+        assert log[0]["order_id"] is None
+        assert db.get_pending_order_decisions() == []
+        assert "AAPL" not in db.get_held_tickers()
+
+    def test_submitted_order_row_carries_broker_id(self, tmp_path, monkeypatch):
+        db, account = self._setup_buy(tmp_path, monkeypatch)
+        account.buy.return_value = {"symbol": "AAPL", "order_id": "buy-9", "status": "accepted"}
+        self._run_buy(db, account)
+        log = db.get_decision_log("AAPL")
+        assert len(log) == 1
+        assert log[0]["order_status"] == "accepted"
+        assert log[0]["order_id"] == "buy-9"
+        assert log[0]["notional"] == pytest.approx(12_750.0)
+        assert [p["id"] for p in db.get_pending_order_decisions()] == [log[0]["id"]]
+
+
+class TestFridaySonnetRecheck:
+    @pytest.fixture(autouse=True)
+    def _enable_job(self, monkeypatch):
+        import scripts.scheduler as scheduler
+
+        monkeypatch.setattr(scheduler, "config", replace(scheduler.config, friday_sonnet_enabled=True))
+        aggregator = MagicMock()
+        aggregator.return_value.get_valuation.return_value = MagicMock(current_price=100.0, average_fair_value=110.0)
+        monkeypatch.setattr("src.valuation.ValuationAggregator", aggregator)
+
+    def test_unconfirmed_c_holding_is_rechecked_without_cache(self, tmp_path):
+        from scripts.scheduler import friday_sonnet_batch
+
+        db = Database(tmp_path / "test.db")
+        _upsert_stock(db, "NEWSY")
+        db.upsert_paper_position("NEWSY", tier_at_entry="B")
+        _save_deep_analysis(db, "NEWSY", tier="B")
+        _save_deep_analysis(db, "NEWSY", tier="C")
+        db.log_tier_change("NEWSY", new_tier="C", old_tier="B", trigger="news_event")
+
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.analyzer.CompanyAnalyzer") as MockAnalyzer,
+            patch("src.edgar_fetcher.augment_filing_text", side_effect=lambda t, s: s),
+        ):
+            MockAnalyzer.return_value.batch_analyze_companies.return_value = []
+            friday_sonnet_batch()
+
+        submitted = MockAnalyzer.return_value.batch_analyze_companies.call_args[0][0]
+        assert [s["symbol"] for s in submitted] == ["NEWSY"]
+        assert submitted[0]["use_cache"] is False
+
+    def test_batch_failure_refunds_reserved_budget(self, tmp_path):
+        from scripts.scheduler import friday_sonnet_batch
+
+        db = Database(tmp_path / "test.db")
+        _upsert_stock(db, "AAPL")
+        _save_haiku(db, "AAPL", passed=True)
+
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.analyzer.CompanyAnalyzer") as MockAnalyzer,
+            patch("src.edgar_fetcher.augment_filing_text", side_effect=lambda t, s: s),
+        ):
+            MockAnalyzer.return_value.batch_analyze_companies.side_effect = TimeoutError("batch timed out")
+            friday_sonnet_batch()  # logs, does not raise
+
+        assert db.get_budget_status("weekly_sonnet_analysis")["calls_used"] == 0
+
+
+class TestWednesdayHaikuRefund:
+    @pytest.fixture(autouse=True)
+    def _enable_job(self, monkeypatch):
+        import scripts.scheduler as scheduler
+
+        monkeypatch.setattr(scheduler, "config", replace(scheduler.config, wednesday_haiku_enabled=True))
+
+    def test_batch_failure_refunds_reserved_budget(self, tmp_path):
+        from scripts.scheduler import wednesday_haiku_batch
+
+        db = Database(tmp_path / "test.db")
+        _upsert_stock(db, "AAPL")
+
+        with patch("src.database.Database", return_value=db), patch("src.analyzer.CompanyAnalyzer") as MockAnalyzer:
+            MockAnalyzer.return_value.batch_quick_screen.side_effect = TimeoutError("batch timed out")
+            wednesday_haiku_batch()
+
+        assert db.get_budget_status("weekly_haiku_screen")["calls_used"] == 0
+
+
+class TestStaleSubmittingAlert:
+    def test_reconcile_alerts_on_stale_submitting_rows(self, tmp_path):
+        from scripts.scheduler import reconcile_broker_orders
+        from src.database import _open
+
+        db = Database(tmp_path / "test.db")
+        row_id = db.log_decision("GIS", "sell", shares=5.0, order_status="submitting")
+        with _open(db.path) as conn:
+            conn.execute("UPDATE decision_log SET decided_at = datetime('now', '-2 days') WHERE id = ?", (row_id,))
+
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.accounts.get_accounts", return_value=[]),
+            patch("src.notifications.NotificationManager") as MockNotifier,
+        ):
+            MockNotifier.return_value.send_alert.return_value = {"discord": True}
+            reconcile_broker_orders()
+            reconcile_broker_orders()  # second run inside the window is throttled
+
+        assert MockNotifier.return_value.send_alert.call_count == 1
+        assert "GIS" in MockNotifier.return_value.send_alert.call_args[0][1]

@@ -119,6 +119,56 @@ def test_originally_filed_keeps_earliest():
     assert ("2022-09-24", "10-K") in best
 
 
+def _obs(start, end, val, form, filed="2020-01-01", **extra):
+    return {"start": start, "end": end, "val": val, "form": form, "filed": filed, "fy": 2019, "fp": "FY", **extra}
+
+
+class TestSpanFilter:
+    """
+    Facts are keyed by (end, form) only, so a 10-K's Q4 fact (same `end` as the
+    annual fact) or a 10-Q year-to-date fact could win on list order alone.
+    _originally_filed must drop facts whose duration doesn't match the form.
+    """
+
+    def test_10k_annual_beats_q4_regardless_of_order(self):
+        # Q4 fact listed FIRST — the bug would let it win by insertion order.
+        obs = [
+            _obs("2018-07-01", "2018-09-29", 14125, "10-K", filed="2018-11-05"),
+            _obs("2017-10-01", "2018-09-29", 59531, "10-K", filed="2018-11-05"),
+        ]
+        best = ef._originally_filed(obs)
+        assert best[("2018-09-29", "10-K")]["val"] == 59531
+
+    def test_10q_ytd_rejected_quarter_kept(self):
+        obs = [
+            _obs("2019-01-01", "2019-09-30", 900, "10-Q", filed="2019-11-01"),  # 9-month YTD
+            _obs("2019-07-01", "2019-09-30", 300, "10-Q", filed="2019-11-01"),  # the quarter
+        ]
+        best = ef._originally_filed(obs)
+        assert best[("2019-09-30", "10-Q")]["val"] == 300
+
+    def test_instant_facts_without_start_still_load(self):
+        obs = [{"end": "2019-09-28", "val": 4443236000, "form": "10-K", "filed": "2019-10-31"}]
+        best = ef._originally_filed(obs)
+        assert best[("2019-09-28", "10-K")]["val"] == 4443236000
+
+    def test_52_week_fiscal_year_accepted(self):
+        # 2018-09-30 .. 2019-09-28 is a 52-week (363/364-day) year
+        obs = [_obs("2018-09-30", "2019-09-28", 55256, "10-K", filed="2019-10-31")]
+        best = ef._originally_filed(obs)
+        assert best[("2019-09-28", "10-K")]["val"] == 55256
+
+    def test_calendar_year_and_53_week_year_accepted(self):
+        assert ef._span_ok(_obs("2019-01-01", "2019-12-31", 1, "10-K"))
+        assert ef._span_ok(_obs("2018-12-30", "2020-01-04", 1, "10-K"))  # 371 days
+
+    def test_unknown_form_keeps_old_behaviour(self):
+        assert ef._span_ok(_obs("2019-07-01", "2019-09-30", 1, "8-K"))
+
+    def test_bad_dates_rejected(self):
+        assert not ef._span_ok({"start": "nope", "end": "2019-09-30", "form": "10-K"})
+
+
 # ─── build_pit_records ────────────────────────────────────────────────────────
 
 

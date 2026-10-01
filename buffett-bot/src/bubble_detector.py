@@ -553,8 +553,11 @@ class BubbleDetector:
 
                 if data:
                     # Count buys vs sells in recent transactions
-                    buys = sum(1 for t in data[:20] if t.get("transactionType") == "P")
-                    sells = sum(1 for t in data[:20] if t.get("transactionType") == "S")
+                    # Finnhub names the SEC code field `transactionCode`;
+                    # `transactionType` is kept only as a fallback.
+                    codes = [str(t.get("transactionCode") or t.get("transactionType") or "").upper() for t in data[:20]]
+                    buys = sum(1 for c in codes if c == "P")
+                    sells = sum(1 for c in codes if c == "S")
 
                     return {
                         "net_transactions": buys - sells,

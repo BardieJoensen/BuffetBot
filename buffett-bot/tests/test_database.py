@@ -963,3 +963,122 @@ class TestCTierAnalysisExpiry:
         with _open(db.path) as conn:
             conn.execute("UPDATE deep_analyses SET expires_at = datetime('now', '-1 day')")
         assert "BADCO" in db.get_haiku_passes_without_analysis(limit=10)
+
+
+# ─── Audit 2026-10: confirmed C verdicts, budget refunds, journal rows ──────
+
+
+class TestIsCTierConfirmed:
+    """
+    Every S/A/B -> C downgrade in production came from the news path (numeric
+    summary + headlines, no 10-K) and sold the position the next session. A
+    lone news-triggered C must not count as a thesis break.
+    """
+
+    def test_false_when_latest_is_not_c(self, db):
+        db.save_deep_analysis("GOOD", tier="B")
+        db.log_tier_change("GOOD", new_tier="B", old_tier=None, trigger="scheduled")
+        assert db.is_c_tier_confirmed("GOOD") is False
+
+    def test_false_for_unknown_ticker(self, db):
+        assert db.is_c_tier_confirmed("NOPE") is False
+
+    def test_lone_news_c_is_unconfirmed(self, db):
+        db.save_deep_analysis("NEWSY", tier="B")
+        db.log_tier_change("NEWSY", new_tier="B", old_tier=None, trigger="scheduled")
+        db.save_deep_analysis("NEWSY", tier="C")
+        db.log_tier_change("NEWSY", new_tier="C", old_tier="B", trigger="news_event")
+        assert db.was_downgraded_to_c("NEWSY") is True
+        assert db.is_c_tier_confirmed("NEWSY") is False
+
+    def test_scheduled_c_is_confirmed(self, db):
+        db.save_deep_analysis("TENK", tier="B")
+        db.log_tier_change("TENK", new_tier="B", old_tier=None, trigger="scheduled")
+        db.save_deep_analysis("TENK", tier="C")
+        db.log_tier_change("TENK", new_tier="C", old_tier="B", trigger="scheduled")
+        assert db.is_c_tier_confirmed("TENK") is True
+
+    def test_two_independent_c_verdicts_confirm(self, db):
+        db.save_deep_analysis("TWICE", tier="B")
+        db.log_tier_change("TWICE", new_tier="B", old_tier=None, trigger="scheduled")
+        db.save_deep_analysis("TWICE", tier="C")
+        db.log_tier_change("TWICE", new_tier="C", old_tier="B", trigger="news_event")
+        db.save_deep_analysis("TWICE", tier="C")
+        db.log_tier_change("TWICE", new_tier="C", old_tier="C", trigger="news_event")
+        assert db.is_c_tier_confirmed("TWICE") is True
+
+    def test_recovery_after_news_c_is_not_confirmed(self, db):
+        db.save_deep_analysis("BOUNCE", tier="C")
+        db.log_tier_change("BOUNCE", new_tier="C", old_tier="B", trigger="news_event")
+        db.save_deep_analysis("BOUNCE", tier="B")
+        db.log_tier_change("BOUNCE", new_tier="B", old_tier="C", trigger="scheduled")
+        assert db.is_c_tier_confirmed("BOUNCE") is False
+
+    def test_held_unconfirmed_c_tickers(self, db):
+        db.upsert_paper_position("NEWSY", tier_at_entry="B")
+        db.upsert_paper_position("TENK", tier_at_entry="B")
+        db.upsert_paper_position("FINE", tier_at_entry="B")
+        for t in ("NEWSY", "TENK"):
+            db.save_deep_analysis(t, tier="B")
+            db.save_deep_analysis(t, tier="C")
+        db.log_tier_change("NEWSY", new_tier="C", old_tier="B", trigger="news_event")
+        db.log_tier_change("TENK", new_tier="C", old_tier="B", trigger="scheduled")
+        db.save_deep_analysis("FINE", tier="A")
+        assert db.get_held_unconfirmed_c_tickers() == ["NEWSY"]
+
+
+class TestRefundBatch:
+    def test_refund_restores_reserved_slots(self, db):
+        reserved = db.spend_batch("weekly_sonnet_analysis", 4)
+        assert reserved == 4
+        assert db.refund_batch("weekly_sonnet_analysis", reserved) == 4
+        assert db.get_budget_status("weekly_sonnet_analysis")["calls_used"] == 0
+
+    def test_refund_never_goes_below_zero(self, db):
+        db.spend_batch("weekly_haiku_screen", 2)
+        assert db.refund_batch("weekly_haiku_screen", 10) == 2
+        assert db.get_budget_status("weekly_haiku_screen")["calls_used"] == 0
+
+    def test_unknown_cap_and_non_positive_are_noops(self, db):
+        assert db.refund_batch("nope", 3) == 0
+        assert db.refund_batch("weekly_haiku_screen", 0) == 0
+
+
+class TestPaperPositionTierAtEntry:
+    def test_weekly_sync_does_not_rewrite_entry_tier(self, db):
+        db.upsert_paper_position("AGM", tier_at_entry="A", shares=10.0)
+        db.upsert_paper_position("AGM", tier_at_entry="C", shares=11.0, current_price=5.0)
+        row = db.get_paper_positions()[0]
+        assert row["tier_at_entry"] == "A"
+        assert row["shares"] == 11.0
+
+
+class TestJournalBeforeSubmit:
+    def test_submitting_row_is_not_pending_until_it_has_an_order_id(self, db):
+        row_id = db.log_decision("AAPL", "buy", notional=1000.0, order_status="submitting")
+        assert db.get_pending_order_decisions() == []
+        db.update_order_status(row_id, "accepted", order_id="o-1", notional=990.0)
+        pending = db.get_pending_order_decisions()
+        assert [p["id"] for p in pending] == [row_id]
+        assert pending[0]["order_id"] == "o-1"
+        assert pending[0]["notional"] == 990.0
+
+    def test_skipped_rows_are_terminal_and_not_held(self, db):
+        row_id = db.log_decision("AAPL", "buy", notional=1000.0, order_status="submitting")
+        db.update_order_status(row_id, "skipped")
+        assert db.get_pending_order_decisions() == []
+        assert "AAPL" not in db.get_held_tickers()
+        assert "AAPL" not in db.get_portfolio_tickers_needing_analysis()
+
+    def test_submitting_row_still_counts_as_possibly_held(self, db):
+        db.log_decision("AAPL", "buy", notional=1000.0, order_status="submitting")
+        assert "AAPL" in db.get_held_tickers()
+
+    def test_stale_submitting_rows_are_reported(self, db):
+        fresh = db.log_decision("NEW", "buy", notional=1.0, order_status="submitting")
+        old = db.log_decision("OLD", "buy", notional=1.0, order_status="submitting")
+        with _open(db.path) as conn:
+            conn.execute("UPDATE decision_log SET decided_at = datetime('now', '-2 days') WHERE id = ?", (old,))
+        stale = db.get_stale_submitting_decisions(older_than_hours=24)
+        assert [r["id"] for r in stale] == [old]
+        assert fresh not in [r["id"] for r in stale]

@@ -93,7 +93,9 @@ class TestOrderIdempotency:
         trader.get_asset_status = MagicMock(return_value=(True, "active"))
         trader.get_positions = MagicMock(return_value=[])
         trader.get_open_orders = MagicMock(return_value=[])
-        trader.get_account = MagicMock(return_value={"portfolio_value": 100_000.0, "buying_power": 100_000.0})
+        trader.get_account = MagicMock(
+            return_value={"portfolio_value": 100_000.0, "buying_power": 100_000.0, "cash": 100_000.0}
+        )
         trader._trading_client.submit_order.return_value = SimpleNamespace(
             id="buy-1",
             status="accepted",
@@ -119,7 +121,7 @@ class TestOrderIdempotency:
         trader.get_asset_status = MagicMock(return_value=(True, "active"))
         trader.get_positions = MagicMock(return_value=[])
         trader.get_open_orders = MagicMock(return_value=[])
-        trader.get_account = MagicMock(return_value={"portfolio_value": 100_000.0})
+        trader.get_account = MagicMock(return_value={"portfolio_value": 100_000.0, "cash": 100_000.0})
 
         assert trader.buy("AAPL", 1000.0) is None
         trader._trading_client.submit_order.assert_not_called()
@@ -130,7 +132,9 @@ class TestOrderIdempotency:
         trader.get_asset_status = MagicMock(return_value=(True, "active"))
         trader.get_positions = MagicMock(return_value=[])
         trader.get_open_orders = MagicMock(return_value=[])
-        trader.get_account = MagicMock(return_value={"portfolio_value": 100_000.0, "buying_power": 100_000.0})
+        trader.get_account = MagicMock(
+            return_value={"portfolio_value": 100_000.0, "buying_power": 100_000.0, "cash": 100_000.0}
+        )
 
         assert trader.buy("AAPL", 1000.0) is None
         trader._trading_client.submit_order.assert_not_called()
@@ -143,6 +147,47 @@ class TestOrderIdempotency:
 
         assert trader.buy("AAPL", 1000.0) is None
         trader._trading_client.submit_order.assert_not_called()
+
+    def _submittable(self, trader, account):
+        trader.get_asset_status = MagicMock(return_value=(True, "active"))
+        trader.get_positions = MagicMock(return_value=[])
+        trader.get_open_orders = MagicMock(return_value=[])
+        trader.get_account = MagicMock(return_value=account)
+        trader._trading_client.submit_order.return_value = SimpleNamespace(
+            id="buy-1",
+            status="accepted",
+            filled_avg_price=None,
+            filled_qty=None,
+        )
+
+    def test_buy_is_capped_at_settled_cash_not_margin_buying_power(self, trader):
+        # Production paper account: ~$100k equity, ~$316k buying power (4x margin).
+        self._submittable(trader, {"portfolio_value": 100_000.0, "buying_power": 316_000.0, "cash": 5_000.0})
+
+        result = trader.buy("AAPL", 12_000.0)
+
+        assert result is not None
+        request = trader._trading_client.submit_order.call_args.args[0]
+        assert float(request.notional) == 5_000.0
+        assert result["notional"] == 5_000.0
+
+    @pytest.mark.parametrize("cash", [None, 0.0, -1.0, float("nan"), float("inf")])
+    def test_missing_or_invalid_cash_blocks_buy(self, trader, cash):
+        account = {"portfolio_value": 100_000.0, "buying_power": 100_000.0}
+        if cash is not None:
+            account["cash"] = cash
+        self._submittable(trader, account)
+
+        assert trader.buy("AAPL", 1000.0) is None
+        trader._trading_client.submit_order.assert_not_called()
+
+    def test_position_limit_still_binds_when_cash_is_ample(self, trader):
+        self._submittable(trader, {"portfolio_value": 100_000.0, "buying_power": 400_000.0, "cash": 400_000.0})
+
+        trader.buy("AAPL", 50_000.0)
+
+        request = trader._trading_client.submit_order.call_args.args[0]
+        assert float(request.notional) == pytest.approx(100_000.0 * trader.MAX_POSITION_PCT)
 
     @pytest.mark.parametrize("amount", [0.0, -1.0, float("nan"), float("inf")])
     def test_non_positive_or_non_finite_buy_is_rejected(self, trader, amount):

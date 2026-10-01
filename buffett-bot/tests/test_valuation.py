@@ -114,3 +114,48 @@ class TestActionablePrices:
 
         assert valuation.has_valid_price is True
         assert valuation.margin_of_safety == pytest.approx(0.20)
+
+
+# ─── Analyst-consensus de-duplication ───────────────────────────────────────
+
+
+class TestAnalystTargetMerge:
+    """
+    yfinance and Finnhub both report the same sell-side consensus. Keeping them
+    as two medium-weight estimates double-counted 12-month price targets inside
+    "fair value"; both present must collapse into one estimate at the mean.
+    """
+
+    @staticmethod
+    def _est(source, value):
+        return ValuationEstimate(source, value, "Analyst Price Targets", datetime.now(), "medium")
+
+    def test_both_sources_collapse_to_one_mean_estimate(self):
+        merged = ValuationAggregator._merge_analyst_targets(self._est("yf", 100.0), self._est("finnhub", 120.0))
+        assert merged is not None
+        assert merged.fair_value == pytest.approx(110.0)
+        assert merged.confidence == "medium"
+        assert "Yahoo" in merged.source and "Finnhub" in merged.source
+
+    def test_single_source_passes_through(self):
+        only_yf = self._est("yf", 100.0)
+        assert ValuationAggregator._merge_analyst_targets(only_yf, None) is only_yf
+        only_fh = self._est("finnhub", 90.0)
+        assert ValuationAggregator._merge_analyst_targets(None, only_fh) is only_fh
+        assert ValuationAggregator._merge_analyst_targets(None, None) is None
+
+    def test_get_valuation_keeps_one_analyst_estimate(self, agg, monkeypatch):
+        monkeypatch.setattr(agg, "_get_yfinance_target", lambda info: self._est("yf", 100.0))
+        monkeypatch.setattr(agg, "_get_finnhub_price_target", lambda symbol: self._est("finnhub", 120.0))
+        monkeypatch.setattr(agg, "_calculate_pe_based_value", lambda info: None)
+        monkeypatch.setattr(agg, "_calculate_graham_number", lambda info: None)
+        monkeypatch.setattr(agg, "_calculate_dcf_estimates", lambda info, ticker: [])
+
+        class _T:
+            info = {"regularMarketPrice": 80.0}
+
+        monkeypatch.setattr("src.valuation.yf.Ticker", lambda symbol: _T())
+        valuation = agg.get_valuation("TEST")
+        analyst = [e for e in valuation.estimates if "Analyst" in e.source]
+        assert len(analyst) == 1
+        assert valuation.average_fair_value == pytest.approx(110.0)

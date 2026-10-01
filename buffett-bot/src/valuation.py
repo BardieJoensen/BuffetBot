@@ -132,15 +132,15 @@ class ValuationAggregator:
         # Fetch from each source
         estimates = []
 
-        # 1. yfinance analyst targets
+        # 1 + 2. Analyst price targets from yfinance and Finnhub. Both report
+        # the same sell-side consensus, so keeping them as two medium-weight
+        # estimates double-counted 12-month price targets inside "fair value".
+        # When both resolve they collapse into one estimate at their mean.
         yf_estimate = self._get_yfinance_target(info)
-        if yf_estimate:
-            estimates.append(yf_estimate)
-
-        # 2. Finnhub Price Target
         finnhub_estimate = self._get_finnhub_price_target(symbol)
-        if finnhub_estimate:
-            estimates.append(finnhub_estimate)
+        analyst_estimate = self._merge_analyst_targets(yf_estimate, finnhub_estimate)
+        if analyst_estimate:
+            estimates.append(analyst_estimate)
 
         # 3. Simple P/E based valuation
         pe_estimate = self._calculate_pe_based_value(info)
@@ -167,6 +167,21 @@ class ValuationAggregator:
             logger.warning(f"{symbol}: Could not fetch current price")
 
         return valuation
+
+    @staticmethod
+    def _merge_analyst_targets(
+        yf_estimate: Optional[ValuationEstimate], finnhub_estimate: Optional[ValuationEstimate]
+    ) -> Optional[ValuationEstimate]:
+        """One analyst-consensus estimate: the mean when both sources resolve."""
+        if yf_estimate and finnhub_estimate:
+            return ValuationEstimate(
+                source="Analyst Consensus (Yahoo + Finnhub)",
+                fair_value=(yf_estimate.fair_value + finnhub_estimate.fair_value) / 2.0,
+                methodology="Analyst Price Targets (mean of two consensus feeds)",
+                date=datetime.now(),
+                confidence="medium",
+            )
+        return yf_estimate or finnhub_estimate
 
     def _get_yfinance_target(self, info: dict) -> Optional[ValuationEstimate]:
         """

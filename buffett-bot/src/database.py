@@ -693,6 +693,29 @@ class Database:
         finally:
             conn.close()
 
+    def refund_batch(self, cap_type: str, n: int) -> int:
+        """
+        Give back up to N reserved slots after a batch failed before producing
+        results (timeout, submission error). spend_batch reserves up front, so
+        without this a batch that never returned anything still consumed the
+        week's allowance and the same tickers were starved until Monday.
+
+        Returns the number of slots actually refunded (never below zero used).
+        """
+        if n <= 0:
+            return 0
+        with _open(self.path) as conn:
+            row = conn.execute("SELECT calls_used FROM budget_caps WHERE cap_type = ?", (cap_type,)).fetchone()
+            if row is None:
+                logger.warning("Unknown budget cap type: %r", cap_type)
+                return 0
+            refund = min(n, max(0, row["calls_used"]))
+            conn.execute(
+                "UPDATE budget_caps SET calls_used = calls_used - ? WHERE cap_type = ?",
+                (refund, cap_type),
+            )
+            return refund
+
     # ── Universe ─────────────────────────────────────────────────────────────
 
     def upsert_universe_stock(
@@ -1014,6 +1037,58 @@ class Database:
             ).fetchone()
             return row is not None
 
+    # Tier-change triggers whose verdict rests on the full 10-K-backed prompt.
+    # A news-triggered re-analysis sees only the numeric DB summary plus a
+    # handful of headlines, so on its own it is not enough to sell on.
+    _CONFIRMING_TRIGGERS = ("scheduled", "bulk_load", "manual")
+
+    def is_c_tier_confirmed(self, ticker: str) -> bool:
+        """
+        Whether the current C verdict is strong enough to act on as a thesis
+        breaker.
+
+        Every S/A/B -> C downgrade in production history came from the news
+        path: one Sonnet call fed a numeric summary and a few headlines, with
+        no 10-K, overwriting a tier that had been set with the full prompt.
+        That single verdict then sold the position at Monday's open. A C is
+        confirmed only when (a) the latest analysis is C AND (b) either the
+        most recent C in tier_history came from a 10-K-backed trigger, or the
+        two most recent analyses are independently C. A lone news-triggered C
+        is left for the Friday batch to re-check with the full prompt.
+        """
+        with _open(self.path) as conn:
+            latest = conn.execute(
+                "SELECT tier FROM deep_analyses WHERE ticker = ? ORDER BY analyzed_at DESC, rowid DESC LIMIT 2",
+                (ticker,),
+            ).fetchall()
+            if not latest or latest[0]["tier"] != "C":
+                return False
+            if len(latest) >= 2 and latest[1]["tier"] == "C":
+                return True
+            last_c = conn.execute(
+                """
+                SELECT trigger FROM tier_history
+                WHERE ticker = ? AND new_tier = 'C'
+                ORDER BY changed_at DESC, id DESC LIMIT 1
+                """,
+                (ticker,),
+            ).fetchone()
+            return last_c is not None and last_c["trigger"] in self._CONFIRMING_TRIGGERS
+
+    def get_held_unconfirmed_c_tickers(self, *, recent_buy_days: int = 14) -> list[str]:
+        """
+        Held tickers whose latest verdict is an unconfirmed C — the ones the
+        Friday batch must re-analyse with the full prompt (bypassing the file
+        cache) so a thesis break is either confirmed or overturned within a
+        week rather than left in limbo until the C verdict expires.
+        """
+        out = []
+        for ticker in self.get_held_tickers(recent_buy_days=recent_buy_days):
+            latest = self.get_latest_deep_analysis(ticker)
+            if latest and latest.get("tier") == "C" and not self.is_c_tier_confirmed(ticker):
+                out.append(ticker)
+        return out
+
     def get_tier_history(self, ticker: str, limit: int = 20) -> list[dict]:
         """Return recent tier history for a ticker."""
         with _open(self.path) as conn:
@@ -1236,7 +1311,10 @@ class Database:
                      last_synced)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(ticker) DO UPDATE SET
-                    tier_at_entry = excluded.tier_at_entry,
+                    -- The tier when the position was opened is a fact about
+                    -- the entry; the weekly sync must not rewrite it with the
+                    -- current tier.
+                    tier_at_entry = COALESCE(tier_at_entry, excluded.tier_at_entry),
                     entry_stage   = COALESCE(excluded.entry_stage, entry_stage),
                     entry_price   = COALESCE(excluded.entry_price, entry_price),
                     entry_date    = COALESCE(excluded.entry_date, entry_date),
@@ -1347,9 +1425,14 @@ class Database:
             new_id = cur.lastrowid
             return int(new_id) if new_id is not None else 0
 
+    # Statuses after which a journal row needs no further broker reconciliation.
+    # "skipped" is a row written before submission whose order was then refused
+    # by a pre-flight check (never reached the broker).
+    TERMINAL_ORDER_STATUSES = ("filled", "canceled", "cancelled", "rejected", "expired", "replaced", "skipped")
+
     def get_pending_order_decisions(self) -> list[dict]:
         """Return submitted broker decisions that still need fill reconciliation."""
-        terminal = ("filled", "canceled", "cancelled", "rejected", "expired", "replaced")
+        terminal = self.TERMINAL_ORDER_STATUSES
         placeholders = ",".join("?" for _ in terminal)
         with _open(self.path) as conn:
             rows = conn.execute(
@@ -1378,8 +1461,16 @@ class Database:
         *,
         fill_price: Optional[float] = None,
         filled_shares: Optional[float] = None,
+        order_id: Optional[str] = None,
+        notional: Optional[float] = None,
     ) -> Optional[dict]:
-        """Persist broker order state for one journal row and return it."""
+        """
+        Persist broker order state for one journal row and return it.
+
+        `order_id` and `notional` are set when the row was written *before*
+        submission (status "submitting") and the broker's identifiers only
+        became known afterwards. A None leaves the stored value untouched.
+        """
         filled = status == "filled"
         with _open(self.path) as conn:
             conn.execute(
@@ -1388,6 +1479,8 @@ class Database:
                 SET order_status = ?,
                     price = CASE WHEN ? IS NOT NULL THEN ? ELSE price END,
                     shares = CASE WHEN ? IS NOT NULL THEN ? ELSE shares END,
+                    order_id = CASE WHEN ? IS NOT NULL THEN ? ELSE order_id END,
+                    notional = CASE WHEN ? IS NOT NULL THEN ? ELSE notional END,
                     filled_at = CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE filled_at END
                 WHERE id = ?
                 """,
@@ -1397,6 +1490,10 @@ class Database:
                     fill_price,
                     filled_shares,
                     filled_shares,
+                    order_id,
+                    order_id,
+                    notional,
+                    notional,
                     int(filled),
                     decision_id,
                 ),
@@ -2276,7 +2373,7 @@ class Database:
         SELECT d.ticker FROM decision_log d
         WHERE d.action = 'buy'
           AND datetime(d.decided_at) >= datetime('now', ?)
-          AND d.order_status NOT IN ('canceled', 'cancelled', 'rejected', 'expired', 'replaced')
+          AND d.order_status NOT IN ('canceled', 'cancelled', 'rejected', 'expired', 'replaced', 'skipped')
           AND NOT EXISTS (
               SELECT 1 FROM decision_log s
               WHERE s.ticker = d.ticker
@@ -2288,6 +2385,26 @@ class Database:
                      OR (s.decided_at = d.decided_at AND s.id > d.id))
           )
     """
+
+    def get_stale_submitting_decisions(self, *, older_than_hours: int = 24) -> list[dict]:
+        """
+        Journal rows written before submission that never received a broker
+        outcome. Orders are journalled first and updated after the broker
+        answers, so a row stuck at "submitting" means the process died between
+        the two writes and the broker may hold an order the journal does not
+        know about. Surfaced by reconciliation so it is never silent.
+        """
+        with _open(self.path) as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM decision_log
+                WHERE order_status = 'submitting'
+                  AND datetime(decided_at) < datetime('now', ?)
+                ORDER BY decided_at, id
+                """,
+                (f"-{int(older_than_hours)} hours",),
+            ).fetchall()
+            return [dict(r) for r in rows]
 
     def get_held_tickers(self, *, recent_buy_days: int = 14) -> list[str]:
         """
@@ -2332,33 +2449,15 @@ class Database:
         """
         with _open(self.path) as conn:
             rows = conn.execute(
-                """
-                SELECT t.ticker FROM (
-                    SELECT ticker FROM paper_positions
-                    WHERE datetime(last_synced) >= datetime('now', '-8 days')
-                    UNION
-                    SELECT d.ticker FROM decision_log d
-                    WHERE d.action = 'buy'
-                      AND datetime(d.decided_at) >= datetime('now', ?)
-                      AND d.order_status NOT IN ('canceled', 'cancelled', 'rejected', 'expired', 'replaced')
-                      AND NOT EXISTS (
-                          SELECT 1 FROM decision_log s
-                          WHERE s.ticker = d.ticker
-                            AND s.action = 'sell'
-                            AND (s.account_id = d.account_id OR d.account_id IS NULL)
-                            AND s.order_status IN ('filled', 'legacy')
-                            AND COALESCE(json_extract(s.reasoning_snapshot, '$.full_exit'), 1) = 1
-                            AND (s.decided_at > d.decided_at
-                                 OR (s.decided_at = d.decided_at AND s.id > d.id))
-                      )
-                ) t
+                f"""
+                SELECT t.ticker FROM ({self._HELD_TICKERS_SQL}) t
                 WHERE NOT EXISTS (
                     SELECT 1 FROM deep_analyses da
                     WHERE da.ticker = t.ticker
                       AND datetime(da.expires_at) > datetime('now')
                 )
                 ORDER BY t.ticker
-                """,
+                """,  # nosec B608 -- the embedded SQL is a class constant, values are bound
                 (f"-{recent_buy_days} days",),
             ).fetchall()
             return [r["ticker"] for r in rows]

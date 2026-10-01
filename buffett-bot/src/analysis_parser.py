@@ -97,9 +97,21 @@ def extract_rating_checked(text: str, options: list[str]) -> tuple[str, bool]:
     need that second element; extract_rating throws it away.
     """
     text_upper = text.upper()
-    for option in sorted(options, key=len, reverse=True):
-        if re.search(r"\b" + re.escape(option.upper()) + r"\b", text_upper):
-            return option, True
+    # Earliest match wins. The model writes the rating first and explains after
+    # ("HIGH - ... medium-term tailwinds"); preferring the longest option that
+    # appears anywhere turned that explanation vocabulary into the verdict
+    # (HIGH -> MEDIUM, "LOW - high debt" -> HIGH). Ties at the same position
+    # prefer the longer option so "PARTIALLY_AGREE" beats "AGREE".
+    best: Optional[tuple[int, int, str]] = None
+    for option in options:
+        match = re.search(r"\b" + re.escape(option.upper()) + r"\b", text_upper)
+        if match is None:
+            continue
+        key = (match.start(), -len(option), option)
+        if best is None or key < best:
+            best = key
+    if best is not None:
+        return best[2], True
     return options[-1], False
 
 

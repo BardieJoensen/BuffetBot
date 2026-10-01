@@ -301,6 +301,7 @@ class PaperTrader:
         Safety checks:
         - Refuses symbols the broker reports as non-tradable
         - Validates dollar_amount against MAX_POSITION_PCT of account value
+        - Caps at settled cash (never borrows on the paper margin account)
         - Prevents duplicate buys of same symbol
         """
         if not self._enabled:
@@ -353,15 +354,22 @@ class PaperTrader:
             if portfolio_value is None or buying_power is None:
                 logger.error("Refusing to buy %s — broker returned invalid portfolio value or buying power", symbol)
                 return None
+            # Alpaca paper accounts are margin accounts: buying_power runs 2-4x
+            # cash. Capping on buying_power alone lets a buy borrow, so settled
+            # cash is a hard ceiling too. No cash figure means no buy.
+            cash = _positive_finite(account.get("cash"))
+            if cash is None:
+                logger.error("Refusing to buy %s — broker returned no positive cash balance", symbol)
+                return None
             max_position_pct = _positive_finite(self.MAX_POSITION_PCT)
             if max_position_pct is None or max_position_pct > 1:
                 logger.error("Refusing to buy %s — MAX_POSITION_PCT is invalid", symbol)
                 return None
             max_amount = portfolio_value * max_position_pct
-            allowed_amount = min(max_amount, buying_power)
+            allowed_amount = min(max_amount, buying_power, cash)
             if dollar_amount > allowed_amount:
                 logger.warning(
-                    "Requested $%.0f for %s exceeds the position/buying-power limit ($%.0f). Capping.",
+                    "Requested $%.0f for %s exceeds the position/buying-power/cash limit ($%.0f). Capping.",
                     dollar_amount,
                     symbol,
                     allowed_amount,
