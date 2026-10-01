@@ -80,6 +80,44 @@ def _first_text(content: list) -> str:
     raise ValueError(f"No TextBlock in Claude response (got: {kinds})")
 
 
+def _thinking_kwargs(model: str) -> dict:
+    """
+    Request fields that turn extended thinking off for `model`.
+
+    These prompts demand a rigid, string-parsed output format, and thinking
+    competes with max_tokens, so every route runs with thinking off. The way
+    to say that differs by generation:
+      - Claude Sonnet 5.5 rejects {"type": "disabled"} with a 400; its lowest
+        setting is {"type": "between_tools"} (no other field allowed, effort
+        high or below - the default).
+      - Claude Opus 5.5, Fable and Mythos cannot turn thinking off at all;
+        omit `thinking` (adaptive) and keep it short with low effort.
+      - Everything older (Sonnet 5, Opus 5, Haiku 4.5) still accepts
+        {"type": "disabled"}.
+    """
+    name = (model or "").lower()
+    if name.startswith("claude-sonnet-5-5"):
+        return {"thinking": {"type": "between_tools"}}
+    if name.startswith(("claude-opus-5-5", "claude-fable", "claude-mythos")):
+        return {"output_config": {"effort": "low"}}
+    return {"thinking": {"type": "disabled"}}
+
+
+def _check_refusal(response, symbol: str) -> None:
+    """
+    Raise when the model declined the request.
+
+    Sonnet 5.5 and later answer a safeguard decline with HTTP 200 and
+    stop_reason "refusal" (plus a stop_details category). Reading `content`
+    as if it were an analysis would feed the pessimistic parser defaults into
+    the tier engine, so a refusal is an explicit failure the caller discards.
+    """
+    if getattr(response, "stop_reason", None) == "refusal":
+        details = getattr(response, "stop_details", None)
+        category = getattr(details, "category", None) if details is not None else None
+        raise ValueError(f"{symbol}: model declined the request (refusal, category={category!r})")
+
+
 # Default cache directory for analysis results
 DEFAULT_CACHE_DIR = Path("data/analyses")
 
@@ -495,12 +533,11 @@ class CompanyAnalyzer:
         response = self.client.messages.create(
             model=self.model_deep,
             max_tokens=4096,
-            # Thinking disabled: these prompts demand a rigid, string-parsed
-            # output format, and thinking competes with max_tokens. A truncated
-            # response doesn't raise at the API boundary; analysis_parser's
-            # structural gate rejects it. Enable deliberately, with a raised
-            # max_tokens, if the quality tradeoff is worth measuring.
-            thinking={"type": "disabled"},
+            # Thinking off (see _thinking_kwargs): a truncated response doesn't
+            # raise at the API boundary; analysis_parser's structural gate
+            # rejects it. Enable deliberately, with a raised max_tokens, if the
+            # quality tradeoff is worth measuring.
+            **_thinking_kwargs(self.model_deep),
             system=[
                 {
                     "type": "text",
@@ -512,6 +549,7 @@ class CompanyAnalyzer:
         )
 
         # Parse the response
+        _check_refusal(response, symbol)
         analysis_text: str = _first_text(response.content)
         analysis = parse_analysis(symbol, company_name, analysis_text, sector)
 
@@ -588,9 +626,8 @@ Focus especially on whether the moat and durability assessments are realistic.""
         response = self.client.messages.create(
             model=self.model_opus,
             max_tokens=2048,
-            # Thinking disabled because the response is rigid and string-parsed;
-            # it otherwise competes with the output token budget.
-            thinking={"type": "disabled"},
+            # Thinking off because the response is rigid and string-parsed.
+            **_thinking_kwargs(self.model_opus),
             system=[
                 {
                     "type": "text",
@@ -601,6 +638,7 @@ Focus especially on whether the moat and durability assessments are realistic.""
             messages=[{"role": "user", "content": user_prompt}],
         )
 
+        _check_refusal(response, symbol)
         text: str = _first_text(response.content)
 
         # Parse the response
@@ -833,9 +871,8 @@ Assess business quality regardless of current valuation."""
             response = self.client.messages.create(
                 model=self.model_light,
                 max_tokens=256,
-                # Thinking disabled because the response is rigid and
-                # string-parsed; it otherwise competes with the output budget.
-                thinking={"type": "disabled"},
+                # Thinking off because the response is rigid and string-parsed.
+                **_thinking_kwargs(self.model_light),
                 system=[
                     {
                         "type": "text",
@@ -846,6 +883,7 @@ Assess business quality regardless of current valuation."""
                 messages=[{"role": "user", "content": user_prompt}],
             )
 
+            _check_refusal(response, symbol)
             text: str = _first_text(response.content)
             return parse_quick_screen(text, symbol)
 
@@ -887,9 +925,9 @@ Analyze the news and determine:
         response = self.client.messages.create(
             model=self.model_light,
             max_tokens=1024,
-            # Thinking disabled because the response is rigid and string-parsed;
+            # Thinking off because the response is rigid and string-parsed;
             # the parser below rejects incomplete output instead of assuming HOLD.
-            thinking={"type": "disabled"},
+            **_thinking_kwargs(self.model_light),
             system=[
                 {
                     "type": "text",
@@ -900,6 +938,7 @@ Analyze the news and determine:
             messages=[{"role": "user", "content": user_prompt}],
         )
 
+        _check_refusal(response, symbol)
         text: str = _first_text(response.content)
         flags_match = re.search(r"^RED FLAGS DETECTED:\s*(YES|NO)\s*$", text, re.IGNORECASE | re.MULTILINE)
         recommendation_match = re.search(
@@ -985,7 +1024,7 @@ Assess business quality regardless of current valuation."""
                     "params": {
                         "model": self.model_light,
                         "max_tokens": 256,
-                        "thinking": {"type": "disabled"},
+                        **_thinking_kwargs(self.model_light),
                         "system": [
                             {
                                 "type": "text",
@@ -1012,6 +1051,7 @@ Assess business quality regardless of current valuation."""
             symbol = result.custom_id
             if result.result.type == "succeeded":
                 try:
+                    _check_refusal(result.result.message, symbol)
                     text: str = _first_text(result.result.message.content)
                     results_map[symbol] = parse_quick_screen(text, symbol)
                 except (QuickScreenParseError, ValueError) as exc:
@@ -1075,7 +1115,7 @@ Assess business quality regardless of current valuation."""
                         "params": {
                             "model": self.model_deep,
                             "max_tokens": 4096,
-                            "thinking": {"type": "disabled"},
+                            **_thinking_kwargs(self.model_deep),
                             "system": [
                                 {
                                     "type": "text",
@@ -1107,6 +1147,7 @@ Assess business quality regardless of current valuation."""
                         "",
                     )
                     try:
+                        _check_refusal(result.result.message, symbol)
                         text = _first_text(result.result.message.content)
                         analysis = parse_analysis(symbol, company_name, text, sector)
                     except (AnalysisParseError, ValueError) as e:

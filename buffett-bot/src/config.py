@@ -99,7 +99,7 @@ class Config:
     #   deep  — company analysis (Sonnet tier)
     #   light — news monitoring and quick screens (Haiku tier, ~20x cheaper)
     #   opus  — optional contrarian second opinion, off by default
-    model_deep: str = os.getenv("ANTHROPIC_MODEL_DEEP", "claude-sonnet-5")
+    model_deep: str = os.getenv("ANTHROPIC_MODEL_DEEP", "claude-sonnet-5-5")
     model_light: str = os.getenv("ANTHROPIC_MODEL_LIGHT", "claude-haiku-4-5")
     model_opus: str = os.getenv("ANTHROPIC_MODEL_OPUS", "claude-opus-5")
 
