@@ -55,6 +55,12 @@ def _safe_num(value) -> Optional[float]:
     return None if not math.isfinite(f) else f
 
 
+def _de_percent_to_ratio(value) -> Optional[float]:
+    """yfinance debtToEquity percent (45.0) -> ratio (0.45); None stays None."""
+    number = _safe_num(value)
+    return None if number is None else number / 100.0
+
+
 # Numeric fields stored in the stock data cache that must never be strings.
 _NUMERIC_CACHE_FIELDS = {
     "price",
@@ -268,10 +274,6 @@ def score_stock(
         if value is None:
             continue
 
-        # For debt_equity, yfinance returns as percentage - normalize
-        if metric_name == "debt_equity" and value > 5:
-            value = value / 100.0
-
         score = _compute_metric_score(value, rule)
         total_score += score * rule.weight
         scored_weight += rule.weight
@@ -428,7 +430,13 @@ class StockScreener:
         try:
             with open(cache_file) as f:
                 data = json.load(f)
-            return _sanitize_numeric_fields(data)
+            data = _sanitize_numeric_fields(data)
+            # Files written before the fetch-boundary normalisation hold
+            # yfinance's percent scale; convert once and mark them.
+            if not data.get("debt_equity_is_ratio"):
+                data["debt_equity"] = _de_percent_to_ratio(data.get("debt_equity"))
+                data["debt_equity_is_ratio"] = True
+            return data
         except Exception:
             return None
 
@@ -460,7 +468,11 @@ class StockScreener:
                 "price": info.get("regularMarketPrice") or info.get("currentPrice"),
                 "market_cap": info.get("marketCap", 0),
                 "pe_ratio": info.get("trailingPE") or info.get("forwardPE"),
-                "debt_equity": info.get("debtToEquity"),
+                # yfinance reports debtToEquity as a percentage (45.0 == 0.45x).
+                # Normalised to a ratio here, exactly once, and tagged so a
+                # cached dict can be told apart from legacy percent-scale files.
+                "debt_equity": _de_percent_to_ratio(info.get("debtToEquity")),
+                "debt_equity_is_ratio": True,
                 "roe": info.get("returnOnEquity"),
                 "revenue_growth": info.get("revenueGrowth"),
                 "current_ratio": info.get("currentRatio"),
@@ -671,7 +683,9 @@ class StockScreener:
         # --- Margin Stability: std(Operating Income / Total Revenue) ---
         try:
             op_income_row = None
-            for label in ["Operating Income", "Operating Revenue"]:
+            # "Operating Revenue" is revenue, not income: dividing it by
+            # revenue gave a constant 1.0 margin and a perfect stability score.
+            for label in ["Operating Income", "Total Operating Income As Reported", "EBIT"]:
                 if label in financials.index:
                     op_income_row = financials.loc[label]
                     break
@@ -956,7 +970,7 @@ class StockScreener:
                     name=data.get("name", symbol),
                     market_cap=market_cap,
                     pe_ratio=pe,
-                    debt_equity=de / 100 if de else None,  # Convert to ratio
+                    debt_equity=de,  # already a ratio (see _fetch_stock_data / _get_cached_data)
                     roe=data.get("roe"),
                     revenue_growth=data.get("revenue_growth"),
                     sector=sector,

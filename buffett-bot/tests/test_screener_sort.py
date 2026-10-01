@@ -199,3 +199,84 @@ class TestScoreStockNaNHandling:
         score, confidence = self._score(criteria, data)
         assert score == 0.0
         assert confidence == 0.0
+
+
+class TestDebtEquityScale:
+    """
+    yfinance reports debtToEquity as a percentage (3.0 == 3%). The old scorer
+    only divided by 100 when the value exceeded 5, so the most conservative
+    balance sheets (0–5%) were scored as 0–5x leverage and got a zero debt
+    score. Normalisation now happens once at the fetch/cache boundary.
+    """
+
+    def test_yfinance_percent_is_normalised_at_fetch_boundary(self):
+        from unittest.mock import patch
+
+        from src.screener import StockScreener
+
+        screener = StockScreener()
+        info = {"regularMarketPrice": 100.0, "marketCap": 5e9, "debtToEquity": 3.0, "longName": "Low Debt Co"}
+        fake_ticker = type("T", (), {"info": info})()
+        with (
+            patch("src.screener.yf.Ticker", return_value=fake_ticker),
+            patch.object(screener, "_calculate_real_fcf", return_value={}),
+            patch.object(screener, "_save_cached_data"),
+        ):
+            data = screener._fetch_stock_data("LOWDEBT")
+        assert data is not None
+        assert data["debt_equity"] == pytest.approx(0.03)
+        assert data["debt_equity_is_ratio"] is True
+
+    def test_low_debt_ratio_scores_near_perfect(self):
+        from src.screener import ScoringRule, ScreeningCriteria, score_stock
+
+        criteria = ScreeningCriteria(scoring={"debt_equity": ScoringRule(ideal=0.0, max=1.5, weight=1.0)})
+        score, confidence = score_stock({"debt_equity": 0.03}, criteria)
+        assert confidence == pytest.approx(1.0)
+        assert score == pytest.approx(0.98)
+        # The value is a ratio already; a 3x-levered name must still score zero.
+        assert score_stock({"debt_equity": 3.0}, criteria)[0] == pytest.approx(0.0)
+
+    def test_legacy_percent_cache_file_is_read_back_as_ratio(self, tmp_path):
+        import json
+
+        from src.screener import StockScreener
+
+        screener = StockScreener()
+        screener.cache_dir = tmp_path
+        (tmp_path / "OLD.json").write_text(json.dumps({"symbol": "OLD", "debt_equity": 30.0, "price": 10.0}))
+        data = screener._get_cached_data("OLD")
+        assert data is not None
+        assert data["debt_equity"] == pytest.approx(0.30)
+        assert data["debt_equity_is_ratio"] is True
+
+        (tmp_path / "NEW.json").write_text(
+            json.dumps({"symbol": "NEW", "debt_equity": 0.30, "debt_equity_is_ratio": True, "price": 10.0})
+        )
+        assert screener._get_cached_data("NEW")["debt_equity"] == pytest.approx(0.30)
+
+    def test_screened_stock_keeps_zero_debt_as_zero(self):
+        from unittest.mock import patch
+
+        from src.screener import ScreeningCriteria, StockScreener
+
+        screener = StockScreener()
+        data = {
+            "symbol": "NODEBT",
+            "name": "No Debt",
+            "quote_type": "EQUITY",
+            "price": 50.0,
+            "market_cap": 5e9,
+            "pe_ratio": 15.0,
+            "debt_equity": 0.0,
+            "debt_equity_is_ratio": True,
+            "sector": "Technology",
+            "industry": "Software",
+            "avg_volume": 1_000_000,
+        }
+        with (
+            patch.object(screener, "_get_cached_data", return_value=data),
+            patch.object(screener, "_fetch_historical_data", return_value={}),
+        ):
+            result = screener.screen_tickers(["NODEBT"], ScreeningCriteria())
+        assert result[0].debt_equity == 0.0
