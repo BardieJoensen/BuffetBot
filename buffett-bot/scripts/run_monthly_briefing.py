@@ -90,6 +90,130 @@ def _paper_trade_symbols(
     return eligible
 
 
+def _live_sizing_equity(trader) -> tuple[float, bool]:
+    """
+    Equity to size paper trades off: the broker's live figure when available,
+    otherwise the static PORTFOLIO_VALUE. Returns (equity, is_live).
+
+    The static number drifts from reality the moment the account moves, and
+    PaperTrader.buy only caps at the position limit and cash — so a stale
+    oversized request would be silently trimmed rather than sized on purpose.
+    """
+    fallback = float(config.portfolio_value)
+    if trader is None or not trader.is_enabled():
+        return fallback, False
+    try:
+        account = trader.get_account()
+    except Exception as exc:
+        logger.warning("Account query failed (%s) — sizing off PORTFOLIO_VALUE=%.0f", exc, fallback)
+        return fallback, False
+    equity = account.get("equity") if isinstance(account, dict) else None
+    try:
+        value = float(equity) if equity is not None else float("nan")
+    except (TypeError, ValueError):
+        value = float("nan")
+    if not math.isfinite(value) or value <= 0:
+        logger.warning("Broker returned no usable equity (%r) — sizing off PORTFOLIO_VALUE=%.0f", equity, fallback)
+        return fallback, False
+    return value, True
+
+
+def _journal_briefing_buy(db, symbol: str, order: dict, *, amount: float, tier, analysis, valuation, regime) -> None:
+    """
+    Record a briefing-path paper buy in the SQLite decision journal.
+
+    Without this the monthly pipeline's orders were invisible to order
+    reconciliation, the closed-trade track record and per-tier alpha — only the
+    JSON trade_log knew about them. Best-effort: a journaling failure is logged
+    and never aborts the briefing.
+    """
+    try:
+        status = str(order.get("status", "submitted") or "submitted")
+        fill_price = order.get("filled_avg_price")
+        fill_qty = order.get("filled_qty")
+        filled = (
+            status == "filled"
+            and isinstance(fill_price, (int, float))
+            and isinstance(fill_qty, (int, float))
+            and math.isfinite(fill_price)
+            and math.isfinite(fill_qty)
+            and fill_price > 0
+            and fill_qty > 0
+        )
+        conviction = getattr(analysis, "conviction_level", None) if analysis is not None else None
+        tier_value = getattr(tier, "tier", None)
+        db.log_decision(
+            symbol,
+            "buy",
+            account_id="alpaca_paper",
+            tier=str(tier_value) if tier_value is not None else None,
+            price=float(fill_price) if filled and fill_price is not None else None,
+            shares=float(fill_qty) if filled and fill_qty is not None else None,
+            notional=amount,
+            order_id=order.get("order_id"),
+            order_status=status,
+            reason="Monthly briefing paper trade",
+            regime=regime,
+            reasoning_snapshot={
+                "fair_value": getattr(valuation, "average_fair_value", None),
+                "margin_of_safety": getattr(valuation, "margin_of_safety", None),
+                "target_entry": getattr(tier, "target_entry_price", None),
+                "conviction": conviction,
+            },
+        )
+    except Exception as exc:
+        logger.warning("Failed to journal briefing buy for %s: %s", symbol, exc)
+
+
+def _execute_paper_trades(
+    trader,
+    db,
+    buy_symbols: list[str],
+    *,
+    tier_assignments: dict,
+    analyses: dict,
+    valuation_lookup: dict,
+    portfolio_value: float,
+    current_positions: int,
+    regime,
+) -> int:
+    """
+    Submit briefing-path paper buys for `buy_symbols`, journaling each one.
+    Returns the number of orders the broker accepted.
+    """
+    submitted = 0
+    for sym in buy_symbols:
+        analysis_for_trade = analyses.get(sym)
+        conv = getattr(analysis_for_trade, "conviction_level", "MEDIUM") if analysis_for_trade else "MEDIUM"
+        sizing = calculate_position_size(
+            portfolio_value=portfolio_value,
+            conviction=conv,
+            current_positions=current_positions,
+        )
+        amount = sizing.get("recommended_amount", 0) if isinstance(sizing, dict) else 0
+        if not isinstance(amount, (int, float)) or not math.isfinite(amount) or amount <= 0:
+            continue
+        if amount < config.min_trade_usd:
+            logger.info("Skipping %s: $%.0f is below MIN_TRADE_USD=%.0f", sym, amount, config.min_trade_usd)
+            continue
+        order = trader.buy(sym, amount)
+        if not order:
+            continue
+        submitted += 1
+        current_positions += 1
+        _journal_briefing_buy(
+            db,
+            sym,
+            order,
+            amount=float(amount),
+            tier=tier_assignments.get(sym),
+            analysis=analysis_for_trade,
+            valuation=valuation_lookup.get(sym),
+            regime=regime,
+        )
+    return submitted
+
+
 def load_cached_watchlist(cache_path: Path) -> list[dict]:
     """Load watchlist from cache if recent enough"""
     paths_to_check = [cache_path, Path(tempfile.gettempdir()) / "buffett-bot-watchlist.json"]
@@ -580,7 +704,10 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
         portfolio_tracker = PortfolioTracker(data_dir=str(data_dir))
         portfolio_summary = portfolio_tracker.get_portfolio_summary()
 
-    portfolio_value = config.portfolio_value
+    # Size off the broker's live equity, not the static PORTFOLIO_VALUE.
+    portfolio_value, live_equity = _live_sizing_equity(trader)
+    if not live_equity:
+        logger.info("Sizing off static PORTFOLIO_VALUE=%.0f (no live account equity)", portfolio_value)
     current_positions = portfolio_summary.get("position_count", 0)
 
     logger.info(f"Portfolio: {current_positions} positions, ${portfolio_summary.get('current_value', 0):,.0f} value")
@@ -611,19 +738,20 @@ def run_monthly_briefing(max_analyses: int = 10, use_cache: bool = True, send_no
             len(buy_symbols),
             available_slots,
         )
-        for sym in symbols_to_buy:
-            analysis_for_trade = analyses.get(sym)
-            conv = getattr(analysis_for_trade, "conviction_level", "MEDIUM") if analysis_for_trade else "MEDIUM"
-            sizing = calculate_position_size(
-                portfolio_value=portfolio_value,
-                conviction=conv,
-                current_positions=current_positions,
-            )
-            amount = sizing.get("recommended_amount", 0) if isinstance(sizing, dict) else 0
-            if amount > 0:
-                order = trader.buy(sym, amount)
-                if order:
-                    current_positions += 1
+        from src.database import Database
+
+        submitted = _execute_paper_trades(
+            trader,
+            Database(),
+            symbols_to_buy,
+            tier_assignments=tier_assignments,
+            analyses=analyses,
+            valuation_lookup=valuation_lookup,
+            portfolio_value=portfolio_value,
+            current_positions=current_positions,
+            regime=market_temp.get("regime"),
+        )
+        current_positions += submitted
     else:
         logger.info(
             "\n[9.5/11] PAPER TRADING SKIPPED "
