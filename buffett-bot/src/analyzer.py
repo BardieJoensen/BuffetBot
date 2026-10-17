@@ -1031,11 +1031,11 @@ Which breaker, if any, does the news report as having HAPPENED to {symbol}?"""
         evidence_match = re.search(r"^EVIDENCE:\s*(.+?)\s*$", text, re.IGNORECASE | re.MULTILINE)
         if fired_match is None:
             raise NewsScreenParseError(f"{symbol}: breaker check must contain BREAKER FIRED: NONE or a breaker number")
-        token = fired_match.group(1).upper()
+        answer = fired_match.group(1).upper()
         evidence = evidence_match.group(1).strip() if evidence_match else None
-        if token == "NONE":
+        if not answer.isdigit():  # "NONE"
             return {"fired": False, "breaker_index": None, "breaker_text": None, "evidence": evidence, "raw": text}
-        index = int(token)
+        index = int(answer)
         if not 1 <= index <= len(breakers):
             raise NewsScreenParseError(f"{symbol}: breaker number {index} is out of range 1..{len(breakers)}")
         return {
