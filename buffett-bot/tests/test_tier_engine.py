@@ -44,6 +44,8 @@ class FakeAnalysis:
     _conviction: str  # "HIGH", "MEDIUM", "LOW"
     target_entry_price: Optional[float] = None
     current_price: Optional[float] = None
+    estimated_fair_value_low: Optional[float] = None
+    estimated_fair_value_high: Optional[float] = None
 
     @property
     def moat_rating(self) -> FakeMoatRating:
@@ -402,3 +404,42 @@ class TestComputeMovements:
         current = {"JUNK": self._assignment("JUNK", "C")}
         movements = compute_movements(current, previous_state={})
         assert not any(m.symbol == "JUNK" and m.change_type == "new" for m in movements)
+
+
+# ─── Fair value provenance (ruleset 3.0.0) ────────────────────────────────
+
+
+class TestFairValueProvenance:
+    """deep_analyses.fair_value must hold the number that set the tier, not
+    whatever the model said. The scheduler stores TierAssignment.fair_value."""
+
+    def test_aggregator_fair_value_wins_and_is_labelled(self, monkeypatch):
+        import src.tier_engine as tier_engine
+
+        monkeypatch.setattr(tier_engine, "config", SimpleNamespace(margin_of_safety_pct=0.25))
+        external = SimpleNamespace(current_price=70.0, average_fair_value=100.0)
+        analysis = make("wide", "HIGH", target=150.0, current=70.0)
+        analysis.estimated_fair_value_low = 180.0
+        analysis.estimated_fair_value_high = 220.0
+
+        a = assign_tier(analysis, external_valuation=external)
+
+        assert a.fair_value == 100.0
+        assert a.fair_value_source == "valuation"
+        assert a.target_entry_price == pytest.approx(75.0)
+
+    def test_llm_midpoint_is_the_fallback_and_is_labelled(self):
+        analysis = make("wide", "HIGH", target=150.0, current=70.0)
+        analysis.estimated_fair_value_low = 180.0
+        analysis.estimated_fair_value_high = 220.0
+
+        a = assign_tier(analysis)
+
+        assert a.fair_value == 200.0
+        assert a.fair_value_source == "llm"
+        assert a.target_entry_price == 150.0
+
+    def test_no_fair_value_anywhere(self):
+        a = assign_tier(make("wide", "HIGH", target=None, current=70.0))
+        assert a.fair_value is None
+        assert a.fair_value_source is None

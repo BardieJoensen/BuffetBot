@@ -1553,8 +1553,7 @@ def friday_sonnet_batch():
                 conviction=analysis.conviction,
                 moat_rating=analysis.moat_rating.value.upper(),
                 moat_sources=analysis.moat_sources,
-                fair_value=((analysis.estimated_fair_value_low or 0) + (analysis.estimated_fair_value_high or 0)) / 2
-                or None,
+                fair_value=tier_assignment.fair_value,  # the number that set the tier (ruleset 3.0.0)
                 target_entry=resolved_target,
                 investment_thesis=analysis.summary,
                 key_risks=analysis.key_risks,

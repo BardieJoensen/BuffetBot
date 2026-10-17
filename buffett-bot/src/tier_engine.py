@@ -132,6 +132,12 @@ class TierAssignment:
     current_price: Optional[float] = None
     price_gap_pct: Optional[float] = None  # (current - target) / target; negative = below target
     approaching_target: bool = False  # True when B-tier stock within proximity_alert_pct of target
+    # Ruleset 3.0.0: the fair value the target was derived from, and where it
+    # came from ("valuation" = deterministic aggregator, "llm" = the model's
+    # own estimate, None = no fair value at all). Persisted so the briefing
+    # shows the number that actually decided the tier.
+    fair_value: Optional[float] = None
+    fair_value_source: Optional[str] = None
 
     def __post_init__(self) -> None:
         self.tier = normalize_tier(self.tier)
@@ -186,12 +192,19 @@ def assign_tier(
     # was re-analysed (CTSH: 55 → 65 → 71 in four months with no change in the
     # business), and that drift decided buys and sells.
     target: Optional[float] = None
+    fair_value: Optional[float] = None
+    fair_value_source: Optional[str] = None
     if external_valuation is not None:
         avg_fv = _positive_finite(external_valuation.average_fair_value)
         if avg_fv:
             target = _positive_finite(avg_fv * (1 - config.margin_of_safety_pct))
+            fair_value, fair_value_source = avg_fv, "valuation"
     if target is None:
         target = _positive_finite(getattr(analysis, "target_entry_price", None))
+        fv_low = _positive_finite(getattr(analysis, "estimated_fair_value_low", None))
+        if fv_low:
+            fv_high = _positive_finite(getattr(analysis, "estimated_fair_value_high", None)) or fv_low
+            fair_value, fair_value_source = (fv_low + fv_high) / 2, "llm"
     current = _positive_finite(getattr(analysis, "current_price", None))
 
     # A deterministic market-data price is authoritative. The LLM may repeat a
@@ -228,6 +241,8 @@ def assign_tier(
             quality_level=quality,
             tier_reason="Low quality: no moat and low conviction — monitor passively",
             target_entry_price=target,
+            fair_value=fair_value,
+            fair_value_source=fair_value_source,
             current_price=current,
             price_gap_pct=gap,
         )
@@ -240,6 +255,8 @@ def assign_tier(
             quality_level=quality,
             tier_reason=f"Moderate quality: {moat} moat, {conviction} conviction",
             target_entry_price=target,
+            fair_value=fair_value,
+            fair_value_source=fair_value_source,
             current_price=current,
             price_gap_pct=gap,
         )
@@ -254,6 +271,8 @@ def assign_tier(
             quality_level=quality,
             tier_reason=f"{quality.title()} quality ({moat} moat, {conviction}), no price data — watching",
             target_entry_price=target,
+            fair_value=fair_value,
+            fair_value_source=fair_value_source,
             current_price=current,
             price_gap_pct=None,
         )
@@ -267,6 +286,8 @@ def assign_tier(
                 quality_level=quality,
                 tier_reason=f"Wonderful business at/below target entry (${current:,.0f} ≤ ${target:,.0f})",
                 target_entry_price=target,
+                fair_value=fair_value,
+                fair_value_source=fair_value_source,
                 current_price=current,
                 price_gap_pct=gap,
                 approaching_target=False,
@@ -278,6 +299,8 @@ def assign_tier(
                 quality_level=quality,
                 tier_reason=f"Good business at/below target entry (${current:,.0f} ≤ ${target:,.0f})",
                 target_entry_price=target,
+                fair_value=fair_value,
+                fair_value_source=fair_value_source,
                 current_price=current,
                 price_gap_pct=gap,
                 approaching_target=False,
@@ -296,6 +319,8 @@ def assign_tier(
                 f"${target:,.0f} (quality score: {quality_score:.0f}) — moat = margin of safety"
             ),
             target_entry_price=target,
+            fair_value=fair_value,
+            fair_value_source=fair_value_source,
             current_price=current,
             price_gap_pct=gap,
             approaching_target=True,
@@ -309,6 +334,8 @@ def assign_tier(
             quality_level=quality,
             tier_reason=(f"{quality.title()} quality but {gap:+.0%} above target ${target:,.0f} — watching"),
             target_entry_price=target,
+            fair_value=fair_value,
+            fair_value_source=fair_value_source,
             current_price=current,
             price_gap_pct=gap,
             approaching_target=approaching,
@@ -321,6 +348,8 @@ def assign_tier(
         quality_level=quality,
         tier_reason=(f"{quality.title()} quality but {gap:+.0%} above target — extreme premium, monitor passively"),
         target_entry_price=target,
+        fair_value=fair_value,
+        fair_value_source=fair_value_source,
         current_price=current,
         price_gap_pct=gap,
         approaching_target=False,

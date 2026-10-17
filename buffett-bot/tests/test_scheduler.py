@@ -811,6 +811,7 @@ class TestFridaySonnetBatch:
         mock_tier_assignment.price_gap_pct = -0.05
         mock_tier_assignment.target_entry_price = 190.0
         mock_tier_assignment.current_price = 180.0
+        mock_tier_assignment.fair_value = 210.0  # aggregator number; the model said 200-250
 
         with (
             patch("src.database.Database", return_value=db),
@@ -825,6 +826,7 @@ class TestFridaySonnetBatch:
         da = db.get_latest_deep_analysis("AAPL")
         assert da is not None
         assert da["tier"] == "A"
+        assert da["fair_value"] == 210.0  # ruleset 3.0.0: store the number that set the tier, not the LLM midpoint
 
         # Verify tier history logged
         history = db.get_tier_history("AAPL")
