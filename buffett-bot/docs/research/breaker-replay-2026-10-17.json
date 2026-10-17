@@ -1,0 +1,391 @@
+[
+ {
+  "ticker": "BRBR",
+  "old_tier": "B",
+  "downgraded_at": "2026-05-18 18:04:00",
+  "prior_analysis": "2026-04-27T12:05:39.752525",
+  "breakers": [
+   "Two consecutive quarters of negative organic revenue growth \u2014 Sell immediately. Signals structural decline, not temporary weakness.",
+   "Major retail delisting \u2014 If Walmart or a top-3 convenience chain removes Premier Protein from shelves \u2192 structural impairment, exit position.",
+   "FDA enforcement action \u2014 If FDA forces reformulation of core products or restricts health claims \u2192 12-18 month disruption, likely destroying 20-30% of value.",
+   "Management announces \"strategic review\" \u2014 Code for \"we're out of ideas\" \u2192 sell before private equity lowballs."
+  ],
+  "news": "[2026-05-17] Why BellRing Brands (BRBR) Is Down 6.0% After Cutting 2026 Sales Outlook And Reporting Weaker Q2 Earnings (Yahoo)\n  - **2026 Sales Outlook Cut** \u2014 Downward guidance revision signals management lost confidence in growth trajectory; combined with weak Q2 earnings, this suggests structural headwinds, not temporary softness.\n- **Weaker Q2 Earnings** \u2014 Deteriorating profitability alongside revenue pressure indicates margin compression or volume loss, both red flags for a \"wait for proof of life\" thesis.\n- **No organic growth data disclosed in headline** \u2014 The 6% stock dec",
+  "sold_under_old_rules": null,
+  "verdict": {
+   "fired": false,
+   "breaker_index": null,
+   "breaker_text": null,
+   "evidence": "The news reports a 2026 sales outlook cut and weaker Q2 earnings, but it does not report two consecutive quarters of negative organic revenue growth (it states no organic growth data was disclosed), a retail delisting, an FDA enforcement action, or a strategic review announcement.",
+   "raw": "BREAKER FIRED: NONE\nEVIDENCE: The news reports a 2026 sales outlook cut and weaker Q2 earnings, but it does not report two consecutive quarters of negative organic revenue growth (it states no organic growth data was disclosed), a retail delisting, an FDA enforcement action, or a strategic review announcement."
+  }
+ },
+ {
+  "ticker": "UNH",
+  "old_tier": "B",
+  "downgraded_at": "2026-05-25 18:05:58",
+  "prior_analysis": "2026-05-19T20:07:31.788574",
+  "breakers": [
+   "PBM Transparency Act Passage with Spread Pricing Ban: If Senate/House pass legislation requiring pass-through PBM pricing (eliminating spread), sell immediately. This removes 15-25% of operating profit permanently. Stock would initially fall 15-20%, but full impact takes 2-3 years to materialize as contracts reprice.",
+   "FTC Files Divestiture Lawsuit Against Change Healthcare: If FTC sues to unwind the Change Healthcare merger (beyond preliminary review), sell within 48 hours. Discovery process will reveal internal documents showing market power abuse, and divestiture at distressed multiples destroys $30-50B in value even if UNH eventually wins.",
+   "Medicare Advantage \"Stars\" Program Overhaul Eliminating Quality Bonuses: If CMS announces structural reform ending quality bonus payments (10-15% of MA revenue), sell. This removes the arbitrage that made MA a profit engine and signals permanent margin compression.",
+   "Democratic Trifecta + Medicare Expansion Bill Introduction: If Democrats win White House + Senate + House (2028 or 2032) and introduce Medicare buy-in or public option with floor vote scheduled, sell. This signals 40-60% probability of single-payer within 10 years.",
+   "Berkshire Hathaway Exit Confirmed (ALREADY HAPPENED - May 2026): Berkshire's Q1 2026 exit is a WARNING SIGNAL, not a thesis-breaker, but validates the regulatory risk thesis. Greg Abel is more analytically rigorous than late-career Buffett and clearly sees the regulatory trajectory."
+  ],
+  "news": "[2026-05-24] UnitedHealth Group (UNH) \u2013 Among the 12 Best Dividend Stocks to Invest in According to Hedge Funds (Yahoo)\n  - **Berkshire Hathaway Complete Exit from UNH (Confirmed):** Greg Abel has fully liquidated Berkshire's entire UnitedHealth position. This is a WARNING SIGNAL validating the regulatory risk thesis\u2014Abel's analytical rigor and access to management signals he sees the risk/reward as unfavorable despite the 2.31% dividend yield.\n- **Timing of Exit Relative to Political Cycle:** Exit occurs in mid-2026, suggesting Abel anticipates deteriorating conditions in",
+  "sold_under_old_rules": null,
+  "verdict": {
+   "fired": false,
+   "breaker_index": null,
+   "breaker_text": null,
+   "evidence": "The news reports Berkshire Hathaway's full exit from UNH, which breaker 5 itself labels a warning signal and not a thesis-breaker; it reports none of the events described in breakers 1-4 (PBM legislation, FTC divestiture suit, MA Stars overhaul, Democratic trifecta with a Medicare expansion floor vote).",
+   "raw": "BREAKER FIRED: NONE\nEVIDENCE: The news reports Berkshire Hathaway's full exit from UNH, which breaker 5 itself labels a warning signal and not a thesis-breaker; it reports none of the events described in breakers 1-4 (PBM legislation, FTC divestiture suit, MA Stars overhaul, Democratic trifecta with a Medicare expansion floor vote)."
+  }
+ },
+ {
+  "ticker": "ADBE",
+  "old_tier": "B",
+  "downgraded_at": "2026-05-25 18:07:50",
+  "prior_analysis": "2026-04-28T20:03:53.765637",
+  "breakers": [
+   "Enterprise Churn Acceleration: If quarterly earnings reveal >5% net subscriber losses in Enterprise segment (currently ~2% churn), it signals the moat is cracking at the strongest point. This would validate the \"DVD rental in 2007\" bear case.",
+   "Major Enterprise Defection Announcement: A Fortune 500 company publicly announces full migration away from Adobe Creative Cloud to competitor stack (e.g., \"Nike migrates 10,000 designers to Figma + Canva + Runway AI\"). This would trigger copycat behavior and destroy the \"enterprise switching costs are insurmountable\" thesis.",
+   "FCF Collapse: If FCF yield drops below 5% (from current 8%) without corresponding revenue acceleration, it signals Adobe is burning cash to defend market share via price cuts or unsustainable R&D spending. This would invalidate the \"profitable cash cow\" safety net."
+  ],
+  "news": "[2026-05-24] Adobe CEO Shift And Semrush Deal Reframe AI Growth Story (Yahoo)\n  - **CEO Departure After 18 Years:** Leadership change of this magnitude signals potential strategic uncertainty. Narayen was the architect of the subscription/cloud transition and AI strategy. His departure raises questions about Adobe's ability to execute the AI pivot that is central to defending the moat.\n- **Semrush Acquisition Completion:** While framed as \"AI growth,\" Semrush is primarily an SEO/marketing analytics tool\u2014a lateral/defensive move int",
+  "sold_under_old_rules": null,
+  "verdict": {
+   "fired": false,
+   "breaker_index": null,
+   "breaker_text": null,
+   "evidence": "The news reports a CEO departure and the Semrush acquisition completing, but none of the three breakers (Enterprise churn above 5%, a Fortune 500 migration away from Creative Cloud, or FCF yield dropping below 5%) is reported as having occurred.",
+   "raw": "BREAKER FIRED: NONE\nEVIDENCE: The news reports a CEO departure and the Semrush acquisition completing, but none of the three breakers (Enterprise churn above 5%, a Fortune 500 migration away from Creative Cloud, or FCF yield dropping below 5%) is reported as having occurred."
+  }
+ },
+ {
+  "ticker": "ROL",
+  "old_tier": "B",
+  "downgraded_at": "2026-06-02 18:05:52",
+  "prior_analysis": "2026-06-01T20:10:17.260989",
+  "breakers": [
+   "Amazon Launches Pest Control Service - If Amazon announces entry into pest control with integrated scheduling, route optimization AI, and private-label chemicals, the entire industry faces structural margin compression. Sell within 48 hours of announcement.",
+   "Commercial Cancellation Rates Exceed 10% Annually - Commercial pest control is supposed to be non-discretionary. If cancellations spike above 10%, it signals either severe economic stress OR substitution dynamics have broken the moat. Investigate immediately; likely sell.",
+   "Acquisition Multiples Disclosed >8x EBITDA - If Rollins starts paying 10-12x EBITDA for tuck-in acquisitions (vs. historical 6-8x), returns on growth capital will crater. This would signal desperation to maintain growth guidance and a value-destructive capital allocation shift.",
+   "Free Cash Flow Conversion Drops Below 80% of Net Income for 2+ Consecutive Years - Rollins' quality shows in FCF conversion typically 90-100%. If working capital or capex requirements surge, it signals margin pressure or acquisition integration problems."
+  ],
+  "news": "[2026-06-01] Why Did BSX, LI, ROL Stocks Fall To 52-Week Lows On Friday? (Yahoo)\n  - Stock fell to 52-week lows (price action concern, not fundamental)\n- Analyst downgrades and weak outlooks mentioned (requires deeper investigation into specifics)\n- Management changes noted (requires identification of who departed and role criticality)\n\nRECOMMENDATION: REVIEW\n\nEXPLANATION: The news headline is vague and doesn't specify which thesis-breaking risks (if any) have materialized. You need to investigate: (1) the substance of analyst downgrad\n\n[2026-06-02] Top 25 High-Growth Dividend Stocks For June 2026 (SeekingAlpha)\n  - **CFO Transition with Unclear Rationale** - Kenneth Krause's departure lacks stated explanation (retirement? recruitment? internal conflict?). This timing coincides with a stock decline to 52-week lows, raising questions about internal confidence or strategic disagreements on capital allocation/guidance.\n- **Stock Trading at 52-Week Lows Amid \"Analyst Downgrades\"** - The June 1st article references unspecified analyst downgrades and \"weak outlooks\" wi",
+  "sold_under_old_rules": null,
+  "verdict": {
+   "fired": false,
+   "breaker_index": null,
+   "breaker_text": null,
+   "evidence": "none. The news reports only a 52-week-low stock price, unspecified analyst downgrades, and a CFO transition, and none of these is an Amazon pest control launch, commercial cancellations above 10%, disclosed acquisition multiples above 8x EBITDA, or two years of FCF conversion below 80%.",
+   "raw": "BREAKER FIRED: NONE\nEVIDENCE: none. The news reports only a 52-week-low stock price, unspecified analyst downgrades, and a CFO transition, and none of these is an Amazon pest control launch, commercial cancellations above 10%, disclosed acquisition multiples above 8x EBITDA, or two years of FCF conversion below 80%."
+  }
+ },
+ {
+  "ticker": "LULU",
+  "old_tier": "B",
+  "downgraded_at": "2026-06-08 18:07:59",
+  "prior_analysis": "2026-04-27T20:12:08.385113",
+  "breakers": [
+   "Same-store sales decline for 2+ consecutive quarters \u2014 Signals brand is losing relevance, not just facing temporary macro headwinds. One quarter can be noise; two is a trend.",
+   "Operating margin falls below 19% \u2014 Indicates company is forced to compete on price rather than brand. Once premium brands start heavy discounting, the moat is broken and rarely recovers (see Under Armour, Coach before reinvention).",
+   "Management announces store closure program in North America \u2014 Admission that physical footprint is oversized = admission of saturation and declining traffic = secular decline confirmed."
+  ],
+  "news": "[2026-06-08] Lululemon Shares Dropped After the Company Cut Its Annual Forecast. Is the Stock a Buy Amid the Selloff? (Yahoo)\n  - North American comparable sales declined 5% in latest quarter \u2014 approaching the threshold for 2+ consecutive quarters of SSS decline, which is a direct thesis-breaking signal\n- Company cut full-year 2026 revenue and profit guidance \u2014 indicates management's loss of confidence in near-term trajectory\n- Negative media coverage and product issues cited \u2014 suggests brand perception damage beyond macro headwinds, touching the \"losing relevance\" concern\n- Sto",
+  "sold_under_old_rules": null,
+  "verdict": {
+   "fired": false,
+   "breaker_index": null,
+   "breaker_text": null,
+   "evidence": "The news reports only a single quarter of North American comparable sales decline (5%) described as \"approaching\" the 2+ consecutive quarter threshold, plus a guidance cut; no second consecutive decline, operating margin below 19%, or North American store closure program is reported.",
+   "raw": "BREAKER FIRED: NONE\nEVIDENCE: The news reports only a single quarter of North American comparable sales decline (5%) described as \"approaching\" the 2+ consecutive quarter threshold, plus a guidance cut; no second consecutive decline, operating margin below 19%, or North American store closure program is reported."
+  }
+ },
+ {
+  "ticker": "CART",
+  "old_tier": "B",
+  "downgraded_at": "2026-06-08 18:09:57",
+  "prior_analysis": "2026-06-05T07:03:34.534513",
+  "breakers": [
+   "Top-3 retailer announces end of Instacart partnership and successful internal delivery rollout \u2014 Signals beginning of disintermediation trend. Example: \"Kroger announces end of Instacart partnership, touts 40% lower delivery costs with internal system.\" Exit within 48 hours.",
+   "California or federal law reclassifies gig workers as employees AND Instacart cannot pass costs to consumers \u2014 If delivery fees must rise 40%+ to cover employee costs and order volume craters, the unit economics break permanently.",
+   "Instacart's share of online grocery GMV declines for 3+ consecutive quarters (retailers going direct)",
+   "Ad revenue growth decelerates to <15% YoY (suggests retailer pushback or platform saturation)",
+   "Customer acquisition costs rise >30% YoY (competition intensifying)"
+  ],
+  "news": "[2026-06-07] DoorDash, Instacart face critical FTC fight over consumer fees (Yahoo)\n  - **FTC regulatory fight over consumer fees** \u2014 While not an immediate partnership dissolution, this represents escalating regulatory pressure on the core unit economics. If the FTC succeeds in capping or restricting service fees, Instacart's pricing power and margins face structural headwinds.\n- **\"Ordering through platforms costs nearly 80% more\"** \u2014 This headline amplifies consumer pain and invites political/regulatory scrutiny. Sustained negative me",
+  "sold_under_old_rules": null,
+  "verdict": {
+   "fired": false,
+   "breaker_index": null,
+   "breaker_text": null,
+   "evidence": "The news describes an ongoing FTC fight over consumer fees and regulatory pressure, but reports no retailer ending its Instacart partnership, no gig-worker reclassification law, and no reported decline in GMV share, ad revenue growth, or customer acquisition cost metrics.",
+   "raw": "BREAKER FIRED: NONE\nEVIDENCE: The news describes an ongoing FTC fight over consumer fees and regulatory pressure, but reports no retailer ending its Instacart partnership, no gig-worker reclassification law, and no reported decline in GMV share, ad revenue growth, or customer acquisition cost metrics."
+  }
+ },
+ {
+  "ticker": "ACN",
+  "old_tier": "B",
+  "downgraded_at": "2026-06-22 18:05:44",
+  "prior_analysis": "2026-04-27T12:05:41.162968",
+  "breakers": [
+   "Operating margin declines below 12% for two consecutive quarters (ex-restructuring charges) \u2014 signals the offshore arbitrage model is broken",
+   "Revenue growth turns negative outside of recession \u2014 would indicate Accenture is losing share to vertical SaaS providers or clients are insourcing",
+   "Major client (top 10) publicly announces moving 50%+ of work in-house or to AI tools \u2014 precedent-setting shift that could cascade"
+  ],
+  "news": "[2026-06-22] SpaceX initiation, Apple downgrade among today's top calls on Wall Street (Yahoo)\n  - **TD Cowen downgrade (Buy \u2192 Hold) with 42% price target cut ($258 \u2192 $150)** \u2014 signals analyst conviction that AI headwinds are materializing faster than expected\n- **Sector-wide slowdown confirmed by EPAM guidance cut** \u2014 validates that this is not company-specific but a structural threat to the consulting/services model\n- **\"Near-term recovery has become increasingly difficult\"** \u2014 suggests the thesis that Accenture could maintain growth while restru",
+  "sold_under_old_rules": null,
+  "verdict": {
+   "fired": false,
+   "breaker_index": null,
+   "breaker_text": null,
+   "evidence": "The news reports an analyst downgrade, a price target cut, and a peer (EPAM) guidance cut, but none of it reports that ACN's operating margin fell below 12% for two quarters, that its revenue growth turned negative, or that a top-10 client announced moving 50%+ of work in-house or to AI tools.",
+   "raw": "BREAKER FIRED: NONE\nEVIDENCE: The news reports an analyst downgrade, a price target cut, and a peer (EPAM) guidance cut, but none of it reports that ACN's operating margin fell below 12% for two quarters, that its revenue growth turned negative, or that a top-10 client announced moving 50%+ of work in-house or to AI tools."
+  }
+ },
+ {
+  "ticker": "AAPL",
+  "old_tier": "B",
+  "downgraded_at": "2026-06-23 18:03:48",
+  "prior_analysis": "2026-06-22T20:04:17.887748",
+  "breakers": [
+   "App Store commission cut to sub-20% globally with third-party payment mandate: If Apple settles U.S./EU cases by accepting 15-18% commissions + mandatory sideloading + third-party payment processing (like Epic settlement but global), Services gross profit could fall $25-35B. This would vaporize the \"Services growth offsets iPhone maturity\" thesis. Trigger: DOJ consent decree or EU DMA escalation forcing structural changes.",
+   "China revenue decline >30% in any single quarter: If Chinese government \"recommends\" state employees/SOEs stop buying iPhones (like 2019 Huawei ban), sales could collapse 40-60% in months. Unlike tariffs (which can be negotiated), nationalist consumer boycotts are irreversible. Trigger: Huawei reclaims #1 China smartphone share + government procurement ban.",
+   "iPhone ASP decline for 3+ consecutive quarters: Apple's revenue growth depends entirely on price increases (unit sales are flat-to-down). If consumers reject $1,200+ AI-enabled iPhones and mix shifts to SE/base models, ASP could fall 10-15%. This would signal product pricing power exhaustion \u2014 the beginning of commoditization. Trigger: iPhone Pro Max sales declining YoY while SE sales surge."
+  ],
+  "news": "[2026-06-23] Tim Cook issues chilling warning as \u2018hundred-year-flood\u2019 strikes US tech giants like Apple, Dell, HP. Get protection now (Yahoo)\n  - **UK tribunal approves \u00a33B iCloud lawsuit** \u2014 regulatory/legal pressure on Services revenue is escalating beyond just App Store concerns. This validates the \"regulatory destruction of Services\" risk and could set precedent for other jurisdictions.\n- **\"Hundred-year-flood\" warning from Tim Cook** \u2014 suggests macroeconomic stress or demand deterioration ahead. Vague but ominous for a company at full valuation ($298, 37x P/E).\n- **Apple price hike reports",
+  "sold_under_old_rules": null,
+  "verdict": {
+   "fired": false,
+   "breaker_index": null,
+   "breaker_text": null,
+   "evidence": "The news reports a UK tribunal approving a \u00a33B iCloud lawsuit, a vague Tim Cook warning, and reported price hikes, but none of these is a commission cut with a third-party payment mandate, a >30% China revenue decline, or three consecutive quarters of iPhone ASP decline.",
+   "raw": "BREAKER FIRED: NONE\nEVIDENCE: The news reports a UK tribunal approving a \u00a33B iCloud lawsuit, a vague Tim Cook warning, and reported price hikes, but none of these is a commission cut with a third-party payment mandate, a >30% China revenue decline, or three consecutive quarters of iPhone ASP decline."
+  }
+ },
+ {
+  "ticker": "GL",
+  "old_tier": "B",
+  "downgraded_at": "2026-06-29 18:09:09",
+  "prior_analysis": "2026-05-22T07:27:07.583815",
+  "breakers": [
+   "Regulatory enforcement action confirming sales practice violations - If state insurance departments or federal regulators impose material fines or business practice restrictions validating recent allegations, the distribution model becomes impaired and reputational damage limits growth options",
+   "Persistent new business sales decline >15% year-over-year - Would signal irreversible distribution model failure and transform this into a pure run-off business with no growth optionality, justifying 7-8x P/E multiple",
+   "Material reserve strengthening announcement - Any indication that actuarial assumptions were systematically wrong would call into question both historical earnings quality and future profitability, potentially indicating deeper accounting issues",
+   "Customer acquisition costs rising >20% without corresponding premium growth - Would demonstrate that digital competition is forcing GL to overpay for increasingly poor-quality leads, destroying unit economics"
+  ],
+  "news": "[2026-06-29] Globe Life (GL): Buy, Sell, or Hold Post Q1 Earnings? (Yahoo)\n  - Stock has rallied 26.2% to $178.90, moving well above the $155 entry thesis and reducing margin of safety significantly\n- Article appears incomplete (text cuts off mid-sentence), limiting ability to assess Q1 earnings details and forward guidance\n\nRECOMMENDATION: REVIEW\n\nEXPLANATION: The news snippet provides insufficient detail to identify thesis-breaking events, but the valuation has moved substantially above your entry point and comfort zone, warran",
+  "sold_under_old_rules": null,
+  "verdict": {
+   "fired": false,
+   "breaker_index": null,
+   "breaker_text": null,
+   "evidence": "none. The news only reports a 26.2% stock rally to $178.90 and states the article is incomplete; it reports no enforcement action, sales decline, reserve strengthening, or rise in acquisition costs at GL.",
+   "raw": "BREAKER FIRED: NONE\nEVIDENCE: none. The news only reports a 26.2% stock rally to $178.90 and states the article is incomplete; it reports no enforcement action, sales decline, reserve strengthening, or rise in acquisition costs at GL."
+  }
+ },
+ {
+  "ticker": "PYPL",
+  "old_tier": "A",
+  "downgraded_at": "2026-07-06 18:05:27",
+  "prior_analysis": "2026-05-15T07:03:46.332293",
+  "breakers": [
+   "Operating margin decline below 14% without clear path to recovery \u2014 Would indicate structural loss of pricing power and inability to compete profitably; terminal value impaired",
+   "Net account additions turn persistently negative for 3+ consecutive quarters \u2014 Would signal network effects reversing and brand becoming irrelevant to new generation of users",
+   "Major acquisition ($5B+) that dilutes focus or destroys capital \u2014 Management track record on M&A is shaky; another Honey-like mistake would confirm capital allocation incompetence and eliminate margin of safety",
+   "TPV growth falls below 3% annually for 2+ years \u2014 Would indicate losing share faster than market is growing; business becoming ex-growth utility without the stable margins",
+   "Regulatory action forcing unbundling of checkout button from processing \u2014 Would destroy the core merchant value proposition and pricing power"
+  ],
+  "news": "[2026-07-06] Oversold vs Undervalued: 3 Stocks Sitting in the Sweet Spot for Retirement Investors (Yahoo)\n  - Margin pressure reported in Q1 2026 results \u2014 Approaching or potentially breaching the 14% operating margin threshold that signals structural pricing power loss\n- Open Banking regulatory expansion globally \u2014 Increased API-based data sharing and fintech competition could accelerate disintermediation of PayPal's checkout button and core merchant value proposition\n- Valuation criticism despite buybacks \u2014 SeekingAlpha headline \"Absurd Valuation\" suggests",
+  "sold_under_old_rules": null,
+  "verdict": {
+   "fired": false,
+   "breaker_index": null,
+   "breaker_text": null,
+   "evidence": "The news only says margin pressure is \"approaching or potentially breaching\" the 14% threshold and that Open Banking expansion \"could\" accelerate disintermediation; these describe risks and possibilities, not a reported breach or a forced unbundling of checkout from processing.",
+   "raw": "BREAKER FIRED: NONE\nEVIDENCE: The news only says margin pressure is \"approaching or potentially breaching\" the 14% threshold and that Open Banking expansion \"could\" accelerate disintermediation; these describe risks and possibilities, not a reported breach or a forced unbundling of checkout from processing."
+  }
+ },
+ {
+  "ticker": "DPZ",
+  "old_tier": "B",
+  "downgraded_at": "2026-07-20 18:05:13",
+  "prior_analysis": "2026-04-27T12:05:40.861782",
+  "breakers": [
+   "Integration with third-party delivery platforms becomes mandatory for growth - If Domino's announces partnership with DoorDash/Uber Eats where majority of orders flow through aggregators, the moat is gone and margin structure breaks. This would indicate management capitulation to platform power.",
+   "U.S. same-store sales turn structurally negative for 3+ consecutive quarters outside recession - Would signal brand deterioration, market saturation, or fundamental demand shift. One bad quarter is noise; three quarters is a trend suggesting the fortressing strategy has failed and market share loss is accelerating."
+  ],
+  "news": "[2026-07-20] /C O R R E C T I O N -- Domino's Pizza/ (Yahoo)\n  - U.S. same-store sales growth decelerated to 0.1% in Q2 2026\u2014the slowest pace in five quarters, signaling weakening momentum and potential demand headwinds\n- Earnings miss despite revenue beat suggests margin pressure and deteriorating profitability relative to top-line growth\n- Consumer spending described as \"cautious,\" indicating macro headwinds that could persist and compound across future quarters\n\nRECOMMENDATION: REVIEW\n\nEXPLANATION: While this si",
+  "sold_under_old_rules": null,
+  "verdict": {
+   "fired": false,
+   "breaker_index": null,
+   "breaker_text": null,
+   "evidence": "The news reports U.S. same-store sales growth of +0.1% in Q2 2026, which is positive (not negative), and describes only a single quarter of deceleration; there is no mention of three consecutive negative quarters or any third-party delivery platform partnership.",
+   "raw": "BREAKER FIRED: NONE\nEVIDENCE: The news reports U.S. same-store sales growth of +0.1% in Q2 2026, which is positive (not negative), and describes only a single quarter of deceleration; there is no mention of three consecutive negative quarters or any third-party delivery platform partnership."
+  }
+ },
+ {
+  "ticker": "FSLR",
+  "old_tier": "B",
+  "downgraded_at": "2026-07-25 18:11:14",
+  "prior_analysis": "2026-05-01T07:03:49.322864",
+  "breakers": [
+   "U.S. Congress reduces/eliminates Section 45X credits by >50% \u2014 Sell immediately; business model collapses to <8% operating margins",
+   "Major customer (NextEra, Constellation) cancels >2 GW of orders \u2014 Signals fundamental demand weakness; backlog credibility destroyed",
+   "Leading silicon manufacturer (Longi, JinkoSolar) achieves <$0.12/watt production cost \u2014 First Solar's cost advantage eliminated; becomes structurally disadvantaged",
+   "First Solar announces writedown/closure of manufacturing facility \u2014 Indicates capacity expansion thesis failing",
+   "Cadmium environmental incident causing production halt \u2014 Regulatory risk materializes; technology viability questioned"
+  ],
+  "news": "[2026-07-25] Is Tariff and Operations Litigation Altering The Investment Case For First Solar (FSLR)? (Yahoo)\n  - Multiple securities class action lawsuits alleging material misrepresentation regarding tariff impacts and operational challenges\n- Suggests management credibility issues and potential undisclosed operational/financial problems at international facilities\n- Litigation risk creates uncertainty around capital allocation, potential settlements, and management distraction\n- The tariff-related claims are particularly concerning given that tariff protection",
+  "sold_under_old_rules": null,
+  "verdict": {
+   "fired": false,
+   "breaker_index": null,
+   "breaker_text": null,
+   "evidence": "The news only reports securities class action lawsuits alleging misrepresentation about tariff impacts and operational challenges; it does not report any of the five specified events (45X credit cuts, >2 GW order cancellations, a <$0.12/W competitor cost, a facility writedown/closure, or a cadmium incident).",
+   "raw": "BREAKER FIRED: NONE\nEVIDENCE: The news only reports securities class action lawsuits alleging misrepresentation about tariff impacts and operational challenges; it does not report any of the five specified events (45X credit cuts, >2 GW order cancellations, a <$0.12/W competitor cost, a facility writedown/closure, or a cadmium incident)."
+  }
+ },
+ {
+  "ticker": "NKE",
+  "old_tier": "B",
+  "downgraded_at": "2026-10-09 18:03:16",
+  "prior_analysis": "2026-08-06T20:03:10.339291",
+  "breakers": [
+   "China revenue continues declining (not just decelerating) for 4+ consecutive quarters despite easier comps, confirming structural rather than cyclical erosion.",
+   "Wholesale partners (Foot Locker, Dick's, etc.) publicly reduce shelf space/allocation commitments to Nike further, or gross margins fail to recover toward historical 44-46% levels by FY2027-2028, signaling the turnaround is not working as designed."
+  ],
+  "news": "[2026-10-08] Lululemon has \u2018a great deal to prove\u2019 with new exec lineup (Yahoo)\n\n[2026-10-09] Micron Is Now Worth More Than Coca-Cola, PepsiCo, McDonald\u2019s, Disney, Starbucks, Nike and Chipotle Combined (Yahoo)\n  - Q1 FY2027 earnings show \"weak sales\" and \"Greater China struggles\" with a \"cautious fiscal 2027 outlook,\" suggesting China revenue headwinds persist rather than stabilize as required by your thesis\n- Dividend payout ratio has surpassed 100% while management prioritizes dividend maintenance, indicating cash flow pressure and potential capital allocation mismanagement during a turnaround\n- Analyst downgrades noted this week (\"Nike Faces Downgrade\"), sig",
+  "sold_under_old_rules": null,
+  "verdict": {
+   "fired": false,
+   "breaker_index": null,
+   "breaker_text": null,
+   "evidence": "The news mentions \"Greater China struggles\" and a \"cautious fiscal 2027 outlook,\" but does not report four or more consecutive quarters of China revenue declines, any wholesale partner cutting Nike shelf space, or gross margins failing to recover to the 44-46% range.",
+   "raw": "BREAKER FIRED: NONE\nEVIDENCE: The news mentions \"Greater China struggles\" and a \"cautious fiscal 2027 outlook,\" but does not report four or more consecutive quarters of China revenue declines, any wholesale partner cutting Nike shelf space, or gross margins failing to recover to the 44-46% range."
+  }
+ },
+ {
+  "ticker": "MCD",
+  "old_tier": "B",
+  "downgraded_at": "2026-10-09 18:05:02",
+  "prior_analysis": "2026-08-04T20:03:59.934549",
+  "breakers": [
+   "Multiple consecutive years (not quarters) of negative US comparable sales alongside franchisee profitability deterioration (rising franchisee-reported store closures/bankruptcies)",
+   "A structural, sustained shift in consumer behavior away from fast food due to health drug adoption (GLP-1s) or regulation, showing up as multi-year volume declines industry-wide, not just at MCD"
+  ],
+  "news": "[2026-10-09] Micron Is Now Worth More Than Coca-Cola, PepsiCo, McDonald\u2019s, Disney, Starbucks, Nike and Chipotle Combined (Yahoo)\n  - **AI Price-Fixing Lawsuit**: Federal class-action lawsuit (filed Oct. 2, 2026) alleging McDonald's AI-powered dynamic pricing tools constitute illegal price coordination among franchisees. While MCD disputes the claims as \"filled with inaccuracies,\" this represents material legal/regulatory risk that could constrain pricing power and franchise relationships if discovery/damages escalate.\n- **Franchisee Economics Under Pressure**: The lawsuit combined",
+  "sold_under_old_rules": null,
+  "verdict": {
+   "fired": false,
+   "breaker_index": null,
+   "breaker_text": null,
+   "evidence": "The news reports a price-fixing class-action lawsuit and general pressure on franchisee economics, but it does not report multiple consecutive years of negative US comparable sales with franchisee closures/bankruptcies, nor a structural industry-wide volume decline from GLP-1s or regulation.",
+   "raw": "BREAKER FIRED: NONE\nEVIDENCE: The news reports a price-fixing class-action lawsuit and general pressure on franchisee economics, but it does not report multiple consecutive years of negative US comparable sales with franchisee closures/bankruptcies, nor a structural industry-wide volume decline from GLP-1s or regulation."
+  }
+ },
+ {
+  "ticker": "ACT",
+  "old_tier": "B",
+  "downgraded_at": "2026-10-12 18:03:46",
+  "prior_analysis": "2026-10-09T07:09:07.416219",
+  "breakers": [
+   "Legislation or GSE/FHFA action that removes or materially weakens the statutory/charter requirement for private MI on >80% LTV loans, or lets GSEs substitute their own credit protection for MI.",
+   "A sustained price war among MIs (new business ROEs falling below cost of equity), or credit losses and reserve strengthening that signal underwriting quality was worse than reported.",
+   "(Secondary) Genworth monetization or governance actions that visibly prioritize the parent over minority holders (e.g., dilutive transactions or capital extraction beyond sustainable levels)."
+  ],
+  "news": "[2026-10-12] This Insmed Analyst Is No Longer Bullish; Here Are Top 5 Downgrades For Monday (Benzinga)\n  - JP Morgan downgrade from Neutral to Underweight with price target cut from $48 to $44 (a ~8% reduction); analyst reasoning not disclosed in excerpt, so underlying catalyst unclear.\n- Analyst consensus appears to be shifting negative (multiple downgrades on same day), suggesting either a sector-wide headwind or company-specific catalyst.\n\nRECOMMENDATION: REVIEW\n\nEXPLANATION: The downgrade is a valuation/sentiment shift rather than a thesis-breaking even",
+  "sold_under_old_rules": "2026-07-02 07:10:19",
+  "verdict": {
+   "fired": false,
+   "breaker_index": null,
+   "breaker_text": null,
+   "evidence": "none \u2014 the news reports a JP Morgan downgrade of Insmed (a different company), which does not describe any of the pre-registered breakers happening to ACT.",
+   "raw": "BREAKER FIRED: NONE\nEVIDENCE: none \u2014 the news reports a JP Morgan downgrade of Insmed (a different company), which does not describe any of the pre-registered breakers happening to ACT."
+  }
+ },
+ {
+  "ticker": "CCI",
+  "old_tier": "B",
+  "downgraded_at": "2026-10-13 18:03:19",
+  "prior_analysis": "2026-07-31T07:07:08.565435",
+  "breakers": [
+   "Announcement of another major carrier merger (e.g., further T-Mobile/DISH-style consolidation) triggering a new wave of non-renewals beyond current guidance.",
+   "Evidence that satellite direct-to-cell technology (Starlink, AST SpaceMobile) is being adopted by carriers as a genuine substitute for rural/suburban macro tower coverage, not just a supplement."
+  ],
+  "news": "[2026-10-13] Elon Musk's SpaceX Could Shake Up US Wireless Market \u2014 And Wall Street Sees a Surprise Winner (Yahoo)\n  - SpaceX spectrum purchase and Starlink's expanding role in mobile connectivity directly engages one of the two explicit thesis-breaking risks: satellite direct-to-cell technology adoption by carriers.\n- The framing that this \"could shake up US wireless market\" and create \"new opportunities for tower operators\" suggests industry uncertainty about Starlink's true competitive positioning relative to traditional macro tower infrastructure.\n\nRECOMMENDATION:",
+  "sold_under_old_rules": "2026-10-16 20:16:28",
+  "verdict": {
+   "fired": false,
+   "breaker_index": null,
+   "breaker_text": null,
+   "evidence": "The news only says SpaceX \"could shake up\" the wireless market and may create \"new opportunities for tower operators\"; it reports no carrier adopting satellite direct-to-cell as a substitute for macro tower coverage, and no new carrier merger.",
+   "raw": "BREAKER FIRED: NONE\nEVIDENCE: The news only says SpaceX \"could shake up\" the wireless market and may create \"new opportunities for tower operators\"; it reports no carrier adopting satellite direct-to-cell as a substitute for macro tower coverage, and no new carrier merger."
+  }
+ },
+ {
+  "ticker": "CTSH",
+  "old_tier": "A",
+  "downgraded_at": "2026-10-13 18:03:54",
+  "prior_analysis": "2026-06-19T07:02:41.368592",
+  "breakers": [
+   "Operating margin falls below 12% for two consecutive quarters without clear path to recovery = structural profitability impairment, sell immediately",
+   "Revenue declines for 3+ consecutive quarters outside of recession = evidence of market share loss or disruption acceleration, reevaluate immediately",
+   "Major client loss (top 5 client defection announced) = relationship moat weaker than assumed, sell on news",
+   "Management abandons buybacks to fund desperate acquisitions or shore up balance sheet = sign of distress, exit position"
+  ],
+  "news": "[2026-10-12] Satya Nadella went from H-1B worker to Microsoft CEO. The Trump administration just shut that path for his employees (Yahoo)\n  - **H-1B visa restrictions / PERM green card program suspension** affecting Microsoft and likely the broader IT services industry, which could impact Cognizant's ability to deploy offshore talent and maintain cost arbitrage\u2014a core competitive lever for legacy IT services firms\n- **Indirect pressure on Cognizant's business model**: If visa/immigration policies tighten broadly, it reduces Cognizant's traditional advantage of lower-cost offshore delivery,",
+  "sold_under_old_rules": "2026-10-16 20:16:30",
+  "verdict": {
+   "fired": false,
+   "breaker_index": null,
+   "breaker_text": null,
+   "evidence": "The news reports H-1B/PERM policy changes affecting Microsoft and speculates about indirect pressure on Cognizant's model, but it does not report any margin decline, revenue decline, top-5 client loss, or buyback abandonment at CTSH.",
+   "raw": "BREAKER FIRED: NONE\nEVIDENCE: The news reports H-1B/PERM policy changes affecting Microsoft and speculates about indirect pressure on Cognizant's model, but it does not report any margin decline, revenue decline, top-5 client loss, or buyback abandonment at CTSH."
+  }
+ },
+ {
+  "ticker": "NNI",
+  "old_tier": "B",
+  "downgraded_at": "2026-10-13 18:04:25",
+  "prior_analysis": "2026-10-09T07:09:00.741001",
+  "breakers": [
+   "Loss or major downsizing of the Department of Education servicing contracts, or a structural shift of federal loan servicing away from private vendors.",
+   "Large, unexpected credit losses in the private education and consumer portfolios or the securitization beneficial interests, showing underwriting was weak.",
+   "Material governance abuses, such as acquisitions from or transactions with insiders at poor terms, or a major write-down in non-core investments.",
+   "Reinstatement of broad federal loan forgiveness or consolidation incentives that sharply accelerate FFELP run-off."
+  ],
+  "news": "[2026-10-13] Should Nelnet\u2019s (NNI) Sharp Revenue Miss and Diversification Pitch Require Action From Investors? (Yahoo)\n  - 30.5% year-on-year revenue decline is severe and suggests structural headwinds, potentially indicating accelerated runoff of the FFELP loan portfolio or loss of servicing contract volume\n- Miss of analyst expectations by 14.6% signals guidance/communication issues and raises questions about management's visibility into core business trends\n- Underperformance versus peer group in consumer finance suggests the problem is company-specific, not sector-wid",
+  "sold_under_old_rules": "2026-10-16 20:16:32",
+  "verdict": {
+   "fired": false,
+   "breaker_index": null,
+   "breaker_text": null,
+   "evidence": "The news reports a 30.5% revenue decline and an analyst-expectations miss, and only speculates that it \"potentially\" indicates accelerated FFELP runoff or lost servicing volume; it reports no actual contract loss, credit-loss event, governance abuse, or reinstated federal loan forgiveness.",
+   "raw": "BREAKER FIRED: NONE\nEVIDENCE: The news reports a 30.5% revenue decline and an analyst-expectations miss, and only speculates that it \"potentially\" indicates accelerated FFELP runoff or lost servicing volume; it reports no actual contract loss, credit-loss event, governance abuse, or reinstated federal loan forgiveness."
+  }
+ },
+ {
+  "ticker": "NVDA",
+  "old_tier": "B",
+  "downgraded_at": "2026-10-13 18:05:10",
+  "prior_analysis": "2026-06-29T20:11:37.951665",
+  "breakers": [
+   "Hyperscaler Revenue Disclosure Shows >30% Sequential Decline: If Microsoft, Amazon, or Google publicly state they've shifted 50%+ of AI workloads to in-house chips, NVIDIA's moat has been breached. Stock would likely fall 30-40% in days, but further decline to $80-100 probable over 12 months. (Action: Sell 100% within 48 hours of announcement)",
+   "U.S. Government Bans All Advanced Chip Sales to China + Secondary Sanctions: If export controls expand to prohibit sales to any country that might re-export to China (UAE, Indonesia, etc.), NVIDIA loses $15-20B annual TAM permanently. Combined with hyperscaler displacement, this creates a $60-80B revenue hole from peak. (Action: Sell 75% immediately, hold 25% for potential policy reversal)",
+   "OpenAI/Google Announces \"CUDA-Compatible\" Open-Source Framework: If a major AI lab open-sources a CUDA-compatible software layer that runs on AMD/Intel/Hyperscaler chips with <10% performance penalty, the software moat collapses overnight. NVIDIA becomes a hardware commodity within 18-24 months. (Action: Sell 100% \u2014 this"
+  ],
+  "news": "[2026-10-13] Does The Maia Chip Bet Materially Alter Microsoft's Operating Margin Outlook? (Yahoo)\n  - Microsoft announcing Maia chips as \"main hardware\" for running AI models represents material hyperscaler in-house displacement\u2014directly validating the core thesis risk of workload shift away from NVIDIA\n- Amazon's $7B acquisition of an AI startup optimized for running workloads \"faster on Nvidia's chips and its own\" signals Amazon is actively building competitive alternatives and reducing NVIDIA dependency\n- Multiple news items reference \"supply const",
+  "sold_under_old_rules": null,
+  "verdict": {
+   "fired": false,
+   "breaker_index": null,
+   "breaker_text": null,
+   "evidence": "The news says Microsoft is positioning Maia chips as \"main hardware\" for running AI models, but it does not report a public statement that 50%+ of AI workloads have shifted to in-house chips or a >30% sequential revenue decline for NVIDIA, nor does it report any export-control expansion or a CUDA-compatible open-source framework.",
+   "raw": "BREAKER FIRED: NONE\nEVIDENCE: The news says Microsoft is positioning Maia chips as \"main hardware\" for running AI models, but it does not report a public statement that 50%+ of AI workloads have shifted to in-house chips or a >30% sequential revenue decline for NVIDIA, nor does it report any export-control expansion or a CUDA-compatible open-source framework."
+  }
+ }
+]
