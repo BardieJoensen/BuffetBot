@@ -36,7 +36,7 @@ class Config:
     # Portfolio
     max_positions: int = int(os.getenv("MAX_POSITIONS", "8"))
     portfolio_value: float = float(os.getenv("PORTFOLIO_VALUE", "50000"))
-    ask_contribution_limit_dkk: int = int(os.getenv("ASK_CONTRIBUTION_LIMIT", "135900"))
+    ask_contribution_limit_dkk: int = int(os.getenv("ASK_CONTRIBUTION_LIMIT", "174200"))
 
     # Persistence
     database_path: Path = Path(os.getenv("DATABASE_PATH", "./data/buffett_bot_v2.db"))
