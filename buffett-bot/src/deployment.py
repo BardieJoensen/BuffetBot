@@ -24,7 +24,7 @@ tier name the way falling short of 25% undervalued used to.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from .accounts.base import AccountState, PositionState
@@ -59,6 +59,24 @@ class DeployCandidate:
     symbol: str
     margin_of_safety: Optional[float]  # (fair_value - price) / fair_value; negative = above fair value
     tier: Optional[str] = None  # S/A/B/C from the latest deep analysis, if any
+    moat: Optional[str] = None  # WIDE/NARROW/NONE from the latest deep analysis, if any
+    conviction: Optional[str] = None  # HIGH/MEDIUM/LOW from the latest deep analysis, if any
+
+
+# Ruleset 3.0.0: names the model rates as having no moat, or that it holds
+# with low conviction, are never bought. The tier engine already maps both to
+# C; this is defense in depth for callers that build candidates themselves.
+# Evidence (2026-10-17 cohort test, 293 first ratings): moat NONE n=22
+# averaged -10.5 pp vs SPY with 2 of 22 ahead; LOW conviction n=27 -7.5 pp.
+EXCLUDED_MOATS = frozenset({"NONE"})
+EXCLUDED_CONVICTIONS = frozenset({"LOW"})
+
+
+def is_quality_excluded(moat: Optional[str], conviction: Optional[str]) -> bool:
+    """True when a candidate's moat or conviction label bars it from buying."""
+    m = (moat or "").strip().upper()
+    c = (conviction or "").strip().upper()
+    return m in EXCLUDED_MOATS or c in EXCLUDED_CONVICTIONS
 
 
 @dataclass
@@ -69,11 +87,13 @@ class HeldPosition:
     position: PositionState
     tier: Optional[str] = None
     margin_of_safety: Optional[float] = None  # re-priced at decision time, not the entry margin
-    # Whether this name ever fell to C from a better tier. Distinguishes a real
-    # thesis breaker from a first-ever analysis that happens to land on C —
-    # only the former justifies an immediate exit. Defaults False so an
-    # unannotated caller gets the gentler behaviour.
-    downgraded_to_c: bool = False
+    # Ruleset 3.0.0: the only thing that forces a sell is a pre-registered
+    # thesis breaker reported as having happened (thesis_breaker_events). A
+    # re-analysis that lands on C — scheduled or news-triggered — changes the
+    # tier for new buys but never sells on its own; such a holding is only
+    # rotated out when something strictly better is waiting. Defaults False so
+    # an unannotated caller gets the gentler behaviour.
+    thesis_breaker_fired: bool = False
 
 
 @dataclass
@@ -99,6 +119,27 @@ class DeployPlan:
     gap: float
     buys: list[BuyIntent]
     skipped_ceiling: list[str]  # candidates excluded for trading too far above fair value
+    skipped_quality: list[str] = field(default_factory=list)  # excluded for moat NONE / LOW conviction
+
+
+@dataclass
+class SingleBuyRecommendation:
+    """
+    The one name to buy next in the real, DKK-lot account (ruleset 3.0.0).
+
+    The real account adds a few thousand kroner at a time, so "deploy to 90%
+    invested" is meaningless there; the useful output is a single ranked pick
+    and whether one minimum lot is affordable right now.
+    """
+
+    symbol: Optional[str]
+    tier: Optional[str]
+    margin_of_safety: Optional[float]
+    lot_dkk: float
+    lot_usd: Optional[float]  # None when no FX rate is available
+    affordable: Optional[bool]  # None when the available cash is unknown
+    slot_available: bool
+    reason: str
 
 
 def _rank_key(tier: Optional[str], margin_of_safety: Optional[float]) -> tuple[int, float]:
@@ -175,6 +216,9 @@ def plan_buys(
         # so another caller cannot bypass the deep-analysis requirement.
         if c.tier not in BUYABLE_TIERS:
             continue
+        if is_quality_excluded(c.moat, c.conviction):
+            plan.skipped_quality.append(c.symbol)
+            continue
         if c.margin_of_safety is None or not math.isfinite(c.margin_of_safety):
             continue
         if c.margin_of_safety is not None and c.margin_of_safety < -cfg.quality_ceiling_pct:
@@ -248,13 +292,13 @@ def plan_sells(
         if not pos.tradable:
             continue
 
-        # A thesis breaker requires a thesis. Only a name that actually fell
-        # from a better tier gets the immediate exit — a first-ever analysis
-        # landing on C is the bot forming an opinion on something it bought
-        # before it had one, which is not the same event and should not
-        # realize a loss the same week.
-        if h.tier == "C" and h.downgraded_to_c:
-            sells.append(SellIntent(symbol=pos.symbol, reason="Thesis breaker: downgraded to C-tier"))
+        # Ruleset 3.0.0: a sell is forced only by a pre-registered thesis
+        # breaker that the news monitor found reported as having happened.
+        # A downgrade to C by itself — the model changing its mind on a
+        # re-analysis — never sells; CTSH was sold at 7% below the bot's own
+        # fair value on exactly that path in October 2026.
+        if h.thesis_breaker_fired:
+            sells.append(SellIntent(symbol=pos.symbol, reason="Thesis breaker fired (pre-registered)"))
             continue
 
         # C-tier holdings stay eligible for rotation regardless of price.
@@ -287,3 +331,72 @@ def plan_sells(
             sells.append(SellIntent(symbol=pos.symbol, reason=f"Rotate: {why}, better-ranked candidate available"))
 
     return sells
+
+
+def recommend_single_buy(
+    candidates: list[DeployCandidate],
+    *,
+    held_symbols: frozenset[str] = frozenset(),
+    current_position_count: int = 0,
+    cfg: Config = default_config,
+    usd_dkk: Optional[float] = None,
+    cash_dkk: Optional[float] = None,
+) -> SingleBuyRecommendation:
+    """
+    Rank the buy candidates exactly as plan_buys does and name the single best
+    one for the real DKK account, sized as one minimum lot (ruleset 3.0.0).
+
+    Pure: no I/O. ``usd_dkk`` is DKK per 1 USD; ``cash_dkk`` is the cash the
+    user has available, or None when unknown.
+    """
+    lot_dkk = float(cfg.min_lot_dkk)
+    lot_usd = lot_dkk / usd_dkk if usd_dkk and math.isfinite(usd_dkk) and usd_dkk > 0 else None
+    affordable = None if cash_dkk is None else bool(cash_dkk >= lot_dkk)
+    slot_available = current_position_count < cfg.max_positions
+
+    eligible = []
+    for c in candidates:
+        if c.symbol in held_symbols or c.tier not in BUYABLE_TIERS:
+            continue
+        if is_quality_excluded(c.moat, c.conviction):
+            continue
+        if c.margin_of_safety is None or not math.isfinite(c.margin_of_safety):
+            continue
+        if c.margin_of_safety < -cfg.quality_ceiling_pct:
+            continue
+        eligible.append(c)
+    eligible.sort(key=lambda c: _rank_key(c.tier, c.margin_of_safety), reverse=True)
+
+    if not eligible:
+        return SingleBuyRecommendation(
+            symbol=None,
+            tier=None,
+            margin_of_safety=None,
+            lot_dkk=lot_dkk,
+            lot_usd=lot_usd,
+            affordable=affordable,
+            slot_available=slot_available,
+            reason="No S/A-tier name clears the quality rules this week — hold cash",
+        )
+
+    best = eligible[0]
+    bits = [f"{best.symbol}: tier {best.tier}"]
+    if best.margin_of_safety is not None:
+        bits.append(f"{best.margin_of_safety:+.0%} vs fair value")
+    bits.append(f"one lot = {lot_dkk:,.0f} DKK" + (f" (~${lot_usd:,.0f})" if lot_usd else ""))
+    if not slot_available:
+        bits.append(
+            f"portfolio full ({current_position_count}/{cfg.max_positions}) — would replace the weakest holding"
+        )
+    if affordable is False:
+        bits.append(f"cash {cash_dkk:,.0f} DKK is below one lot — keep saving")
+    return SingleBuyRecommendation(
+        symbol=best.symbol,
+        tier=best.tier,
+        margin_of_safety=best.margin_of_safety,
+        lot_dkk=lot_dkk,
+        lot_usd=lot_usd,
+        affordable=affordable,
+        slot_available=slot_available,
+        reason="; ".join(bits),
+    )

@@ -96,32 +96,33 @@ def _make_fetcher(news_map: dict) -> MagicMock:
     return fetcher
 
 
-def _make_analyzer(has_red_flags=False, recommendation="HOLD"):
-    """Return a CompanyAnalyzer mock with check_news_for_red_flags pre-configured."""
+def _make_analyzer(has_red_flags=False, recommendation="HOLD", breaker=None):
+    """
+    Return a CompanyAnalyzer mock with check_news_for_red_flags pre-configured.
+
+    ``breaker`` is the breaker number the (mocked) breaker check reports as
+    fired, or None for "no breaker fired" (ruleset 3.0.0).
+    """
     analyzer = MagicMock()
     analyzer.check_news_for_red_flags.return_value = {
         "has_red_flags": has_red_flags,
         "analysis": "Analysis text",
         "recommendation": recommendation,
     }
+    analyzer.check_thesis_breakers.return_value = _make_breaker_verdict(breaker)
     return analyzer
 
 
-def _make_sonnet_analysis(ticker="AAPL", tier="C"):
-    """Return a minimal AnalysisV2-like mock for Sonnet re-analysis."""
-    mock = MagicMock()
-    mock.symbol = ticker
-    mock.conviction = "LOW"
-    mock.moat_rating.value = "none"
-    mock.moat_sources = []
-    mock.estimated_fair_value_low = 100.0
-    mock.estimated_fair_value_high = 120.0
-    mock.target_entry_price = 85.0
-    mock.current_price = 160.0
-    mock.summary = "Risk elevated"
-    mock.key_risks = ["investigation"]
-    mock.thesis_risks = ["SEC enforcement"]
-    return mock
+def _make_breaker_verdict(breaker=None, breakers=("CEO change", "fraud")):
+    if breaker is None:
+        return {"fired": False, "breaker_index": None, "breaker_text": None, "evidence": "none", "raw": ""}
+    return {
+        "fired": True,
+        "breaker_index": breaker,
+        "breaker_text": breakers[breaker - 1],
+        "evidence": "The company announced the event.",
+        "raw": "",
+    }
 
 
 # ─── MATERIAL_KEYWORDS ────────────────────────────────────────────────────────
@@ -479,38 +480,44 @@ class TestRunNewsPipeline:
         assert stats["haiku_calls"] == 1
         assert stats["sonnet_calls"] == 0
 
-    def test_red_flags_trigger_sonnet(self, db):
+    def test_red_flags_trigger_breaker_check(self, db):
         _setup_watched_ticker(db, "AAPL")
         fetcher = _make_fetcher({"AAPL": [_make_item("SEC launches fraud investigation into Apple")]})
         analyzer = _make_analyzer(has_red_flags=True, recommendation="REVIEW")
-        mock_analysis = _make_sonnet_analysis("AAPL", "C")
-        analyzer.analyze_company.return_value = mock_analysis
 
-        with (
-            patch("src.news_fetcher.assign_tier") as mock_tier,
-            patch("src.news_fetcher.staged_entry_suggestion", return_value=None),
-        ):
-            mock_tier.return_value = MagicMock(tier="C", tier_reason="Risk", price_gap_pct=None)
-            stats = run_news_pipeline(db, analyzer, fetcher)
+        stats = run_news_pipeline(db, analyzer, fetcher)
 
         assert stats["haiku_calls"] == 1
         assert stats["sonnet_calls"] == 1
+        # The check sees the breakers pre-registered at analysis time, verbatim.
+        args = analyzer.check_thesis_breakers.call_args[0]
+        assert args[0] == "AAPL"
+        assert args[1] == ["CEO change", "fraud"]
+        # Ruleset 3.0.0: the news path never re-rates the company.
+        assert not analyzer.analyze_company.called
 
-    def test_review_recommendation_triggers_sonnet(self, db):
+    def test_review_recommendation_triggers_breaker_check(self, db):
         _setup_watched_ticker(db, "META")
         fetcher = _make_fetcher({"META": [_make_item("Meta CEO faces regulatory lawsuit")]})
         analyzer = _make_analyzer(has_red_flags=False, recommendation="REVIEW")
-        mock_analysis = _make_sonnet_analysis("META")
-        analyzer.analyze_company.return_value = mock_analysis
 
-        with (
-            patch("src.news_fetcher.assign_tier") as mock_tier,
-            patch("src.news_fetcher.staged_entry_suggestion", return_value=None),
-        ):
-            mock_tier.return_value = MagicMock(tier="B", tier_reason="Monitor", price_gap_pct=0.1)
-            run_news_pipeline(db, analyzer, fetcher)
+        run_news_pipeline(db, analyzer, fetcher)
 
-        assert analyzer.analyze_company.called
+        assert analyzer.check_thesis_breakers.called
+        assert not analyzer.analyze_company.called
+
+    def test_no_stored_breakers_means_nothing_can_fire(self, db):
+        db.upsert_universe_stock("NOBR", company_name="NoBreakers Inc", source="conviction")
+        db.save_deep_analysis("NOBR", tier="A", investment_thesis="thesis", thesis_breakers=[])
+        db.upsert_price_alert("NOBR", tier="A", target_entry=10.0, staged_entries=None, last_price=9.0, gap_pct=-0.1)
+        fetcher = _make_fetcher({"NOBR": [_make_item("NoBreakers CEO resigns amid fraud probe")]})
+        analyzer = _make_analyzer(has_red_flags=True, recommendation="SELL")
+
+        stats = run_news_pipeline(db, analyzer, fetcher)
+
+        assert stats["haiku_calls"] == 1
+        assert stats["sonnet_calls"] == 0
+        assert db.get_latest_deep_analysis("NOBR")["tier"] == "A"
 
     def test_haiku_budget_exhausted_skips_check(self, db):
         _setup_watched_ticker(db, "GOOG")
@@ -547,57 +554,55 @@ class TestRunNewsPipeline:
         assert row["haiku_material"] == 0  # no red flags → False → 0
         assert row["sonnet_triggered"] == 0  # workflow completed without Sonnet
 
-    def test_tier_change_logged_to_history(self, db):
+    def test_fired_breaker_logged_to_history_and_events(self, db):
         _setup_watched_ticker(db, "TSLA", tier="A")
         fetcher = _make_fetcher({"TSLA": [_make_item("Tesla SEC fraud probe escalates")]})
-        analyzer = _make_analyzer(has_red_flags=True, recommendation="SELL")
-        analyzer.analyze_company.return_value = _make_sonnet_analysis("TSLA")
+        analyzer = _make_analyzer(has_red_flags=True, recommendation="SELL", breaker=2)
 
-        with (
-            patch("src.news_fetcher.assign_tier") as mock_tier,
-            patch("src.news_fetcher.staged_entry_suggestion", return_value=None),
-        ):
-            mock_tier.return_value = MagicMock(tier="C", tier_reason="Sell", price_gap_pct=None)
-            run_news_pipeline(db, analyzer, fetcher)
+        stats = run_news_pipeline(db, analyzer, fetcher)
 
+        assert stats["breakers_fired"] == 1
         history = db.get_tier_history("TSLA")
-        assert any(h["trigger"] == "news_event" for h in history)
+        entry = next(h for h in history if h["trigger"] == "thesis_breaker")
+        assert entry["old_tier"] == "A" and entry["new_tier"] == "C"
+        assert "fraud" in entry["reason"]
+        fired = db.get_fired_thesis_breaker("TSLA")
+        assert fired is not None
+        assert fired["breaker_index"] == 2 and fired["breaker_text"] == "fraud"
+        assert fired["headline"] == "Tesla SEC fraud probe escalates"
+        assert fired["ruleset_version"]
 
-    def test_notifier_called_on_tier_change(self, db):
+    def test_notifier_called_on_fired_breaker(self, db):
         _setup_watched_ticker(db, "TSLA", tier="A")
         fetcher = _make_fetcher({"TSLA": [_make_item("Tesla SEC fraud probe escalates")]})
-        analyzer = _make_analyzer(has_red_flags=True, recommendation="SELL")
-        analyzer.analyze_company.return_value = _make_sonnet_analysis("TSLA")
+        analyzer = _make_analyzer(has_red_flags=True, recommendation="SELL", breaker=2)
         notifier = MagicMock()
 
-        with (
-            patch("src.news_fetcher.assign_tier") as mock_tier,
-            patch("src.news_fetcher.staged_entry_suggestion", return_value=None),
-        ):
-            mock_tier.return_value = MagicMock(tier="C", tier_reason="Sell", price_gap_pct=None)
-            run_news_pipeline(db, analyzer, fetcher, notifier=notifier)
+        run_news_pipeline(db, analyzer, fetcher, notifier=notifier)
 
         notifier.send_alert.assert_called_once()
         ticker_arg, msg_arg = notifier.send_alert.call_args[0]
         assert ticker_arg == "TSLA"
-        assert "SELL" in msg_arg or "C" in msg_arg
+        assert "THESIS BREAKER FIRED" in msg_arg and "fraud" in msg_arg
 
-    def test_notifier_not_called_when_tier_unchanged(self, db):
+    def test_no_breaker_fired_leaves_tier_untouched(self, db):
+        """A REVIEW without a fired breaker is a log line: no tier change, no row, no alert."""
         _setup_watched_ticker(db, "NVDA", tier="A")
         fetcher = _make_fetcher({"NVDA": [_make_item("Nvidia earnings beat")]})
-        analyzer = _make_analyzer(has_red_flags=True, recommendation="REVIEW")
-        analyzer.analyze_company.return_value = _make_sonnet_analysis("NVDA")
+        analyzer = _make_analyzer(has_red_flags=True, recommendation="REVIEW", breaker=None)
         notifier = MagicMock()
+        before = db.get_latest_deep_analysis("NVDA")
 
-        with (
-            patch("src.news_fetcher.assign_tier") as mock_tier,
-            patch("src.news_fetcher.staged_entry_suggestion", return_value=None),
-        ):
-            # Same tier as before ("A")
-            mock_tier.return_value = MagicMock(tier="A", tier_reason="Hold", price_gap_pct=0.1)
-            run_news_pipeline(db, analyzer, fetcher, notifier=notifier)
+        stats = run_news_pipeline(db, analyzer, fetcher, notifier=notifier)
 
         notifier.send_alert.assert_not_called()
+        assert stats["sonnet_calls"] == 1 and stats["breakers_fired"] == 0 and stats["tier_changes"] == 0
+        after = db.get_latest_deep_analysis("NVDA")
+        assert after["tier"] == "A" and after["analyzed_at"] == before["analyzed_at"]
+        assert db.get_tier_history("NVDA") == []
+        assert db.get_fired_thesis_breaker("NVDA") is None
+        # The headline is now answered and will not be re-spent on.
+        assert "Nvidia earnings beat" in db.get_recent_headlines("NVDA")
 
     def test_haiku_exception_logs_event_and_continues(self, db):
         _setup_watched_ticker(db, "NVDA")
@@ -626,7 +631,7 @@ class TestRunNewsPipeline:
         _setup_watched_ticker(db, "AAPL")
         fetcher = _make_fetcher({"AAPL": [_make_item("Apple SEC fraud probe")]})
         analyzer = _make_analyzer(has_red_flags=True, recommendation="SELL")
-        analyzer.analyze_company.side_effect = RuntimeError("Sonnet unavailable")
+        analyzer.check_thesis_breakers.side_effect = RuntimeError("Sonnet unavailable")
 
         stats = run_news_pipeline(db, analyzer, fetcher)
         assert stats["sonnet_calls"] == 1  # attempt counted even on failure
@@ -648,22 +653,19 @@ class TestRunNewsPipeline:
         assert stats["news_found"] == 2
         assert stats["haiku_calls"] == 2
 
-    def test_sonnet_saves_new_deep_analysis(self, db):
+    def test_fired_breaker_saves_c_copy_of_the_analysis(self, db):
         _setup_watched_ticker(db, "AAPL", tier="A")
         fetcher = _make_fetcher({"AAPL": [_make_item("Apple CEO Tim Cook resigns")]})
-        analyzer = _make_analyzer(has_red_flags=True, recommendation="SELL")
-        analyzer.analyze_company.return_value = _make_sonnet_analysis("AAPL")
+        analyzer = _make_analyzer(has_red_flags=True, recommendation="SELL", breaker=1)
 
-        with (
-            patch("src.news_fetcher.assign_tier") as mock_tier,
-            patch("src.news_fetcher.staged_entry_suggestion", return_value=None),
-        ):
-            mock_tier.return_value = MagicMock(tier="C", tier_reason="Downgrade", price_gap_pct=None)
-            run_news_pipeline(db, analyzer, fetcher)
+        run_news_pipeline(db, analyzer, fetcher)
 
         da = db.get_latest_deep_analysis("AAPL")
         assert da is not None
         assert da["tier"] == "C"
+        assert da["investment_thesis"].startswith("Thesis breaker fired: CEO change")
+        assert "Great moat" in da["investment_thesis"]
+        assert da["thesis_breakers"] == ["CEO change", "fraud"]
 
     def test_c_tier_downgrade_updates_price_alert_to_c(self, db):
         """
@@ -674,15 +676,9 @@ class TestRunNewsPipeline:
         """
         _setup_watched_ticker(db, "COIN", tier="B")
         fetcher = _make_fetcher({"COIN": [_make_item("Coinbase faces SEC enforcement action")]})
-        analyzer = _make_analyzer(has_red_flags=True, recommendation="SELL")
-        analyzer.analyze_company.return_value = _make_sonnet_analysis("COIN")
+        analyzer = _make_analyzer(has_red_flags=True, recommendation="SELL", breaker=2)
 
-        with (
-            patch("src.news_fetcher.assign_tier") as mock_tier,
-            patch("src.news_fetcher.staged_entry_suggestion", return_value=[]),
-        ):
-            mock_tier.return_value = MagicMock(tier="C", tier_reason="No moat", price_gap_pct=None)
-            run_news_pipeline(db, analyzer, fetcher)
+        run_news_pipeline(db, analyzer, fetcher)
 
         # price_alert must now carry tier='C'
         conn = sqlite3.connect(str(db.path))

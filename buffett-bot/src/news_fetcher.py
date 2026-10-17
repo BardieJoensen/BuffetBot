@@ -21,8 +21,6 @@ from typing import Optional
 
 import requests
 
-from .tier_engine import assign_tier, staged_entry_suggestion
-
 logger = logging.getLogger(__name__)
 
 # ─── Material event keywords ─────────────────────────────────────────────────
@@ -362,10 +360,13 @@ def run_news_pipeline(
     2. Apply MATERIAL_KEYWORDS filter (free — no LLM calls)
     3. Haiku materiality check for each ticker with material news
        — uses weekly_news_haiku budget cap (50/week, ~$0.05)
-    4. Sonnet re-analysis for tickers Haiku flags as REVIEW or SELL
-       — uses weekly_news_sonnet budget cap (10/week, ~$0.25)
-       — bypasses file cache (use_cache=False) for fresh results
-    5. Log news_events; update DB tier + price_alert; notify if tier changed
+    4. Breaker check (ruleset 3.0.0) for tickers Haiku flags as REVIEW or
+       SELL: Sonnet decides whether the news reports one of the breakers
+       pre-registered at analysis time as having happened. It cannot re-rate
+       the company. Uses weekly_news_sonnet budget cap (10/week, ~$0.25).
+    5. Log news_events; a fired breaker demotes to C, is journaled in
+       thesis_breaker_events (the only forced-sell trigger) and notifies.
+       No breaker fired → tier unchanged, nothing else happens.
 
     Args:
         db:       Database instance
@@ -384,6 +385,7 @@ def run_news_pipeline(
         "haiku_calls": 0,
         "sonnet_calls": 0,
         "tier_changes": 0,
+        "breakers_fired": 0,
     }
 
     # 1. Discover S/A/B watched stocks from price_alerts, holdings first.
@@ -522,115 +524,80 @@ def run_news_pipeline(
             recommendation,
         )
 
-        # 4. Sonnet re-analysis
-        if not db.can_spend("weekly_news_sonnet"):
-            logger.info("weekly_news_sonnet budget exhausted — skipping Sonnet for %s", ticker)
+        # 4. Breaker check (ruleset 3.0.0). The model may only match the news
+        # against the breakers written at analysis time; it may not re-rate
+        # the company. A fired breaker demotes the name to C and is the only
+        # event that forces a sell in weekly_auto_trade. Nothing else here
+        # touches the tier: a REVIEW without a fired breaker is a log line.
+        if not thesis_breakers:
+            logger.info("%s: REVIEW flagged but no pre-registered breakers stored — nothing can fire", ticker)
+            db.mark_news_event_complete(event_id, sonnet_triggered=False)
             continue
 
-        u = db.get_universe_stock(ticker)
-        company_name = (u or {}).get("company_name") or ticker
-        context = _build_news_context(ticker, db)
+        if not db.can_spend("weekly_news_sonnet"):
+            logger.info("weekly_news_sonnet budget exhausted — skipping breaker check for %s", ticker)
+            continue
 
         stats["sonnet_calls"] += 1
         try:
-            analysis = analyzer.analyze_company(
-                ticker,
-                company_name,
-                context,
-                recent_news=formatted_news,
-                use_cache=False,
-                # A news re-analysis sees no 10-K; keep it out of the file
-                # cache so the Friday batch re-checks with the full prompt.
-                save_cache=False,
-            )
+            verdict = analyzer.check_thesis_breakers(ticker, thesis_breakers, formatted_news)
         except Exception as exc:
-            logger.warning("Sonnet re-analysis failed for %s: %s", ticker, exc)
+            logger.warning("Breaker check failed for %s: %s", ticker, exc)
             continue
 
-        # Persist new analysis and tier
-        old_da = db.get_latest_deep_analysis(ticker)
-        old_tier = (old_da or {}).get("tier")
-        from .valuation import ValuationAggregator
-
-        external_val = None
-        try:
-            external_val = ValuationAggregator().get_valuation(ticker)
-        except Exception as exc:
-            logger.warning("External valuation failed during news re-analysis for %s: %s", ticker, exc)
-        if external_val is None or not external_val.has_valid_price:
-            logger.error("Skipping news-triggered tier update for %s: no valid deterministic market price", ticker)
-            continue
-        tier_assignment = assign_tier(
-            analysis,
-            external_valuation=external_val,
-            quality_score=(u or {}).get("quality_score"),
-        )
-        resolved_target = getattr(tier_assignment, "target_entry_price", None)
-        if not isinstance(resolved_target, (int, float)):
-            resolved_target = analysis.target_entry_price
-        resolved_price = getattr(tier_assignment, "current_price", None)
-        if not isinstance(resolved_price, (int, float)):
-            resolved_price = external_val.current_price
-
-        fair_value_mid = (
-            ((analysis.estimated_fair_value_low or 0) + (analysis.estimated_fair_value_high or 0)) / 2
-        ) or None
-
-        db.save_deep_analysis(
-            ticker,
-            tier=tier_assignment.tier,
-            conviction=analysis.conviction,
-            moat_rating=analysis.moat_rating.value.upper(),
-            moat_sources=analysis.moat_sources,
-            fair_value=fair_value_mid,
-            target_entry=resolved_target,
-            investment_thesis=analysis.summary,
-            key_risks=analysis.key_risks,
-            thesis_breakers=analysis.thesis_risks,
-        )
-
-        db.log_tier_change(
-            ticker,
-            new_tier=tier_assignment.tier,
-            old_tier=old_tier,
-            trigger="news_event",
-            reason=f"News-triggered re-analysis: {recommendation}",
-        )
-
-        # Always update price_alert regardless of tier.
-        # For C-tier: updates the row to tier='C', excluding the stock from
-        # the next day's get_price_alerts(tiers=["S","A","B"]) query.
-        # Without this, a B→C downgrade leaves a stale B-tier alert and the
-        # stock continues to consume Haiku budget on subsequent news cycles.
-        entries = staged_entry_suggestion(resolved_target or 0, tier_assignment.tier)
-        db.upsert_price_alert(
-            ticker,
-            tier=tier_assignment.tier,
-            target_entry=resolved_target,
-            staged_entries=entries or None,
-            last_price=resolved_price,
-            gap_pct=tier_assignment.price_gap_pct,
-        )
         db.mark_news_event_complete(event_id, sonnet_triggered=True)
 
-        # 5. Notify on tier change
-        if old_tier != tier_assignment.tier:
-            stats["tier_changes"] += 1
-            msg = f"Tier changed: {old_tier} → {tier_assignment.tier} (news-triggered, recommendation={recommendation})"
-            logger.info("%s: %s", ticker, msg)
-            if notifier:
-                try:
-                    notifier.send_alert(ticker, msg)
-                except Exception as exc:
-                    logger.warning("Notification failed for %s: %s", ticker, exc)
+        if not verdict.get("fired"):
+            logger.info(
+                "%s: Haiku REVIEW, but no pre-registered breaker fired (%s) — tier unchanged",
+                ticker,
+                (verdict.get("evidence") or "no evidence")[:120],
+            )
+            continue
+
+        stats["breakers_fired"] += 1
+        stats["tier_changes"] += 1
+        breaker_text = verdict.get("breaker_text") or ""
+        old_tier = (da or {}).get("tier")
+        db.mark_thesis_breaker_fired(
+            ticker,
+            breaker_index=verdict.get("breaker_index"),
+            breaker_text=breaker_text,
+            evidence=verdict.get("evidence"),
+            headline=top_item.get("headline", ""),
+            source=top_item.get("source"),
+            published_at=_ts_to_iso(top_item.get("datetime")),
+            news_event_id=event_id,
+        )
+        # Leave the S/A/B news watch; the C row already blocks re-buys.
+        db.upsert_price_alert(
+            ticker,
+            tier="C",
+            target_entry=(da or {}).get("target_entry"),
+            staged_entries=None,
+            last_price=None,
+            gap_pct=None,
+        )
+
+        msg = (
+            f"THESIS BREAKER FIRED ({old_tier} → C): {breaker_text}\n"
+            f"Evidence: {verdict.get('evidence') or '-'}\n"
+            f"Headline: {top_item.get('headline', '')}"
+        )
+        logger.warning("%s: %s", ticker, msg.replace("\n", " — "))
+        if notifier:
+            try:
+                notifier.send_alert(ticker, msg)
+            except Exception as exc:
+                logger.warning("Notification failed for %s: %s", ticker, exc)
 
     logger.info(
         "News pipeline complete: %d ticker(s) checked, %d with material news, "
-        "%d Haiku call(s), %d Sonnet call(s), %d tier change(s)",
+        "%d Haiku call(s), %d breaker check(s), %d breaker(s) fired",
         stats["tickers_checked"],
         stats["news_found"],
         stats["haiku_calls"],
         stats["sonnet_calls"],
-        stats["tier_changes"],
+        stats["breakers_fired"],
     )
     return stats

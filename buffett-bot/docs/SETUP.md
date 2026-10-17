@@ -251,6 +251,8 @@ If Alpaca paper trading is configured, the bot will pull positions from Alpaca a
 | `PORTFOLIO_VALUE` | `50000` | Portfolio size for position sizing |
 | `MAX_POSITIONS` | `8` | Maximum concentrated positions (ASK) |
 | `ASK_CONTRIBUTION_LIMIT` | `135900` | Annual ASK contribution limit (DKK) |
+| `MIN_LOT_DKK` | `5000` | Real-account lot size for the single-buy recommendation (DKK) |
+| `ASK_CASH_DKK` | unset | Cash available in the real account; enables the "affordable" flag |
 | `MARGIN_OF_SAFETY_PCT` | `25` | Base margin-of-safety target used by tier assignment |
 | `TIER1_PROXIMITY_ALERT_PCT` | `10` | Legacy-named threshold for B-tier target alerts |
 

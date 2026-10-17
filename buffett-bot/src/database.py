@@ -26,6 +26,7 @@ from typing import Iterator, Optional, Union
 import yaml
 
 from .config import config
+from .ruleset import RULESET_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -307,6 +308,57 @@ CREATE TABLE IF NOT EXISTS income_events (
     withholding     REAL,               -- tax withheld, if any (same currency as amount)
     logged_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+-- A pre-registered thesis breaker (written at analysis time) that the news
+-- monitor found reported as having happened. This is the ONLY event that
+-- forces a sell (ruleset 3.0.0): a re-analysis changing its mind does not.
+CREATE TABLE IF NOT EXISTS thesis_breaker_events (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker          TEXT NOT NULL,
+    fired_at        TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    breaker_index   INTEGER,            -- 1-based index into the stored thesis_breakers list
+    breaker_text    TEXT NOT NULL,      -- the breaker exactly as pre-registered
+    evidence        TEXT,               -- the model's one-line quote of the news
+    headline        TEXT,
+    source          TEXT,
+    published_at    TEXT,
+    news_event_id   INTEGER,
+    ruleset_version TEXT
+);
+
+-- Monthly forward-return validation of rating cohorts (ruleset 3.0.0).
+-- One row per (run, cohort). alpha = equal-weight cohort return minus the
+-- benchmark over the same windows.
+CREATE TABLE IF NOT EXISTS cohort_validation (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    as_of           TEXT NOT NULL,      -- price date the run used
+    ruleset_version TEXT,
+    cohort_type     TEXT NOT NULL,      -- 'tier' / 'moat' / 'conviction' / 'quality_quintile'
+    cohort          TEXT NOT NULL,      -- e.g. 'A', 'NONE', 'Q5'
+    horizon         TEXT NOT NULL,      -- 'since_rating' / '90d'
+    n               INTEGER NOT NULL,
+    mean_return     REAL,
+    benchmark_return REAL,
+    mean_alpha      REAL,
+    median_alpha    REAL,
+    hit_rate        REAL                -- share of names that beat the benchmark
+);
+
+-- The single best buy for the real (DKK-lot) account, written weekly.
+CREATE TABLE IF NOT EXISTS single_buy_recommendations (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    as_of           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    ticker          TEXT,               -- NULL when nothing qualifies
+    tier            TEXT,
+    margin_of_safety REAL,
+    lot_dkk         REAL,
+    lot_usd         REAL,
+    usd_dkk         REAL,
+    affordable      INTEGER,            -- BOOLEAN (nullable): NULL when ASK_CASH_DKK is unset
+    reason          TEXT,
+    ruleset_version TEXT
+);
 """
 
 INDEXES_SQL = """
@@ -386,6 +438,8 @@ _COLUMN_MIGRATIONS: list[tuple[str, str, str]] = [
     ("decision_log", "order_status", "TEXT NOT NULL DEFAULT 'legacy'"),
     ("decision_log", "filled_at", "TIMESTAMP"),
     ("decision_log", "account_id", "TEXT"),
+    ("decision_log", "ruleset_version", "TEXT"),
+    ("tier_history", "ruleset_version", "TEXT"),
 ]
 
 
@@ -1003,11 +1057,213 @@ class Database:
         with _open(self.path) as conn:
             conn.execute(
                 """
-                INSERT INTO tier_history (ticker, old_tier, new_tier, trigger, reason)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO tier_history (ticker, old_tier, new_tier, trigger, reason, ruleset_version)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (ticker, old_tier, new_tier, trigger, reason),
+                (ticker, old_tier, new_tier, trigger, reason, RULESET_VERSION),
             )
+
+    # ── Thesis breakers (ruleset 3.0.0) ──────────────────────────────────────
+
+    def mark_thesis_breaker_fired(
+        self,
+        ticker: str,
+        *,
+        breaker_index: Optional[int],
+        breaker_text: str,
+        evidence: Optional[str] = None,
+        headline: Optional[str] = None,
+        source: Optional[str] = None,
+        published_at: Optional[str] = None,
+        news_event_id: Optional[int] = None,
+    ) -> int:
+        """
+        Record that a pre-registered thesis breaker was reported as having
+        happened, and demote the name to C.
+
+        The C row is a copy of the latest analysis with the tier replaced: it
+        is a deterministic consequence of the rule written at analysis time,
+        not a fresh opinion, and it keeps the downstream behaviour coherent —
+        the name leaves the S/A/B news watch, cannot be bought again until a
+        new analysis, and the C verdict expires on the short C TTL.
+        """
+        latest = self.get_latest_deep_analysis(ticker) or {}
+        old_tier = latest.get("tier")
+        with _open(self.path) as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO thesis_breaker_events
+                    (ticker, breaker_index, breaker_text, evidence, headline, source, published_at,
+                     news_event_id, ruleset_version)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    ticker,
+                    breaker_index,
+                    breaker_text,
+                    evidence,
+                    headline,
+                    source,
+                    published_at,
+                    news_event_id,
+                    RULESET_VERSION,
+                ),
+            )
+            event_id = int(cur.lastrowid or 0)
+        reason = f"Thesis breaker fired: {breaker_text}"
+        if old_tier != "C":
+            self.save_deep_analysis(
+                ticker,
+                tier="C",
+                conviction=latest.get("conviction"),
+                moat_rating=latest.get("moat_rating"),
+                moat_sources=latest.get("moat_sources") or [],
+                fair_value=latest.get("fair_value"),
+                target_entry=latest.get("target_entry"),
+                investment_thesis=f"{reason}. Previous thesis: {latest.get('investment_thesis') or ''}"[:2000],
+                key_risks=latest.get("key_risks") or [],
+                thesis_breakers=latest.get("thesis_breakers") or [],
+            )
+        self.log_tier_change(ticker, new_tier="C", old_tier=old_tier, trigger="thesis_breaker", reason=reason)
+        return event_id
+
+    def get_fired_thesis_breaker(self, ticker: str, *, since: Optional[str] = None) -> Optional[dict]:
+        """
+        The most recent fired breaker for a ticker, optionally only those fired
+        at or after ``since`` (ISO timestamp; typically the open buy's decision
+        time, so an old event cannot sell a position bought after it).
+        """
+        with _open(self.path) as conn:
+            if since:
+                row = conn.execute(
+                    """
+                    SELECT * FROM thesis_breaker_events
+                    WHERE ticker = ? AND datetime(fired_at) >= datetime(?)
+                    ORDER BY fired_at DESC, id DESC LIMIT 1
+                    """,
+                    (ticker, since),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT * FROM thesis_breaker_events WHERE ticker = ? ORDER BY fired_at DESC, id DESC LIMIT 1",
+                    (ticker,),
+                ).fetchone()
+            return dict(row) if row else None
+
+    def get_thesis_breaker_events(self, *, days_back: int = 30, limit: int = 50) -> list[dict]:
+        """Recent fired breakers, newest first."""
+        with _open(self.path) as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM thesis_breaker_events
+                WHERE datetime(fired_at) >= datetime('now', ?)
+                ORDER BY fired_at DESC, id DESC LIMIT ?
+                """,
+                (f"-{int(days_back)} days", int(limit)),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    # ── Cohort validation (ruleset 3.0.0) ────────────────────────────────────
+
+    def save_cohort_validation(self, as_of: str, rows: list[dict]) -> int:
+        """Persist one validation run. Each row: cohort_type, cohort, horizon, n, stats."""
+        with _open(self.path) as conn:
+            for r in rows:
+                conn.execute(
+                    """
+                    INSERT INTO cohort_validation
+                        (as_of, ruleset_version, cohort_type, cohort, horizon, n,
+                         mean_return, benchmark_return, mean_alpha, median_alpha, hit_rate)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        as_of,
+                        RULESET_VERSION,
+                        r["cohort_type"],
+                        str(r["cohort"]),
+                        r["horizon"],
+                        int(r["n"]),
+                        r.get("mean_return"),
+                        r.get("benchmark_return"),
+                        r.get("mean_alpha"),
+                        r.get("median_alpha"),
+                        r.get("hit_rate"),
+                    ),
+                )
+        return len(rows)
+
+    def get_first_ratings(self) -> list[dict]:
+        """
+        Each ticker's FIRST deep analysis — the rating the bot gave before it
+        knew anything about what happened next. This is the cohort-validation
+        entry signal; later re-ratings are deliberately ignored.
+        """
+        with _open(self.path) as conn:
+            rows = conn.execute(
+                """
+                SELECT d.ticker, d.analyzed_at AS rated_at, d.tier, d.moat_rating, d.conviction
+                FROM deep_analyses d
+                JOIN (SELECT ticker, MIN(analyzed_at) AS first_at FROM deep_analyses GROUP BY ticker) f
+                  ON f.ticker = d.ticker AND f.first_at = d.analyzed_at
+                GROUP BY d.ticker
+                ORDER BY d.ticker
+                """
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_latest_cohort_validation(self) -> list[dict]:
+        """Rows from the most recent validation run (by as_of, then run_at)."""
+        with _open(self.path) as conn:
+            latest = conn.execute("SELECT MAX(run_at) AS run_at FROM cohort_validation").fetchone()
+            if not latest or not latest["run_at"]:
+                return []
+            rows = conn.execute(
+                "SELECT * FROM cohort_validation WHERE run_at = ? ORDER BY cohort_type, horizon, cohort",
+                (latest["run_at"],),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    # ── Single-buy recommendation (ruleset 3.0.0) ────────────────────────────
+
+    def save_single_buy_recommendation(
+        self,
+        *,
+        ticker: Optional[str],
+        tier: Optional[str],
+        margin_of_safety: Optional[float],
+        lot_dkk: Optional[float],
+        lot_usd: Optional[float],
+        usd_dkk: Optional[float],
+        affordable: Optional[bool],
+        reason: str,
+    ) -> int:
+        with _open(self.path) as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO single_buy_recommendations
+                    (ticker, tier, margin_of_safety, lot_dkk, lot_usd, usd_dkk, affordable, reason, ruleset_version)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    ticker,
+                    tier,
+                    margin_of_safety,
+                    lot_dkk,
+                    lot_usd,
+                    usd_dkk,
+                    None if affordable is None else int(affordable),
+                    reason,
+                    RULESET_VERSION,
+                ),
+            )
+            return int(cur.lastrowid or 0)
+
+    def get_latest_single_buy_recommendation(self) -> Optional[dict]:
+        with _open(self.path) as conn:
+            row = conn.execute(
+                "SELECT * FROM single_buy_recommendations ORDER BY as_of DESC, id DESC LIMIT 1"
+            ).fetchone()
+            return dict(row) if row else None
 
     def was_downgraded_to_c(self, ticker: str) -> bool:
         """
@@ -1404,8 +1660,8 @@ class Database:
                 """
                 INSERT INTO decision_log
                     (account_id, ticker, action, tier, price, shares, notional, order_id, order_status,
-                     reason, regime, reasoning_snapshot)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     reason, regime, reasoning_snapshot, ruleset_version)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     account_id,
@@ -1420,6 +1676,7 @@ class Database:
                     reason,
                     regime,
                     json.dumps(reasoning_snapshot) if reasoning_snapshot is not None else None,
+                    RULESET_VERSION,
                 ),
             )
             new_id = cur.lastrowid

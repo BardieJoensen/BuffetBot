@@ -640,6 +640,48 @@ def reconcile_broker_orders():
             logger.error("Order reconciliation failed for %s: %s", decision["order_id"], exc)
 
 
+def _record_single_buy_recommendation(db, candidates, held_symbols, current_position_count) -> None:
+    """
+    Persist and announce the single best DKK-lot buy (ruleset 3.0.0).
+
+    Best-effort: a failure here must never abort the trade cycle.
+    """
+    try:
+        from src.deployment import recommend_single_buy
+        from src.fx import get_usd_dkk_rate
+
+        rate = None
+        try:
+            rate = get_usd_dkk_rate()
+        except Exception as exc:
+            logger.warning("USD/DKK rate unavailable for the recommendation: %s", exc)
+        rec = recommend_single_buy(
+            candidates,
+            held_symbols=held_symbols,
+            current_position_count=current_position_count,
+            cfg=config,
+            usd_dkk=rate,
+            cash_dkk=config.ask_cash_dkk,
+        )
+        db.save_single_buy_recommendation(
+            ticker=rec.symbol,
+            tier=rec.tier,
+            margin_of_safety=rec.margin_of_safety,
+            lot_dkk=rec.lot_dkk,
+            lot_usd=rec.lot_usd,
+            usd_dkk=rate,
+            affordable=rec.affordable,
+            reason=rec.reason,
+        )
+        logger.info("Best single buy (DKK lot): %s", rec.reason)
+        if rec.symbol:
+            from src.notifications import NotificationManager
+
+            NotificationManager().send_alert("BEST SINGLE BUY", rec.reason)
+    except Exception as exc:
+        logger.warning("Single-buy recommendation failed: %s", exc)
+
+
 def weekly_auto_trade():
     """
     Weekly auto-trade job using Haiku pre-screening + the Phase C regime-driven
@@ -767,7 +809,15 @@ def weekly_auto_trade():
                     logger.info("Skipping %s: automated buys require a current S/A deep-analysis tier", val.symbol)
                     continue
                 valuations_by_symbol[val.symbol] = val
-                candidates.append(DeployCandidate(symbol=val.symbol, margin_of_safety=val.margin_of_safety, tier=tier))
+                candidates.append(
+                    DeployCandidate(
+                        symbol=val.symbol,
+                        margin_of_safety=val.margin_of_safety,
+                        tier=tier,
+                        moat=(da or {}).get("moat_rating"),
+                        conviction=(da or {}).get("conviction"),
+                    )
+                )
         else:
             logger.info("No candidate stocks passed the quality ceiling this week")
 
@@ -806,16 +856,23 @@ def weekly_auto_trade():
                     mos = val.margin_of_safety if val else None
                 except Exception as e:
                     logger.warning(f"Error pricing {pos.symbol}: {e}")
-                # A thesis break needs a confirmed verdict. A lone news-triggered
-                # C (numeric summary + headlines, no 10-K) overwrote a tier set
-                # with the full prompt and sold the position at Monday's open —
-                # every S/A/B -> C in production history came from that path.
-                # Unconfirmed C holdings are re-checked by the Friday batch.
-                downgraded = db.was_downgraded_to_c(pos.symbol)
-                confirmed = db.is_c_tier_confirmed(pos.symbol) if downgraded else False
-                if tier == "C" and downgraded and not confirmed:
+                # Ruleset 3.0.0: the only forced sell is a pre-registered
+                # thesis breaker that the news monitor found reported as having
+                # happened, and only one fired after this position was bought.
+                # A C verdict from a re-analysis never sells on its own.
+                open_buy = db.get_open_buy(pos.symbol, account_id=account.account_id)
+                since = (open_buy or {}).get("decided_at")
+                fired = db.get_fired_thesis_breaker(pos.symbol, since=since)
+                if fired:
                     logger.info(
-                        "%s: C verdict is unconfirmed (news-triggered, no 10-K) — holding until the Friday batch re-checks",
+                        "%s: thesis breaker fired %s — %s",
+                        pos.symbol,
+                        fired.get("fired_at"),
+                        fired.get("breaker_text"),
+                    )
+                elif tier == "C":
+                    logger.info(
+                        "%s: rated C but no pre-registered breaker fired — rotation-eligible only, not a forced sell",
                         pos.symbol,
                     )
                 held.append(
@@ -823,7 +880,7 @@ def weekly_auto_trade():
                         position=pos,
                         tier=tier,
                         margin_of_safety=mos,
-                        downgraded_to_c=downgraded and confirmed,
+                        thesis_breaker_fired=fired is not None,
                     )
                 )
 
@@ -954,6 +1011,12 @@ def weekly_auto_trade():
                 f"{account.account_id}: regime={plan.regime} target={plan.target_pct:.0%} "
                 f"invested, gap=${plan.gap:,.0f}"
             )
+            if plan.skipped_quality:
+                logger.info("Excluded for moat NONE / LOW conviction: %s", ", ".join(plan.skipped_quality))
+
+            # The real account buys one DKK lot at a time; record the single
+            # best pick alongside the paper plan so both share one ranking.
+            _record_single_buy_recommendation(db, candidates, held_symbols, current_position_count)
 
             for buy in plan.buys:
                 # Journal BEFORE submitting (same reasoning as the sell path).
@@ -1013,6 +1076,36 @@ def weekly_auto_trade():
 
     except Exception as e:
         logger.error(f"Weekly auto-trade failed: {e}")
+
+
+def monthly_cohort_validation():
+    """
+    Forward-return validation of every rating cohort (ruleset 3.0.0).
+
+    Scheduled daily at 10:00 but only runs on the 1st. Free: yfinance prices
+    only, no LLM. Stores one row per cohort in cohort_validation so the
+    track record accumulates per ruleset version instead of living in one
+    equity curve.
+    """
+    if datetime.now().day != 1:
+        return
+
+    logger.info("=" * 50)
+    logger.info("MONTHLY COHORT VALIDATION")
+    logger.info("=" * 50)
+    try:
+        from src.backtest import run_tier_cohort_validation
+        from src.database import Database
+
+        result = run_tier_cohort_validation(Database())
+        logger.info(
+            "Cohort validation complete: %d rows, %d tickers priced, as of %s",
+            len(result.get("rows", [])),
+            result.get("tickers_priced", 0),
+            result.get("as_of"),
+        )
+    except Exception as e:
+        logger.error("Monthly cohort validation failed: %s", e)
 
 
 def monthly_briefing():
@@ -1601,6 +1694,7 @@ def run_scheduler():
     )
     logger.info("  - Daily snapshot:      Every day at 22:00      (yfinance, free)")
     logger.info("  - Daily health check:  Every day at 22:30      (SQL only, free)")
+    logger.info("  - Cohort validation:   1st of month at 10:00   (yfinance, free)")
     logger.info(
         f"  - Monthly briefing:    1st of month at 09:00   (Sonnet ~$0.50) [{'ON' if auto_briefing else 'OFF'}]"
     )
@@ -1650,6 +1744,9 @@ def run_scheduler():
     # Broker orders are asynchronous. Reconcile after each U.S. session and
     # only then mark fills/realized outcomes in the decision journal.
     schedule.every().day.at("16:30", "America/New_York").do(reconcile_broker_orders)
+
+    # Monthly forward-return validation of rating cohorts (free, 1st of month)
+    schedule.every().day.at("10:00").do(monthly_cohort_validation)
 
     # Paid operations (have their own kill switches)
     if auto_trade:

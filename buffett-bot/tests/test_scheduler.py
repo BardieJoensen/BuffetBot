@@ -1653,10 +1653,12 @@ class TestWeeklyAutoTrade:
 
         db = Database(tmp_path / "test.db")
         _save_deep_analysis(db, "NEWCO", tier="A")
-        _save_deep_analysis(db, "OLDCO", tier="C")
-        # A real downgrade, not a first-ever analysis: only a name that fell
-        # from a better tier is a thesis breaker.
-        db.log_tier_change("OLDCO", new_tier="C", old_tier="B", trigger="scheduled")
+        _save_deep_analysis(db, "OLDCO", tier="B")
+        # Ruleset 3.0.0: the only forced sell is a pre-registered breaker the
+        # news monitor found reported as having happened.
+        db.mark_thesis_breaker_fired(
+            "OLDCO", breaker_index=1, breaker_text="Operating margin below 12% for two quarters"
+        )
 
         held = PositionState(
             symbol="OLDCO",
@@ -1720,8 +1722,8 @@ class TestWeeklyAutoTrade:
             order_id="buy-1",
             order_status="filled",
         )
-        _save_deep_analysis(db, "OLDCO", tier="C")
-        db.log_tier_change("OLDCO", new_tier="C", old_tier="B", trigger="scheduled")
+        _save_deep_analysis(db, "OLDCO", tier="B")
+        db.mark_thesis_breaker_fired("OLDCO", breaker_index=1, breaker_text="Revenue down three quarters")
         held = PositionState(
             symbol="OLDCO",
             shares=10.0,
@@ -2175,8 +2177,12 @@ class TestNotifyTierChange:
 # ─── Audit 2026-10: confirmed-C sell gate, journal-before-submit, refunds ───
 
 
-class TestConfirmedCSellGate(TestWeeklyAutoTrade):
-    """A lone news-triggered C must hold; a 10-K-backed C still sells."""
+class TestBreakerSellGate(TestWeeklyAutoTrade):
+    """
+    Ruleset 3.0.0: no downgrade sells by itself — news-triggered or 10-K
+    backed. Only a pre-registered breaker fired after the position was
+    bought forces the exit.
+    """
 
     def _held(self, symbol="OLDCO"):
         from src.accounts.base import PositionState
@@ -2224,7 +2230,8 @@ class TestConfirmedCSellGate(TestWeeklyAutoTrade):
         account.sell.assert_not_called()
         assert db.get_decision_log("OLDCO") == []
 
-    def test_batch_confirmed_c_sells(self, tmp_path, monkeypatch):
+    def test_batch_confirmed_c_does_not_sell_without_a_breaker(self, tmp_path, monkeypatch):
+        """Even a 10-K-backed, twice-confirmed C is only a changed opinion."""
         monkeypatch.chdir(tmp_path)
         self._write_watchlist(tmp_path, ["NEWCO"])
         db = Database(tmp_path / "test.db")
@@ -2240,8 +2247,49 @@ class TestConfirmedCSellGate(TestWeeklyAutoTrade):
 
         self._run(db, account)
 
+        account.sell.assert_not_called()
+        assert db.get_decision_log("OLDCO") == []
+
+    def test_fired_breaker_sells(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        self._write_watchlist(tmp_path, ["NEWCO"])
+        db = Database(tmp_path / "test.db")
+        _save_deep_analysis(db, "OLDCO", tier="A")
+        db.mark_thesis_breaker_fired("OLDCO", breaker_index=2, breaker_text="Loss of the top-three client")
+        account = self._mock_account(
+            equity=50_400.0, cash=50_000.0, buying_power=50_000.0, invested_value=400.0, positions=[self._held()]
+        )
+
+        self._run(db, account)
+
         account.sell.assert_called_once()
         assert "Thesis breaker" in account.sell.call_args.kwargs["reason"]
+        assert db.get_latest_deep_analysis("OLDCO")["tier"] == "C"
+
+    def test_breaker_fired_before_the_buy_does_not_sell(self, tmp_path, monkeypatch):
+        """An old event cannot sell a position bought after it."""
+        import sqlite3
+
+        monkeypatch.chdir(tmp_path)
+        self._write_watchlist(tmp_path, ["NEWCO"])
+        db = Database(tmp_path / "test.db")
+        _save_deep_analysis(db, "OLDCO", tier="A")
+        conn = sqlite3.connect(str(db.path))
+        conn.execute(
+            "INSERT INTO thesis_breaker_events (ticker, fired_at, breaker_text) VALUES ('OLDCO', '2026-01-01 00:00:00', 'old')"
+        )
+        conn.commit()
+        conn.close()
+        db.log_decision(
+            "OLDCO", "buy", account_id="alpaca_paper", price=50.0, shares=10.0, order_id="b1", order_status="filled"
+        )
+        account = self._mock_account(
+            equity=50_400.0, cash=50_000.0, buying_power=50_000.0, invested_value=400.0, positions=[self._held()]
+        )
+
+        self._run(db, account)
+
+        account.sell.assert_not_called()
 
 
 class TestJournalBeforeSubmit(TestWeeklyAutoTrade):

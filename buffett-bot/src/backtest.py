@@ -783,3 +783,197 @@ if __name__ == "__main__":
             print("Point-in-time backtest (look-ahead free, needs EDGAR_USER_AGENT):")
             print("  python -m src.backtest --load-pit       # populate pit_fundamentals")
             print("  python -m src.backtest --pit-backtest    # run the study")
+
+
+# ─────────────────────────────────────────────────────────────
+# 4. Tier-cohort forward validation (ruleset 3.0.0)
+# ─────────────────────────────────────────────────────────────
+#
+# The bot's own ratings are the hypothesis under test: did names first rated
+# A/B/C (and WIDE/NARROW/NONE, HIGH/MEDIUM/LOW) go on to beat the benchmark
+# from the day they were rated? Run monthly, stored per ruleset version, so
+# by the time real money is deployed there are years of rated cohorts rather
+# than one paper equity curve. Equal-weight, no transaction costs: this is a
+# signal test, not a strategy backtest.
+
+COHORT_HORIZON_DAYS = 90
+
+
+def _first_price_on_or_after(series: pd.Series, when: pd.Timestamp) -> Optional[float]:
+    s = series.dropna()
+    s = s[s.index >= when]
+    if s.empty:
+        return None
+    return float(s.iloc[0])
+
+
+def _last_price_on_or_before(series: pd.Series, when: pd.Timestamp) -> Optional[float]:
+    s = series.dropna()
+    s = s[s.index <= when]
+    if s.empty:
+        return None
+    return float(s.iloc[-1])
+
+
+def _window_return(series: Optional[pd.Series], start: pd.Timestamp, end: pd.Timestamp) -> Optional[float]:
+    if series is None:
+        return None
+    p0 = _first_price_on_or_after(series, start)
+    p1 = _last_price_on_or_before(series, end)
+    if p0 is None or p1 is None or p0 <= 0:
+        return None
+    return p1 / p0 - 1.0
+
+
+def _summarize(rows: list[dict], cohort_type: str, key: str, horizon: str) -> list[dict]:
+    """Group per-name alpha rows by one label and summarize each group."""
+    out: list[dict] = []
+    groups: dict[str, list[dict]] = {}
+    for r in rows:
+        label = r.get(key)
+        if label is None or r.get(f"alpha_{horizon}") is None:
+            continue
+        groups.setdefault(str(label), []).append(r)
+    for label, members in sorted(groups.items()):
+        alphas = sorted(float(m[f"alpha_{horizon}"]) for m in members)
+        rets = [float(m[f"ret_{horizon}"]) for m in members]
+        bench = [float(m[f"bench_{horizon}"]) for m in members]
+        n = len(alphas)
+        median = alphas[n // 2] if n % 2 else (alphas[n // 2 - 1] + alphas[n // 2]) / 2
+        out.append(
+            {
+                "cohort_type": cohort_type,
+                "cohort": label,
+                "horizon": horizon,
+                "n": n,
+                "mean_return": sum(rets) / n,
+                "benchmark_return": sum(bench) / n,
+                "mean_alpha": sum(alphas) / n,
+                "median_alpha": median,
+                "hit_rate": sum(1 for a in alphas if a > 0) / n,
+            }
+        )
+    return out
+
+
+def compute_cohort_validation(
+    first_ratings: list[dict],
+    prices: dict[str, pd.Series],
+    benchmark: pd.Series,
+    *,
+    as_of: pd.Timestamp,
+    horizon_days: int = COHORT_HORIZON_DAYS,
+) -> dict:
+    """
+    Pure computation. ``first_ratings`` rows: ticker, rated_at (ISO), tier,
+    moat_rating, conviction. ``prices`` maps ticker → close series (DatetimeIndex).
+
+    Returns {"rows": summary rows, "names": per-name rows}.
+    """
+    as_of = pd.Timestamp(as_of).normalize()
+    names: list[dict] = []
+    for r in first_ratings:
+        ticker = r["ticker"]
+        rated = pd.Timestamp(r["rated_at"]).normalize()
+        if rated > as_of:
+            continue
+        series = prices.get(ticker)
+        row = {
+            "ticker": ticker,
+            "rated_at": rated.date().isoformat(),
+            "tier": r.get("tier"),
+            "moat": (r.get("moat_rating") or None),
+            "conviction": (r.get("conviction") or None),
+        }
+        ret_now = _window_return(series, rated, as_of)
+        bench_now = _window_return(benchmark, rated, as_of)
+        row["ret_since_rating"] = ret_now
+        row["bench_since_rating"] = bench_now
+        row["alpha_since_rating"] = None if ret_now is None or bench_now is None else ret_now - bench_now
+        h_end = rated + pd.Timedelta(days=horizon_days)
+        if h_end <= as_of:
+            ret_h = _window_return(series, rated, h_end)
+            bench_h = _window_return(benchmark, rated, h_end)
+        else:
+            ret_h = bench_h = None
+        row["ret_90d"] = ret_h
+        row["bench_90d"] = bench_h
+        row["alpha_90d"] = None if ret_h is None or bench_h is None else ret_h - bench_h
+        names.append(row)
+
+    rows: list[dict] = []
+    for horizon in ("since_rating", "90d"):
+        rows += _summarize(names, "tier", "tier", horizon)
+        rows += _summarize(names, "moat", "moat", horizon)
+        rows += _summarize(names, "conviction", "conviction", horizon)
+    return {"rows": rows, "names": names}
+
+
+def _download_close_prices(tickers: list[str], start: str, chunk: int = 60) -> dict[str, pd.Series]:
+    """yfinance closes in small chunks (the scheduler container has 512 MB)."""
+    out: dict[str, pd.Series] = {}
+    for i in range(0, len(tickers), chunk):
+        batch = tickers[i : i + chunk]
+        try:
+            data = yf.download(batch, start=start, auto_adjust=True, progress=False, threads=False)
+        except Exception as exc:
+            logger.warning("Price download failed for %d tickers: %s", len(batch), exc)
+            continue
+        if data is None or data.empty:
+            continue
+        close = data["Close"] if "Close" in data else data
+        if isinstance(close, pd.Series):
+            close = close.to_frame(batch[0])
+        for col in close.columns:
+            s = close[col].dropna()
+            if not s.empty:
+                out[str(col)] = s.astype("float64")
+    return out
+
+
+def run_tier_cohort_validation(
+    db, *, price_loader=None, as_of: Optional[str] = None, benchmark_symbol: str = "SPY"
+) -> dict:
+    """
+    Load first ratings from the DB, price them, compute cohort stats, and
+    persist to cohort_validation plus a JSON file under the backtest dir.
+
+    ``price_loader(tickers, start) -> {ticker: Series}`` can be injected for
+    tests; the default downloads from yfinance.
+    """
+    first_ratings = db.get_first_ratings()
+    if not first_ratings:
+        logger.info("Cohort validation: no deep analyses to validate")
+        return {"rows": [], "names": [], "tickers_priced": 0, "as_of": None}
+
+    tickers = sorted({r["ticker"] for r in first_ratings})
+    earliest = min(r["rated_at"] for r in first_ratings)[:10]
+    loader = price_loader or _download_close_prices
+    prices = loader(tickers + [benchmark_symbol], earliest)
+    benchmark = prices.get(benchmark_symbol)
+    if benchmark is None or benchmark.empty:
+        raise RuntimeError(f"Cohort validation: no benchmark prices for {benchmark_symbol}")
+
+    as_of_ts = pd.Timestamp(as_of) if as_of else pd.Timestamp(benchmark.dropna().index[-1])
+    result = compute_cohort_validation(first_ratings, prices, benchmark, as_of=as_of_ts)
+    as_of_str = as_of_ts.date().isoformat()
+    db.save_cohort_validation(as_of_str, result["rows"])
+
+    try:
+        _backtest_dir.mkdir(parents=True, exist_ok=True)
+        path = _backtest_dir / f"cohort_validation_{as_of_str}.json"
+        path.write_text(json.dumps({"as_of": as_of_str, **result}, indent=2, default=str))
+    except Exception as exc:
+        logger.warning("Could not write cohort validation JSON: %s", exc)
+
+    priced = sum(1 for n in result["names"] if n.get("ret_since_rating") is not None)
+    for r in result["rows"]:
+        if r["horizon"] == "since_rating" and r["cohort_type"] == "tier":
+            logger.info(
+                "Cohort tier %s: n=%d alpha=%+.1fpp hit=%.0f%%",
+                r["cohort"],
+                r["n"],
+                r["mean_alpha"] * 100,
+                r["hit_rate"] * 100,
+            )
+    return {**result, "tickers_priced": priced, "as_of": as_of_str}

@@ -73,6 +73,8 @@ def _text_briefing(
     out.append(f"  {'Total this week':<30}       (~${total_cost:.3f})")
     out.append("")
 
+    out.extend(_text_ruleset_sections(db))
+
     # ── Pull data from DB ─────────────────────────────────────────────────────
     all_alerts = db.get_price_alerts()  # sorted by gap_pct ASC
     universe = db.get_universe()
@@ -362,6 +364,78 @@ def _text_briefing(
 
 _HAIKU_COST = 0.001
 _SONNET_COST = 0.025
+
+
+def _text_ruleset_sections(db: "Database") -> list[str]:
+    """
+    Ruleset 3.0.0 sections: the ruleset in force, the single best DKK-lot buy,
+    thesis breakers fired recently, and the latest cohort validation.
+    """
+    from src.ruleset import RULESET_VERSION, changelog_text
+
+    out: list[str] = []
+    out.append(f"RULESET v{RULESET_VERSION}  (performance is comparable only within one version)")
+    out.append(changelog_text())
+    out.append("")
+
+    out.append("BEST SINGLE BUY (one DKK lot)")
+    rec = None
+    try:
+        rec = db.get_latest_single_buy_recommendation()
+    except Exception as exc:  # pragma: no cover - defensive
+        out.append(f"  unavailable: {exc}")
+    if rec:
+        out.append(f"  as of {str(rec.get('as_of') or '')[:16]}: {rec.get('reason') or '-'}")
+    else:
+        out.append("  no recommendation recorded yet (written by the Friday auto-trade cycle)")
+    out.append("")
+
+    out.append("THESIS BREAKERS FIRED (last 30 days)")
+    events = []
+    try:
+        events = db.get_thesis_breaker_events(days_back=30)
+    except Exception as exc:  # pragma: no cover - defensive
+        out.append(f"  unavailable: {exc}")
+    if events:
+        for e in events:
+            out.append(
+                f"  {e.get('ticker'):<6} {str(e.get('fired_at') or '')[:10]}  {(e.get('breaker_text') or '')[:90]}"
+            )
+            if e.get("evidence"):
+                out.append(f"         evidence: {(e.get('evidence') or '')[:100]}")
+    else:
+        out.append("  none — no pre-registered breaker was reported as having happened")
+    out.append("")
+
+    out.append("COHORT VALIDATION (latest run, equal-weight alpha vs benchmark)")
+    rows = []
+    try:
+        rows = db.get_latest_cohort_validation()
+    except Exception as exc:  # pragma: no cover - defensive
+        out.append(f"  unavailable: {exc}")
+    if rows:
+        out.append(f"  as of {rows[0].get('as_of')} (ruleset v{rows[0].get('ruleset_version')})")
+        out.append(f"  {'cohort':<22} {'horizon':<13} {'n':>4} {'alpha':>8} {'median':>8} {'hit':>6}")
+        for r in rows:
+            alpha = r.get("mean_alpha")
+            med = r.get("median_alpha")
+            hit = r.get("hit_rate")
+            out.append(
+                f"  {(r.get('cohort_type') or '') + ' ' + (r.get('cohort') or ''):<22} {r.get('horizon') or '':<13} "
+                f"{r.get('n') or 0:>4} {_fmt_pp(alpha):>8} {_fmt_pp(med):>8} {_fmt_pct(hit):>6}"
+            )
+    else:
+        out.append("  no validation run yet (runs on the 1st of each month)")
+    out.append("")
+    return out
+
+
+def _fmt_pp(value: Optional[float]) -> str:
+    return "-" if value is None else f"{value * 100:+.1f}pp"
+
+
+def _fmt_pct(value: Optional[float]) -> str:
+    return "-" if value is None else f"{value * 100:.0f}%"
 
 
 def _fmt_gap(gap: Optional[float]) -> str:

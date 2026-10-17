@@ -177,14 +177,22 @@ def assign_tier(
     conviction = analysis.conviction_level  # "HIGH", "MEDIUM", "LOW"
     symbol = analysis.symbol
 
-    # Resolve target entry price and current price
-    target = _positive_finite(getattr(analysis, "target_entry_price", None))
-    current = _positive_finite(getattr(analysis, "current_price", None))
-
-    if target is None and external_valuation is not None:
+    # Resolve target entry price and current price.
+    #
+    # Ruleset 3.0.0: the deterministic valuation (analyst consensus, P/E,
+    # Graham, DCF — see valuation.py) sets the target entry whenever it has a
+    # fair value. The model's own target is a fallback only. Letting the LLM's
+    # number lead meant the same business got a new fair value every time it
+    # was re-analysed (CTSH: 55 → 65 → 71 in four months with no change in the
+    # business), and that drift decided buys and sells.
+    target: Optional[float] = None
+    if external_valuation is not None:
         avg_fv = _positive_finite(external_valuation.average_fair_value)
         if avg_fv:
             target = _positive_finite(avg_fv * (1 - config.margin_of_safety_pct))
+    if target is None:
+        target = _positive_finite(getattr(analysis, "target_entry_price", None))
+    current = _positive_finite(getattr(analysis, "current_price", None))
 
     # A deterministic market-data price is authoritative. The LLM may repeat a
     # price in its prose, but that value can be stale or hallucinated.

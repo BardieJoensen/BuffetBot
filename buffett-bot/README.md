@@ -99,9 +99,37 @@ buffett-bot/
 Batch API (50% discount) and prompt caching are enabled by default to reduce costs.
 
 ### Continuous Monitoring (automated)
-1. News monitoring checks daily for portfolio holdings
-2. LLM flags potential thesis-breaking events
-3. Regime-shift and approaching-target alerts sent via notifications
+1. News monitoring checks daily for S/A/B names, holdings first
+2. Haiku flags material news; Sonnet then answers one question only: does the
+   news report one of the thesis breakers *pre-registered at analysis time* as
+   having happened? It may not re-rate the company.
+3. A fired breaker demotes the name to C, is journaled in
+   `thesis_breaker_events`, and is the **only** event that forces a sell in
+   the weekly auto-trade. A re-analysis that lands on C never sells by itself;
+   such a holding is only rotated out when a strictly better candidate waits.
+4. Regime-shift and approaching-target alerts sent via notifications
+
+### Ruleset versioning (v3.0.0)
+`src/ruleset.py` holds `RULESET_VERSION` and a changelog. Every decision,
+tier change and validation run is stamped with it, because a paper equity
+curve produced under two rulesets is two experiments. Bump the version
+whenever a rule (or a rule-like config knob) changes.
+
+Rules in force since 3.0.0 (2026-10-18):
+- **Sells need a fired pre-registered breaker** (above).
+- **Deterministic valuation drives the target entry.** The aggregator
+  (analyst consensus, P/E, Graham, DCF) sets target entry = fair value ×
+  (1 − margin of safety); the model's own target is a fallback only.
+- **Moat NONE and LOW conviction are never bought**, in the tier engine and
+  again in the deployment planner. Evidence: in the 2026-10-17 cohort test,
+  moat NONE names averaged −10.5 pp vs SPY with 2 of 22 ahead.
+- **Monthly cohort validation** (1st of the month, free): forward return of
+  every first rating (tier, moat, conviction) vs the benchmark since the
+  rating date and over 90 days, stored in `cohort_validation` and shown in
+  the briefing.
+- **Danish lot sizing.** The real account buys one lot of `MIN_LOT_DKK` at a
+  time, so the Friday cycle also records and notifies the single best buy
+  (`single_buy_recommendations`), sharing the paper engine's ranking.
 
 ### Your Decision (manual)
 1. Read monthly briefing
@@ -211,6 +239,8 @@ Customize in `config/screening_criteria.yaml`
 | `PORTFOLIO_VALUE` | `50000` | Portfolio size for position sizing |
 | `MAX_POSITIONS` | `8` | Maximum concentrated positions (ASK) |
 | `ASK_CONTRIBUTION_LIMIT` | `135900` | Annual ASK contribution limit (DKK) |
+| `MIN_LOT_DKK` | `5000` | Real-account lot size for the single-buy recommendation (DKK) |
+| `ASK_CASH_DKK` | unset | Cash available in the real account; enables the "affordable" flag |
 | `MARGIN_OF_SAFETY_PCT` | `25` | Base margin-of-safety target used by tier assignment |
 | `TIER1_PROXIMITY_ALERT_PCT` | `10` | Legacy-named threshold for B-tier target alerts |
 

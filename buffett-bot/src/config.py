@@ -69,6 +69,14 @@ class Config:
     # trades and infinite tiny-order loops.
     min_trade_usd: float = float(os.getenv("MIN_TRADE_USD", "250"))
 
+    # Danish real-account sizing. Nordnet charges a flat minimum commission
+    # (~25 DKK) plus ~0.25% FX on US trades, so a lot below ~5,000 DKK pays
+    # more than 1% round trip. The single-buy recommendation uses this lot
+    # size; ASK_CASH_DKK (optional) is the cash currently available to deploy
+    # so the recommendation can say whether the lot is affordable.
+    min_lot_dkk: float = float(os.getenv("MIN_LOT_DKK", "5000"))
+    ask_cash_dkk: Optional[float] = _optional_float("ASK_CASH_DKK")
+
     # Quarantine of non-tradable holdings. A delisted position keeps showing up
     # in Alpaca's /v2/account equity at a frozen mark long after it stops being
     # tradable (their own portfolio-history endpoint drops it), which inflates

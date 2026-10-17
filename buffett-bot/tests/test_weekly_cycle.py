@@ -200,9 +200,11 @@ class TestFullWeeklyCycle:
         history_after_friday = db.get_tier_history("ORCL")
         assert any(h["trigger"] == "scheduled" and h["new_tier"] == "B" for h in history_after_friday)
 
-        # ── 4. Thursday: news event triggers Haiku + Sonnet ──────────────────
-        # Market reacts to news; for the re-analysis the analyst assumes the
-        # price has dropped to 145, which is below the 150 target → A-tier.
+        # ── 4. Thursday: news event triggers Haiku + breaker check ───────────
+        # Ruleset 3.0.0: the news path can no longer promote or demote on a
+        # re-analysis. It may only decide whether a pre-registered breaker
+        # has happened. First day: REVIEW, but no breaker fired → nothing
+        # changes except the news log and the budgets.
         news_items = [
             _make_news_item(
                 "Oracle acquires AI startup CloudMind for $10B",
@@ -216,108 +218,108 @@ class TestFullWeeklyCycle:
         fetcher.api_key = "test_key"  # pragma: allowlist secret
         fetcher.get_news_for_tickers.return_value = {"ORCL": news_items}
 
-        # Haiku: REVIEW — not a red flag, but warrants re-examination
         analyzer = MagicMock()
         analyzer.check_news_for_red_flags.return_value = {
             "has_red_flags": False,
             "analysis": "Acquisition is large but could strengthen cloud moat if integrated well",
             "recommendation": "REVIEW",
         }
+        analyzer.check_thesis_breakers.return_value = {
+            "fired": False,
+            "breaker_index": None,
+            "breaker_text": None,
+            "evidence": "none",
+            "raw": "",
+        }
 
-        # Sonnet: price 145 < target 150 → gap = -3.3% → A-tier
-        a_tier_mock = _make_analysis_v2("ORCL", "narrow", "MEDIUM", target=150.0, current=145.0)
-        a_tier_mock.summary = "Oracle's acquisition strengthens AI positioning; moat intact"
-        a_tier_mock.key_risks = ["integration risk", "deal premium"]
-        a_tier_mock.thesis_risks = ["major cloud provider bundles competing DB free"]
-        analyzer.analyze_company.return_value = a_tier_mock
+        stats = run_news_pipeline(db, analyzer, fetcher)
 
-        with patch("src.valuation.ValuationAggregator") as MockValuation:
-            MockValuation.return_value.get_valuation.return_value = AggregatedValuation(
-                symbol="ORCL", current_price=145.0
-            )
-            stats = run_news_pipeline(db, analyzer, fetcher)
-
-        # ── Verify: pipeline stats ────────────────────────────────────────────
         assert stats["tickers_checked"] == 1  # only ORCL in B-tier alerts
         assert stats["news_found"] == 1  # acquisition is material
         assert stats["haiku_calls"] == 1
         assert stats["sonnet_calls"] == 1
-        assert stats["tier_changes"] == 1  # B → A
+        assert stats["breakers_fired"] == 0
+        assert stats["tier_changes"] == 0
 
-        news_haiku_budget = db.get_budget_status("weekly_news_haiku")
-        assert news_haiku_budget["calls_used"] == 1
-
-        news_sonnet_budget = db.get_budget_status("weekly_news_sonnet")
-        assert news_sonnet_budget["calls_used"] == 1
-
-        # ── Verify: separate budget pools — scheduled jobs unaffected ─────────
-        # Wednesday and Friday budgets must still reflect only the scheduled spend
+        assert db.get_budget_status("weekly_news_haiku")["calls_used"] == 1
+        assert db.get_budget_status("weekly_news_sonnet")["calls_used"] == 1
+        # Separate budget pools — scheduled jobs unaffected
         assert db.get_budget_status("weekly_haiku_screen")["calls_used"] == 1
         assert db.get_budget_status("weekly_sonnet_analysis")["calls_used"] == 1
 
-        # ── Verify: deep_analyses — new A-tier row added (old B row preserved) ─
-        da_latest = db.get_latest_deep_analysis("ORCL")
-        assert da_latest["tier"] == "A"
-        assert da_latest["conviction"] == "MEDIUM"
-        assert (
-            "acquisition" in da_latest["investment_thesis"].lower() or "moat" in da_latest["investment_thesis"].lower()
-        )
+        # The breaker check saw the breakers Friday's analysis pre-registered.
+        analyzer.check_thesis_breakers.assert_called_once()
+        assert analyzer.check_thesis_breakers.call_args[0][0] == "ORCL"
+        assert analyzer.check_thesis_breakers.call_args[0][1] == list(b_tier_mock.thesis_risks)
+        analyzer.analyze_company.assert_not_called()
 
-        # Both the B-tier and A-tier rows exist (INSERT, not REPLACE)
+        # deep_analyses / tier_history / price_alerts untouched
+        assert db.get_latest_deep_analysis("ORCL")["tier"] == "B"
+        assert db.get_latest_deep_analysis("ORCL")["analyzed_at"] == da_after_friday["analyzed_at"]
+        assert all(h["trigger"] != "thesis_breaker" for h in db.get_tier_history("ORCL"))
+        assert any(a["ticker"] == "ORCL" for a in db.get_price_alerts(tiers=["B"]))
+
+        conn = sqlite3.connect(str(db.path))
+        conn.row_factory = sqlite3.Row
+        news_row = conn.execute("SELECT * FROM news_events WHERE ticker='ORCL'").fetchone()
+        conn.close()
+        assert news_row is not None
+        assert news_row["haiku_material"] == 1
+        assert news_row["sonnet_triggered"] == 1  # breaker check completed
+
+        # ── 5. Friday: a pre-registered breaker is reported as having happened ─
+        fetcher.get_news_for_tickers.return_value = {
+            "ORCL": [
+                _make_news_item(
+                    "Oracle CEO resigns after SEC fraud charges",
+                    summary="SEC charges Oracle with accounting fraud; CEO steps down",
+                    source="Reuters",
+                    ts=1700090000,
+                )
+            ]
+        }
+        analyzer.check_news_for_red_flags.return_value = {
+            "has_red_flags": True,
+            "analysis": "Fraud charges",
+            "recommendation": "SELL",
+        }
+        breakers = list(b_tier_mock.thesis_risks)
+        analyzer.check_thesis_breakers.return_value = {
+            "fired": True,
+            "breaker_index": 1,
+            "breaker_text": breakers[0],
+            "evidence": "SEC charges Oracle with accounting fraud; CEO steps down",
+            "raw": "",
+        }
+        notifier = MagicMock()
+
+        stats = run_news_pipeline(db, analyzer, fetcher, notifier=notifier)
+
+        assert stats["breakers_fired"] == 1 and stats["tier_changes"] == 1
+
+        # deep_analyses: a C copy of Friday's analysis (INSERT, not REPLACE)
         conn = sqlite3.connect(str(db.path))
         conn.row_factory = sqlite3.Row
         all_analyses = conn.execute(
             "SELECT tier, analyzed_at FROM deep_analyses WHERE ticker='ORCL' ORDER BY analyzed_at"
         ).fetchall()
         conn.close()
-        assert len(all_analyses) == 2
-        assert all_analyses[0]["tier"] == "B"  # Friday's row preserved
-        assert all_analyses[1]["tier"] == "A"  # Thursday's news-triggered row
+        assert [r["tier"] for r in all_analyses] == ["B", "C"]
+        latest = db.get_latest_deep_analysis("ORCL")
+        assert latest["investment_thesis"].startswith("Thesis breaker fired: " + breakers[0])
+        assert latest["thesis_breakers"] == breakers  # pre-registered list preserved
 
-        # ── Verify: tier_history — B→A logged with trigger='news_event' ───────
-        history = db.get_tier_history("ORCL")
-        news_entry = next((h for h in history if h["trigger"] == "news_event"), None)
-        assert news_entry is not None, "Expected a news_event entry in tier_history"
-        assert news_entry["old_tier"] == "B"
-        assert news_entry["new_tier"] == "A"
-        assert "REVIEW" in news_entry["reason"]
+        # tier_history: B→C with trigger='thesis_breaker', stamped with the ruleset
+        entry = next(h for h in db.get_tier_history("ORCL") if h["trigger"] == "thesis_breaker")
+        assert entry["old_tier"] == "B" and entry["new_tier"] == "C"
 
-        # ── Verify: price_alerts — updated to A-tier with 2-tranche entries ───
-        a_alerts = db.get_price_alerts(tiers=["A"])
-        orcl_alert = next((a for a in a_alerts if a["ticker"] == "ORCL"), None)
-        assert orcl_alert is not None, "ORCL should be in A-tier price_alerts"
-        assert orcl_alert["tier"] == "A"
-        assert orcl_alert["target_entry"] == pytest.approx(150.0)
+        # thesis_breaker_events: the sell trigger weekly_auto_trade reads
+        fired = db.get_fired_thesis_breaker("ORCL")
+        assert fired["breaker_index"] == 1 and fired["breaker_text"] == breakers[0]
+        assert fired["headline"] == "Oracle CEO resigns after SEC fraud charges"
 
-        staged = orcl_alert["staged_entries"]
-        assert isinstance(staged, list), f"staged_entries should be a list, got {type(staged)}"
-        assert len(staged) == 2, "A-tier: 2 tranches expected"
-        assert staged[0]["tranche"] == 1
-        assert staged[1]["tranche"] == 2
-        assert staged[0]["price"] == pytest.approx(150.0)  # 1st tranche at target
-        assert staged[1]["price"] == pytest.approx(150.0 * 0.95)  # 2nd tranche 5% below
+        # price_alerts: ORCL leaves the S/A/B news watch
+        assert all(a["ticker"] != "ORCL" for a in db.get_price_alerts(tiers=["S", "A", "B"]))
 
-        # ORCL must no longer appear in B-tier alerts
-        b_alerts_after = db.get_price_alerts(tiers=["B"])
-        assert all(a["ticker"] != "ORCL" for a in b_alerts_after)
-
-        # ── Verify: news_events — headline logged ─────────────────────────────
-        conn = sqlite3.connect(str(db.path))
-        conn.row_factory = sqlite3.Row
-        news_row = conn.execute("SELECT * FROM news_events WHERE ticker='ORCL'").fetchone()
-        conn.close()
-        assert news_row is not None, "news_events should have a row for ORCL"
-        assert "oracle" in news_row["headline"].lower() or "ai" in news_row["headline"].lower()
-        assert news_row["haiku_material"] == 1  # REVIEW requires deeper analysis
-        assert news_row["sonnet_triggered"] == 1  # Sonnet workflow completed
-
-        # ── Verify: analyzer called with correct args ─────────────────────────
-        analyzer.check_news_for_red_flags.assert_called_once()
-        call_args = analyzer.check_news_for_red_flags.call_args[0]
-        assert call_args[0] == "ORCL"  # symbol
-        assert "Oracle Corporation" in call_args[1] or "ORCL" in call_args[1]  # thesis includes context
-
-        analyzer.analyze_company.assert_called_once()
-        sonnet_call = analyzer.analyze_company.call_args
-        assert sonnet_call.kwargs.get("use_cache") is False  # must bypass cache
-        assert sonnet_call.kwargs.get("recent_news") is not None  # news context passed
+        notifier.send_alert.assert_called_once()
+        assert "THESIS BREAKER FIRED" in notifier.send_alert.call_args[0][1]

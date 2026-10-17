@@ -206,12 +206,19 @@ class TestPlanBuys:
 
 class TestPlanSells:
     def test_thesis_break_always_sells(self):
-        """A genuine downgrade — held at a better tier, later C — exits at once."""
-        held = [HeldPosition(position=_position("BADTHESIS"), tier="C", margin_of_safety=0.50, downgraded_to_c=True)]
+        """A fired pre-registered breaker exits at once, whatever the tier or price."""
+        held = [
+            HeldPosition(position=_position("BADTHESIS"), tier="A", margin_of_safety=0.50, thesis_breaker_fired=True)
+        ]
         sells = plan_sells(100_000.0, held, [], cfg=CFG)
         assert len(sells) == 1
         assert sells[0].symbol == "BADTHESIS"
         assert "Thesis breaker" in sells[0].reason
+
+    def test_downgrade_to_c_without_fired_breaker_does_not_sell(self):
+        """Ruleset 3.0.0: a re-analysis changing its mind never forces a sell."""
+        held = [HeldPosition(position=_position("CTSH"), tier="C", margin_of_safety=0.07)]
+        assert plan_sells(100_000.0, held, [], cfg=CFG) == []
 
     def test_holds_when_not_near_fair_value(self):
         held = [HeldPosition(position=_position("WINNER"), tier="A", margin_of_safety=0.30)]
@@ -304,9 +311,9 @@ class TestPlanSellsQuarantine:
     def test_tradable_positions_still_sell_alongside_a_quarantined_one(self):
         held = [
             HeldPosition(
-                position=_position("AL", tradable=False), tier="C", margin_of_safety=0.50, downgraded_to_c=True
+                position=_position("AL", tradable=False), tier="C", margin_of_safety=0.50, thesis_breaker_fired=True
             ),
-            HeldPosition(position=_position("BADTHESIS"), tier="C", margin_of_safety=0.50, downgraded_to_c=True),
+            HeldPosition(position=_position("BADTHESIS"), tier="C", margin_of_safety=0.50, thesis_breaker_fired=True),
         ]
         sells = plan_sells(100_000.0, held, [], cfg=CFG)
         assert [s.symbol for s in sells] == ["BADTHESIS"]
@@ -327,11 +334,20 @@ class TestPlanSellsFirstAnalysisC:
         held = [HeldPosition(position=_position("NEWBUY"), tier="C", margin_of_safety=0.50)]
         assert plan_sells(100_000.0, held, [], cfg=CFG) == []
 
-    def test_downgrade_to_c_still_sells_immediately(self):
-        held = [HeldPosition(position=_position("OLDCO"), tier="C", margin_of_safety=0.50, downgraded_to_c=True)]
+    def test_downgrade_to_c_no_longer_sells_by_itself(self):
+        """
+        Ruleset 3.0.0: only a fired pre-registered breaker is a thesis break.
+        A downgrade is rotation-eligible, nothing more.
+        """
+        held = [HeldPosition(position=_position("OLDCO"), tier="C", margin_of_safety=0.50)]
+        assert plan_sells(100_000.0, held, [], cfg=CFG) == []
+        candidates = [DeployCandidate(symbol="BETTER", margin_of_safety=0.30, tier="A")]
+        assert len(plan_sells(100_000.0, held, candidates, cfg=CFG)) == 1
+
+    def test_fired_breaker_sells_even_a_winner(self):
+        held = [HeldPosition(position=_position("WINNER"), tier="A", margin_of_safety=0.30, thesis_breaker_fired=True)]
         sells = plan_sells(100_000.0, held, [], cfg=CFG)
-        assert len(sells) == 1
-        assert "Thesis breaker" in sells[0].reason
+        assert [s.symbol for s in sells] == ["WINNER"]
 
     def test_first_analysis_c_rotates_out_when_something_better_appears(self):
         """
