@@ -120,17 +120,102 @@ def extract_rating(text: str, options: list[str]) -> str:
     return extract_rating_checked(text, options)[0]
 
 
+def _strip_markup(text: str) -> str:
+    """
+    Remove markdown emphasis from a list item.
+
+    The model writes "**Dividend cut** - would kill the bull case"; the bullet
+    strip removed the leading asterisks, the paired-bold regex then found no
+    pair, and the item was stored as "Dividend cut** - ...". 949 of 1,169
+    stored thesis breakers carried that artifact on 2026-10-17.
+    """
+    cleaned = re.sub(r"\*{1,2}(.+?)\*{1,2}", r"\1", text)
+    cleaned = cleaned.replace("**", "").replace("*", "")
+    return cleaned.strip()
+
+
 def extract_list(text: str) -> list[str]:
     """Extract bullet-point items from text."""
     items = []
     for line in text.split("\n"):
         line = line.strip()
         if line.startswith(("-", "\u2022", "*")) or (line and line[0].isdigit()):
-            cleaned = line.lstrip("-\u2022*0123456789.) ")
-            cleaned = re.sub(r"\*{1,2}(.+?)\*{1,2}", r"\1", cleaned)
+            cleaned = _strip_markup(line.lstrip("-\u2022*0123456789.) "))
             if cleaned:
                 items.append(cleaned)
     return items
+
+
+# Sub-headings the model sometimes writes inside the thesis-breaker section.
+# Items under a "sell" heading are breakers; items under a "monitor" heading
+# are watch items and must not become sell triggers.
+_SELL_HEADING = re.compile(
+    r"^(events?\s+(that\s+would\s+)?signal|sell\s+immediately|immediate\s+sell|hard\s+sell|sell\s+(signals?|triggers?))",
+    re.IGNORECASE,
+)
+_MONITOR_HEADING = re.compile(
+    r"^(monitor\s+closely|monitor|watch(\s+(closely|list|items?))?|yellow\s+flags?|soft\s+sell|review\s+triggers?|"
+    r"re-?evaluate|warning\s+signs?|consider\s+(trimming|reducing))",
+    re.IGNORECASE,
+)
+MIN_BREAKER_CHARS = 20
+
+
+def is_heading_like(item: str) -> bool:
+    """A list item that is a heading, not an event: short and ending in a colon, or a known heading phrase."""
+    stripped = item.strip()
+    if not stripped:
+        return True
+    if stripped.endswith(":"):
+        return True
+    if (_SELL_HEADING.match(stripped) or _MONITOR_HEADING.match(stripped)) and len(stripped) < 60:
+        return True
+    return False
+
+
+def normalize_thesis_breakers(items: list[str]) -> list[str]:
+    """
+    Clean an already-extracted breaker list: strip markup, drop headings and
+    fragments. Used by the one-off cleaner for stored analyses; extract_
+    thesis_breakers applies the same rules plus the monitor-heading cut.
+    """
+    out: list[str] = []
+    for raw in items:
+        item = _strip_markup(str(raw)).strip("-\u2022 ").strip()
+        if is_heading_like(item) or len(item) < MIN_BREAKER_CHARS:
+            continue
+        out.append(item)
+    return out
+
+
+def extract_thesis_breakers(text: str) -> list[str]:
+    """
+    Thesis breakers are the only news events that can force a sell (ruleset
+    3.0.0), so each stored item must be one observable event. This keeps list
+    items under a "sell" heading, drops headings and fragments, and stops at a
+    "monitor closely" style sub-heading: what follows it is a watch list, not a
+    sell trigger.
+    """
+    out: list[str] = []
+    collecting = True
+    for line in text.split("\n"):
+        stripped = _strip_markup(line.strip())
+        bare = stripped.lstrip("-\u2022#0123456789.) ").strip()
+        if not bare:
+            continue
+        is_list_item = line.strip().startswith(("-", "\u2022", "*")) or line.strip()[0].isdigit()
+        if is_heading_like(bare):
+            if _MONITOR_HEADING.match(bare):
+                collecting = False
+            elif _SELL_HEADING.match(bare):
+                collecting = True
+            continue
+        if not is_list_item or not collecting:
+            continue
+        if len(bare) < MIN_BREAKER_CHARS:
+            continue
+        out.append(bare)
+    return out
 
 
 def extract_dollar(text: str) -> Optional[float]:
@@ -286,7 +371,7 @@ def parse_analysis(symbol: str, company_name: str, analysis_text: str, sector: s
     # Parse summary, risks, return, dividend
     summary = summary_section or ""
     key_risks = extract_list(risks_section)
-    thesis_risks = extract_list(thesis_risks_section)
+    thesis_risks = extract_thesis_breakers(thesis_risks_section)
     total_return = return_section or ""
     div_yield = extract_pct(dividend_section) if dividend_section else None
 

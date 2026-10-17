@@ -182,9 +182,13 @@ Target Entry Price: $PRICE [fair value minus 20-30% margin of safety]
 3. [Risk 3]
 
 ## THESIS-BREAKING RISKS
-[What specific events would invalidate an investment thesis? Be specific.]
-1. [Event that would signal "sell immediately"]
-2. [Event that would signal "sell immediately"]
+[2-4 numbered items. Each item is ONE observable event about THIS company, written as a fact a news \
+headline could report (e.g. "Operating margin reported below 12% for two consecutive quarters", \
+"Loss of the AT&T contract announced"). These are checked against future news and a match forces a sell, \
+so: no headings, no sub-lists, no bold, no "monitor" or "watch" items, no vague risks ("competition \
+intensifies"), nothing about peers or the industry in general.]
+1. [Event]
+2. [Event]
 
 ## TOTAL RETURN POTENTIAL
 [Assessment of combined price appreciation + dividend yield potential over 5-10 years]
