@@ -388,6 +388,41 @@ def _report_quarantine(db, state, positions) -> None:
         logger.error("Quarantine reporting failed for %s: %s", state.account_id, e)
 
 
+# Equity move (fraction) between consecutive snapshots that, with no journaled
+# order in between, marks a broker read as implausible.
+SNAPSHOT_MAX_UNEXPLAINED_EQUITY_MOVE = 0.25
+
+
+def _snapshot_anomaly(db, account_id: str, state, positions) -> "str | None":
+    """
+    Compare a fresh broker read with the last trusted snapshot.
+
+    On 2026-09-16 Alpaca returned 3 of 8 positions with equity and buying
+    power shrunk to match; the row was stored, became a permanent −45% point
+    on the equity curve, and on a Friday would have sized buys off half the
+    book and re-bought names already held (audit E5). A position that
+    vanished with no sell in the journal, or an equity move above
+    SNAPSHOT_MAX_UNEXPLAINED_EQUITY_MOVE with no order at all, is a bad read
+    until proven otherwise. Returns the reason, or None when plausible.
+    """
+    prev = db.get_latest_snapshots(account_id, limit=1)
+    if not prev:
+        return None
+    prev = prev[0]
+    since = prev["as_of"]
+    prev_symbols = {p.get("symbol") for p in (prev.get("positions") or []) if p.get("symbol")}
+    now_symbols = {p.symbol for p in positions}
+    missing = sorted(prev_symbols - now_symbols)
+    if missing and db.count_decisions_since(account_id, since, action="sell") == 0:
+        return f"{len(missing)} position(s) missing with no journaled sell since {since}: {', '.join(missing)}"
+    prev_equity = prev.get("equity") or 0.0
+    if prev_equity > 0 and state.equity > 0:
+        move = abs(state.equity / prev_equity - 1.0)
+        if move > SNAPSHOT_MAX_UNEXPLAINED_EQUITY_MOVE and db.count_decisions_since(account_id, since) == 0:
+            return f"equity moved {move:+.0%} ({prev_equity:,.0f} → {state.equity:,.0f}) with no journaled order"
+    return None
+
+
 def daily_snapshot():
     """
     Daily 22:00 — append-only account snapshot, once per configured account,
@@ -423,6 +458,18 @@ def daily_snapshot():
             else:
                 equity_dkk = None
 
+            anomaly = _snapshot_anomaly(db, state.account_id, state, positions)
+            if anomaly:
+                logger.error("%s: snapshot flagged SUSPECT — %s", state.account_id, anomaly)
+                try:
+                    from src.notifications import NotificationManager
+
+                    NotificationManager().send_alert(
+                        "SNAPSHOT", f"Suspect broker read for {state.account_id}: {anomaly}"
+                    )
+                except Exception as exc:
+                    logger.warning("Suspect-snapshot alert not sent: %s", exc)
+
             db.save_snapshot(
                 state.account_id,
                 currency=state.currency,
@@ -435,6 +482,7 @@ def daily_snapshot():
                 positions=[asdict(p) for p in positions],
                 gross_equity=state.gross_equity,
                 untradable_value=state.untradable_value,
+                suspect_reason=anomaly,
             )
             logger.info(
                 "Snapshot saved for %s: equity=%.2f %s (%d positions)",
@@ -877,6 +925,12 @@ def weekly_auto_trade():
         for account in accounts:
             state = account.get_state()
             positions = account.get_positions()
+            # Never size or sell off a broker read that disagrees with the
+            # last trusted snapshot and the journal (audit E5).
+            anomaly = _snapshot_anomaly(db, account.account_id, state, positions)
+            if anomaly:
+                logger.error("%s: refusing to trade on an implausible broker read — %s", account.account_id, anomaly)
+                continue
             # Deliberately includes quarantined symbols: they're excluded from
             # sizing and slots, but must stay blocked from being re-bought.
             held_symbols = frozenset(p.symbol for p in positions)

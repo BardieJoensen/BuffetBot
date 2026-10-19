@@ -220,3 +220,235 @@ class TestWeeklyScreenUsesDbUniverse:
         db.upsert_universe_stock("ONLY", source="finviz_screen")
         with patch("src.database.Database", return_value=db):
             assert _screen_db_universe(MagicMock(), criteria="crit") is None
+
+
+# ─── E5: snapshot plausibility gate ───────────────────────────────────────────
+
+
+def _state(equity, cash=1000.0):
+    from datetime import timezone
+
+    from src.accounts.base import AccountState
+
+    return AccountState(
+        account_id="alpaca_paper",
+        currency="USD",
+        equity=equity,
+        cash=cash,
+        buying_power=cash,
+        invested_value=equity - cash,
+        invested_pct=(equity - cash) / equity if equity else 0.0,
+        as_of=datetime.now(timezone.utc),
+    )
+
+
+def _pos(symbol, mv=10_000.0):
+    from src.accounts.base import PositionState
+
+    return PositionState(
+        symbol=symbol,
+        shares=10.0,
+        avg_cost=100.0,
+        price=mv / 10,
+        market_value=mv,
+        unrealized_pl=0.0,
+        unrealized_pl_pct=0.0,
+    )
+
+
+def _backdate_latest_snapshot(db, days=1):
+    with _open(db.path) as conn:
+        conn.execute(
+            "UPDATE portfolio_snapshots SET as_of = ? WHERE id = (SELECT MAX(id) FROM portfolio_snapshots)",
+            ((datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S"),),
+        )
+
+
+class TestSnapshotAnomaly:
+    def _seed(self, db, symbols, equity=100_000.0):
+        db.save_snapshot(
+            "alpaca_paper",
+            currency="USD",
+            equity=equity,
+            cash=1000.0,
+            positions=[{"symbol": s, "market_value": 10_000.0} for s in symbols],
+        )
+        _backdate_latest_snapshot(db)
+
+    def test_no_history_is_plausible(self, db):
+        from scripts.scheduler import _snapshot_anomaly
+
+        assert _snapshot_anomaly(db, "alpaca_paper", _state(100_000.0), [_pos("A")]) is None
+
+    def test_vanished_positions_without_a_sell_are_suspect(self, db):
+        from scripts.scheduler import _snapshot_anomaly
+
+        self._seed(db, ["AGM", "AIZ", "CCI", "CPRT"])
+        reason = _snapshot_anomaly(db, "alpaca_paper", _state(58_000.0), [_pos("AGM"), _pos("CPRT")])
+        assert reason and "AIZ" in reason and "CCI" in reason
+
+    def test_vanished_position_with_a_journaled_sell_is_fine(self, db):
+        from scripts.scheduler import _snapshot_anomaly
+
+        self._seed(db, ["AGM", "AIZ"], equity=20_000.0)
+        db.log_decision("AIZ", "sell", account_id="alpaca_paper", order_status="submitted")
+        assert _snapshot_anomaly(db, "alpaca_paper", _state(19_500.0), [_pos("AGM")]) is None
+
+    def test_equity_jump_without_orders_is_suspect(self, db):
+        from scripts.scheduler import _snapshot_anomaly
+
+        self._seed(db, ["AGM"], equity=100_000.0)
+        reason = _snapshot_anomaly(db, "alpaca_paper", _state(58_000.0), [_pos("AGM")])
+        assert reason and "equity moved" in reason
+
+    def test_normal_day_is_plausible(self, db):
+        from scripts.scheduler import _snapshot_anomaly
+
+        self._seed(db, ["AGM"], equity=100_000.0)
+        assert _snapshot_anomaly(db, "alpaca_paper", _state(101_500.0), [_pos("AGM")]) is None
+
+
+class TestSuspectSnapshotsAreSkipped:
+    def test_readers_skip_suspect_rows_by_default(self, db):
+        db.save_snapshot("alpaca_paper", currency="USD", equity=100_000.0, cash=1.0)
+        _backdate_latest_snapshot(db, days=2)
+        db.save_snapshot("alpaca_paper", currency="USD", equity=58_000.0, cash=1.0, suspect_reason="3 of 8 positions")
+        _backdate_latest_snapshot(db, days=1)
+        db.save_snapshot("alpaca_paper", currency="USD", equity=101_000.0, cash=1.0)
+
+        assert [s["equity"] for s in db.get_snapshots("alpaca_paper")] == [100_000.0, 101_000.0]
+        assert [s["equity"] for s in db.get_snapshots("alpaca_paper", include_suspect=True)] == [
+            100_000.0,
+            58_000.0,
+            101_000.0,
+        ]
+        assert db.get_latest_snapshots("alpaca_paper", limit=3)[1]["equity"] == 100_000.0
+        assert [e["equity"] for e in db.get_equity_curve("alpaca_paper")] == [100_000.0, 101_000.0]
+        flagged = db.get_latest_snapshots("alpaca_paper", limit=3, include_suspect=True)[1]
+        assert flagged["suspect"] == 1 and flagged["suspect_reason"] == "3 of 8 positions"
+
+
+# ─── D2: bold and bulleted labels ─────────────────────────────────────────────
+
+
+class TestExtractFieldMarkdown:
+    def test_bold_label(self):
+        from src.analysis_parser import extract_field
+
+        assert extract_field("**Durability:** MODERATE — strong brand", "Durability") == "MODERATE — strong brand"
+
+    def test_bold_label_colon_outside(self):
+        from src.analysis_parser import extract_field
+
+        assert extract_field("**Type**: brand + switching costs", "Type") == "brand + switching costs"
+
+    def test_bulleted_label_and_bold_value(self):
+        from src.analysis_parser import extract_field
+
+        assert extract_field("- Target Entry Price: **$80**", "Target Entry Price") == "$80"
+
+    def test_plain_label_unchanged(self):
+        from src.analysis_parser import extract_field
+
+        assert extract_field("Durability: STRONG", "Durability") == "STRONG"
+
+
+def _analysis_text(bold: bool) -> str:
+    def L(k):
+        return f"**{k}:**" if bold else f"{k}:"
+
+    return f"""## MOAT CLASSIFICATION
+{L("Type")} brand + switching costs
+{L("Durability")} MODERATE
+{L("Risks")} competition
+## MANAGEMENT QUALITY
+{L("Capital Allocation")} GOOD
+{L("Insider Ownership")} 5%
+{L("Summary")} fine
+## BUSINESS DURABILITY
+{L("Recession Resilience")} ok
+{L("Existential Risks")} none
+{L("10-Year Outlook")} larger
+## BEAR CASE
+{L("Customer Concentration")} LOW
+{L("Switching Cost Test")} 4
+{L("Regulatory/Tech Risk")} low
+{L("Patent/IP Dependency")} NO
+{L("Bear Case Summary")} meh
+## CURRENCY EXPOSURE
+{L("Domestic Revenue")} 60%
+{L("International Revenue")} 40%
+{L("Risk Level")} MODERATE
+{L("Confidence")} HIGH
+## FAIR VALUE ASSESSMENT
+{L("Estimated Fair Value")} $100 - $120
+{L("Target Entry Price")} $80
+## CONVICTION LEVEL
+MEDIUM - fine
+## INVESTMENT SUMMARY
+Good business.
+## KEY RISKS
+1. a
+2. b
+## THESIS-BREAKING RISKS
+1. Operating margin reported below 12% for two consecutive quarters
+2. Loss of the top customer announced
+## TOTAL RETURN POTENTIAL
+10%/yr
+## DIVIDEND YIELD
+1.2%
+"""
+
+
+class TestBoldAnalysisParsesLikePlain:
+    def test_bold_and_plain_agree(self):
+        from src.analysis_parser import parse_analysis
+
+        plain = parse_analysis("T", "Test Co", _analysis_text(bold=False))
+        bold = parse_analysis("T", "Test Co", _analysis_text(bold=True))
+        for attr in (
+            "moat_durability",
+            "target_entry_price",
+            "estimated_fair_value_low",
+            "estimated_fair_value_high",
+            "customer_concentration_risk",
+            "switching_cost_rating",
+        ):
+            assert getattr(bold, attr) == getattr(plain, attr), attr
+        assert bold.target_entry_price == 80.0
+        assert bold.moat_rating.value == "narrow"
+
+
+# ─── A5: the 10-K slicer picks the real section ───────────────────────────────
+
+
+class TestEdgarSectionSlicer:
+    def _filing(self):
+        toc = (
+            "table of contents item 1. business 3 item 1a. risk factors 10 item 1b. unresolved staff comments 20 "
+            "item 2. properties 21 item 7. management's discussion and analysis 30 item 7a. quantitative and "
+            "qualitative disclosures 40 item 8. financial statements and supplementary data 41 item 9. changes in "
+            "and disagreements 80 item 9a. controls and procedures 80 item 9b. other information 81 item 10. "
+            "directors 82 item 11. executive compensation 82 item 12. security ownership 82 item 13. certain "
+            "relationships 83 item 14. principal accountant fees 83 item 15. exhibits 84 item 16. form 10-k summary 90 "
+        )
+        business = "Item 1. Business REALBUSINESS " + ("we sell widgets to everyone. " * 60)
+        risk = "Item 1A. Risk Factors REALRISK " + ("competition could hurt us. " * 60)
+        item1b = "Item 1B. Unresolved Staff Comments none. Item 2. Properties we own a plant. " + ("x " * 400)
+        mda = "Item 7. Management's Discussion and Analysis REALMDA " + ("revenue grew nicely this year. " * 60)
+        item7a = "Item 7A. Quantitative and Qualitative Disclosures about market risk " + ("y " * 400)
+        notes = (
+            "notes to the financial statements. as discussed in item 7. management's discussion and analysis "
+            "of our annual report on form 10-k for the prior year, which was filed with the sec, " + ("z " * 400)
+        )
+        item8 = "Item 8. Financial Statements and Supplementary Data " + ("w " * 400)
+        return toc + business + risk + item1b + mda + item7a + notes + item8
+
+    def test_sections_start_at_the_real_headers(self):
+        from src.edgar_fetcher import _extract_sections
+
+        sections = _extract_sections(self._filing())
+        assert sections["business"].startswith("Item 1. Business REALBUSINESS")
+        assert sections["risk_factors"].startswith("Item 1A. Risk Factors REALRISK")
+        assert sections["mda"].startswith("Item 7. Management's Discussion and Analysis REALMDA")
+        assert "REALMDA" in sections["mda"] and "notes to the financial" not in sections["mda"]

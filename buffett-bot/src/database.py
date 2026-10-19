@@ -440,6 +440,10 @@ _COLUMN_MIGRATIONS: list[tuple[str, str, str]] = [
     ("decision_log", "account_id", "TEXT"),
     ("decision_log", "ruleset_version", "TEXT"),
     ("tier_history", "ruleset_version", "TEXT"),
+    # A snapshot the plausibility gate flagged (positions vanished with no
+    # journaled sell, or equity jumped with no fills). Kept, never trusted.
+    ("portfolio_snapshots", "suspect", "INTEGER NOT NULL DEFAULT 0"),
+    ("portfolio_snapshots", "suspect_reason", "TEXT"),
 ]
 
 
@@ -1973,6 +1977,21 @@ class Database:
             )
             return True
 
+    def count_decisions_since(self, account_id: Optional[str], since: str, action: Optional[str] = None) -> int:
+        """Decisions journaled for one account after `since` (ISO timestamp),
+        optionally of one action. Used by the snapshot plausibility gate to
+        tell a real position change from a truncated broker read."""
+        sql = "SELECT COUNT(*) FROM decision_log WHERE decided_at > ?"
+        params: list = [since]
+        if account_id:
+            sql += " AND (account_id = ? OR account_id IS NULL)"
+            params.append(account_id)
+        if action:
+            sql += " AND action = ?"
+            params.append(action)
+        with _open(self.path) as conn:
+            return int(conn.execute(sql, params).fetchone()[0])  # nosec B608 — fixed fragments
+
     def get_decision_log(self, ticker: Optional[str] = None, limit: int = 100) -> list[dict]:
         """Return recent decisions (all tickers, or one), newest first."""
         with _open(self.path) as conn:
@@ -2056,9 +2075,15 @@ class Database:
         positions: Optional[list[dict]] = None,
         gross_equity: Optional[float] = None,
         untradable_value: Optional[float] = None,
+        suspect_reason: Optional[str] = None,
     ) -> int:
         """Append one point-in-time account snapshot. Never overwrites — the
         history is the point.
+
+        `suspect_reason`, when set, marks the row as a broker read the
+        plausibility gate rejected (2026-09-16: Alpaca returned 3 of 8
+        positions and an equity 45% lower, and it became a permanent point on
+        the curve). Readers skip suspect rows unless asked not to.
 
         `equity` is tradable equity. `gross_equity` retains the broker's
         pre-correction number so the two can be reconciled against the broker's
@@ -2070,8 +2095,8 @@ class Database:
                 INSERT INTO portfolio_snapshots
                     (account_id, currency, equity, cash, buying_power,
                      invested_value, invested_pct, equity_dkk, positions,
-                     gross_equity, untradable_value)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     gross_equity, untradable_value, suspect, suspect_reason)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     account_id,
@@ -2085,31 +2110,37 @@ class Database:
                     json.dumps(positions) if positions is not None else None,
                     gross_equity,
                     untradable_value,
+                    1 if suspect_reason else 0,
+                    suspect_reason,
                 ),
             )
             new_id = cur.lastrowid
             return int(new_id) if new_id is not None else 0
 
-    def get_snapshots(self, account_id: str, since: Optional[str] = None, limit: int = 365) -> list[dict]:
+    def get_snapshots(
+        self, account_id: str, since: Optional[str] = None, limit: int = 365, *, include_suspect: bool = False
+    ) -> list[dict]:
         """Return snapshots for one account, oldest first. `since` is an ISO
-        date/timestamp lower bound on `as_of`."""
+        date/timestamp lower bound on `as_of`. Suspect rows are skipped unless
+        `include_suspect` is set."""
+        suspect_sql = "" if include_suspect else " AND suspect = 0"
         with _open(self.path) as conn:
             if since:
                 rows = conn.execute(
-                    """
+                    f"""
                     SELECT * FROM portfolio_snapshots
-                    WHERE account_id = ? AND as_of >= ?
+                    WHERE account_id = ? AND as_of >= ?{suspect_sql}
                     ORDER BY as_of ASC LIMIT ?
-                    """,
+                    """,  # nosec B608 — suspect_sql is a fixed literal
                     (account_id, since, limit),
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    """
+                    f"""
                     SELECT * FROM portfolio_snapshots
-                    WHERE account_id = ?
+                    WHERE account_id = ?{suspect_sql}
                     ORDER BY as_of ASC LIMIT ?
-                    """,
+                    """,  # nosec B608
                     (account_id, limit),
                 ).fetchall()
             out = []
@@ -2119,21 +2150,22 @@ class Database:
                 out.append(d)
             return out
 
-    def get_latest_snapshots(self, account_id: str, limit: int = 1) -> list[dict]:
+    def get_latest_snapshots(self, account_id: str, limit: int = 1, *, include_suspect: bool = False) -> list[dict]:
         """
-        Most recent snapshots first.
+        Most recent snapshots first, suspect rows skipped unless asked for.
 
         get_snapshots orders ASC for charting, so `limit` there returns the
         OLDEST rows — the opposite of what a freshness or staleness check
         wants. This exists so that trap isn't re-sprung at every call site.
         """
+        suspect_sql = "" if include_suspect else " AND suspect = 0"
         with _open(self.path) as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT * FROM portfolio_snapshots
-                WHERE account_id = ?
+                WHERE account_id = ?{suspect_sql}
                 ORDER BY as_of DESC LIMIT ?
-                """,
+                """,  # nosec B608
                 (account_id, limit),
             ).fetchall()
             out = []
@@ -2150,7 +2182,7 @@ class Database:
             rows = conn.execute(
                 """
                 SELECT as_of, equity, equity_dkk FROM portfolio_snapshots
-                WHERE account_id = ?
+                WHERE account_id = ? AND suspect = 0
                 ORDER BY as_of ASC
                 """,
                 (account_id,),

@@ -44,7 +44,7 @@ FILING_TTL_DAYS = 90  # 10-Ks are annual
 
 # Per-section cap stored in the cache (generous; the final prompt budget is
 # applied later in augment_filing_text, which can re-trim without re-fetching).
-_RAW_SECTION_CAP = 8000
+_RAW_SECTION_CAP = 20000
 
 # Default total prompt budget — matches CompanyAnalyzer.MAX_FILING_CHARS.
 DEFAULT_MAX_CHARS = 15000
@@ -215,18 +215,42 @@ _RE_ITEM_8 = re.compile(r"item\s*8[\.\:\)]?\s+financial\s+statement")
 # cross-reference, not the real next-section header.
 _MIN_SECTION_CHARS = 800
 
+# A start match followed by this many "item N" tokens within _TOC_WINDOW chars
+# is a table-of-contents entry, not the section.
+_TOC_WINDOW = 1500
+_TOC_ITEM_TOKENS = 6
+_RE_ITEM_TOKEN = re.compile(r"\bitem\s*\d+[a-c]?\b")
+# A start match preceded by one of these is an inline cross-reference
+# ("see Item 7. Management's Discussion ... of our 2024 Form 10-K").
+_RE_XREF_CUE = re.compile(r"(?:\bsee|\bin|\bunder|\bof|\bto|\brefer to|\bwithin|\band|[\"“'])\s*$")
+
+
+def _is_toc_entry(text_lower: str, pos: int) -> bool:
+    return len(_RE_ITEM_TOKEN.findall(text_lower[pos : pos + _TOC_WINDOW])) >= _TOC_ITEM_TOKENS
+
+
+def _is_cross_reference(text_lower: str, pos: int) -> bool:
+    return bool(_RE_XREF_CUE.search(text_lower[max(0, pos - 30) : pos]))
+
 
 def _slice_section(text_lower: str, text: str, start_re, end_res, cap: int) -> Optional[str]:
     """
-    Slice the section beginning at the LAST match of start_re (the real section,
-    not the table-of-contents entry that appears first) and ending at the first
-    end-boundary that is far enough past it to be a genuine section break. Falls
-    back to a fixed window if no boundary is found.
+    Slice the section beginning at the first match of start_re that is neither
+    a table-of-contents entry nor an inline cross-reference, ending at the first
+    end-boundary far enough past it to be a genuine section break. Falls back to
+    the last match (the pre-2026-10 rule) when every match is rejected, and to
+    a fixed window when no boundary is found.
+
+    "Last match" alone picked a cross-reference inside the notes for about 12%
+    of cached sections (CCI's MD&A began "... in our Annual Report on Form 10-K
+    for the year ended December 31, 2024, which was filed ..."), and the raw
+    8,000-character cap truncated 35 of 40 cached sections (audit A5).
     """
-    starts = list(start_re.finditer(text_lower))
+    starts = [m.start() for m in start_re.finditer(text_lower)]
     if not starts:
         return None
-    start = starts[-1].start()
+    real = [s for s in starts if not _is_toc_entry(text_lower, s) and not _is_cross_reference(text_lower, s)]
+    start = real[0] if real else starts[-1]
 
     end = None
     for end_re in end_res:
@@ -334,16 +358,19 @@ def augment_filing_text(ticker: str, base_summary: str, max_chars: int = DEFAULT
         return base_summary
 
     header = "\n\n=== SEC 10-K EXCERPTS (most recent annual filing) ===\n"
-    overhead = len(header) + 90  # section sub-headers
-    available = max(0, max_chars - len(base_summary) - overhead)
-    if available < 600:  # not enough room to add anything meaningful
-        return base_summary
-
     labels = [
         ("business", "Item 1 — Business"),
         ("risk_factors", "Item 1A — Risk Factors"),
         ("mda", "Item 7 — Management's Discussion & Analysis"),
     ]
+    # Exact overhead: sub-header lines, the join newlines and the " …" each
+    # trimmed section may end with. A flat 90 undercounted it, which only
+    # showed once the raw sections grew past their budgets.
+    overhead = len(header) + sum(len(f"\n--- {label} ---") + 1 + 2 for _, label in labels) + 4
+    available = max(0, max_chars - len(base_summary) - overhead)
+    if available < 600:  # not enough room to add anything meaningful
+        return base_summary
+
     parts = [base_summary, header.rstrip()]
     for key, label in labels:
         body = sections.get(key)

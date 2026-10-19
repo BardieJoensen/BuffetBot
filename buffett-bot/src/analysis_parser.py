@@ -78,12 +78,26 @@ def extract_section(text: str, header: str, next_header: Optional[str] = None) -
     return text[start:end].strip()
 
 
+_LINE_PREFIX_RE = re.compile(r"^[\s\-•#>]+")
+
+
 def extract_field(section: str, field_name: str) -> str:
-    """Extract a labeled field like 'Type: brand + switching costs'."""
+    """
+    Extract a labeled field like 'Type: brand + switching costs'.
+
+    The model frequently bolds or bullets the label ("**Durability:** MODERATE",
+    "- Durability: MODERATE"). Matching only bare labels sent 63% of stored
+    moat sources to "unknown" and lost 74% of target entry prices, and the
+    section-wide fallbacks then read a rating word from the wrong line
+    (audit D2). Markdown emphasis and bullet prefixes are stripped before the
+    label is matched; the value is returned without emphasis markers.
+    """
+    label = field_name.lower() + ":"
     for line in section.split("\n"):
-        stripped = line.strip()
-        if stripped.lower().startswith(field_name.lower() + ":"):
-            return stripped.split(":", 1)[1].strip()
+        cleaned = _LINE_PREFIX_RE.sub("", line.strip())
+        cleaned = cleaned.replace("**", "").replace("__", "").lstrip("*_ ")
+        if cleaned.lower().startswith(label):
+            return cleaned.split(":", 1)[1].strip().strip("*_ ").strip()
     return ""
 
 
