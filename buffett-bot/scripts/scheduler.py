@@ -41,6 +41,10 @@ _HAIKU_COST_USD = 0.001  # per Haiku quick-screen call
 _SONNET_COST_USD = 0.025  # per Sonnet deep-analysis call
 
 
+# A watchlist older than this is a failed screen, not a candidate set.
+WATCHLIST_MAX_AGE_DAYS = 8
+
+
 def _notification_delivered(result) -> bool:
     """True only when at least one configured channel confirms delivery."""
     return isinstance(result, dict) and any(value is True for value in result.values())
@@ -147,6 +151,34 @@ def _build_db_summary(ticker: str, db) -> str:
     return "\n".join(lines)
 
 
+def _screen_db_universe(screener, criteria):
+    """
+    Screen the same universe the tiers come from.
+
+    weekly_screen used src.universe.get_stock_universe (a Finviz cache with a
+    Wikipedia and then a 183-name curated fallback), while the Haiku/Sonnet
+    tiers came from the DB universe built by bulk_load. The two populations
+    barely overlapped, so the auto-trader, which needs a watchlist name WITH
+    an S/A tier, found nothing to buy (audit A4/L2). Returns None when the DB
+    has no universe yet so the caller can fall back to the old path.
+    """
+    from src.database import Database
+
+    try:
+        universe = Database().get_universe()
+    except Exception as e:
+        logger.warning("Could not read the DB universe (%s) — falling back to the Finviz list", e)
+        return None
+    tickers = [s["ticker"] for s in universe if s.get("in_universe", 1)]
+    if len(tickers) < 50:
+        logger.warning("DB universe has %d names — falling back to the Finviz list", len(tickers))
+        return None
+    conviction = {s["ticker"] for s in universe if s.get("source") == "conviction"}
+    sp500 = {s["ticker"] for s in universe if s.get("source") == "sp500_filter"}
+    logger.info("Screening the DB universe (%d names)", len(tickers))
+    return screener.screen_tickers(tickers, criteria, force_include=conviction, force_large_cap=sp500)
+
+
 def weekly_screen():
     """
     Run stock screening weekly to update watchlist.
@@ -166,7 +198,9 @@ def weekly_screen():
 
         screener = StockScreener()
         criteria = load_criteria_from_yaml()
-        candidates = screener.screen(criteria)
+        candidates = _screen_db_universe(screener, criteria)
+        if candidates is None:
+            candidates = screener.screen(criteria)
 
         logger.info(f"Screened {len(candidates)} candidates")
 
@@ -768,6 +802,20 @@ def weekly_auto_trade():
         if not stocks:
             logger.info("Watchlist is empty")
             return
+        # A watchlist is this Friday's screen or it is nobody's candidate set.
+        # Prices are re-fetched below, but a stale file means the screen job
+        # failed and nothing said so (audit I9).
+        updated_at = watchlist.get("updated_at")
+        try:
+            age_days = (datetime.now() - datetime.fromisoformat(updated_at)).days if updated_at else None
+        except (TypeError, ValueError):
+            age_days = None
+        if age_days is None or age_days > WATCHLIST_MAX_AGE_DAYS:
+            logger.error(
+                "Watchlist is %s — refusing to trade on it (run weekly_screen)",
+                f"{age_days} days old" if age_days is not None else "undated",
+            )
+            return
 
         # Get top candidate symbols. The floor here is the quality ceiling
         # (margin_of_safety demoted to a ranking tilt), not the old 25% hard
@@ -832,6 +880,13 @@ def weekly_auto_trade():
             # Deliberately includes quarantined symbols: they're excluded from
             # sizing and slots, but must stay blocked from being re-bought.
             held_symbols = frozenset(p.symbol for p in positions)
+
+            # The real account buys one DKK lot at a time; record the single
+            # best pick BEFORE the paper sell/buy loop. It used to sit after
+            # the buys, behind a `continue` that fires whenever a paper sell
+            # is pending — which is every after-close Friday sell — so the one
+            # output aimed at real money was silently skipped (audit I2/L8).
+            _record_single_buy_recommendation(db, candidates, held_symbols, sum(1 for p in positions if p.tradable))
 
             quarantined = [p for p in positions if not p.tradable]
             if quarantined:
@@ -1016,10 +1071,6 @@ def weekly_auto_trade():
             )
             if plan.skipped_quality:
                 logger.info("Excluded for moat NONE / LOW conviction: %s", ", ".join(plan.skipped_quality))
-
-            # The real account buys one DKK lot at a time; record the single
-            # best pick alongside the paper plan so both share one ranking.
-            _record_single_buy_recommendation(db, candidates, held_symbols, current_position_count)
 
             for buy in plan.buys:
                 # Journal BEFORE submitting (same reasoning as the sell path).

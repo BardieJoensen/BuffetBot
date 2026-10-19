@@ -1461,11 +1461,14 @@ class TestWeeklyAutoTrade:
         val.current_price = price
         return val
 
-    def _write_watchlist(self, tmp_path, symbols):
+    def _write_watchlist(self, tmp_path, symbols, age_days=0):
         import json
 
         (tmp_path / "data").mkdir(exist_ok=True)
-        (tmp_path / "data" / "watchlist.json").write_text(json.dumps({"stocks": [{"symbol": s} for s in symbols]}))
+        updated_at = (datetime.now() - timedelta(days=age_days)).isoformat()
+        (tmp_path / "data" / "watchlist.json").write_text(
+            json.dumps({"updated_at": updated_at, "stocks": [{"symbol": s} for s in symbols]})
+        )
 
     def test_skips_when_kill_switch_off(self):
         from scripts.scheduler import weekly_auto_trade
@@ -1707,6 +1710,86 @@ class TestWeeklyAutoTrade:
 
         account.buy.assert_called_once()
         assert account.buy.call_args[0][0] == "NEWCO"
+
+    def test_stale_watchlist_is_refused(self, tmp_path, monkeypatch):
+        """A watchlist older than WATCHLIST_MAX_AGE_DAYS is a failed screen, not a candidate set (audit I9)."""
+        from scripts.scheduler import weekly_auto_trade
+
+        monkeypatch.chdir(tmp_path)
+        self._write_watchlist(tmp_path, ["AAPL"], age_days=30)
+        db = Database(tmp_path / "test.db")
+        account = self._mock_account(
+            equity=100_000.0, cash=100_000.0, buying_power=100_000.0, invested_value=0.0, positions=[]
+        )
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.accounts.get_accounts", return_value=[account]),
+            patch("src.paper_trader.PaperTrader.auto_trade_enabled", return_value=True),
+            patch("src.bubble_detector.classify_market_regime") as mock_regime,
+            patch("src.valuation.screen_for_undervalued") as screen,
+        ):
+            mock_regime.return_value.regime = "fair_value"
+            weekly_auto_trade()
+        screen.assert_not_called()
+        account.buy.assert_not_called()
+
+    def test_single_buy_recommendation_survives_a_pending_sell(self, tmp_path, monkeypatch):
+        """
+        After-close sells are always pending at submit, and the buy half of
+        the cycle is deferred. The real-account recommendation used to sit
+        behind that deferral and was skipped every such Friday (audit I2/L8).
+        """
+        from scripts.scheduler import weekly_auto_trade
+        from src.accounts.base import PositionState
+
+        monkeypatch.chdir(tmp_path)
+        self._write_watchlist(tmp_path, ["NEWCO"])
+
+        db = Database(tmp_path / "test.db")
+        _save_deep_analysis(db, "NEWCO", tier="A")
+        _save_deep_analysis(db, "OLDCO", tier="B")
+        db.mark_thesis_breaker_fired("OLDCO", breaker_index=1, breaker_text="Loss of the top customer announced")
+
+        held = PositionState(
+            symbol="OLDCO",
+            shares=10.0,
+            avg_cost=50.0,
+            price=40.0,
+            market_value=400.0,
+            unrealized_pl=-100.0,
+            unrealized_pl_pct=-0.20,
+        )
+        account = self._mock_account(
+            equity=50_400.0, cash=50_000.0, buying_power=50_000.0, invested_value=400.0, positions=[held]
+        )
+        account.sell.return_value = {"symbol": "OLDCO", "order_id": "sell-1", "status": "accepted"}
+        val = self._mock_valuation("NEWCO", margin_of_safety=0.30)
+
+        with (
+            patch("src.database.Database", return_value=db),
+            patch("src.accounts.get_accounts", return_value=[account]),
+            patch("src.paper_trader.PaperTrader.auto_trade_enabled", return_value=True),
+            patch("src.valuation.screen_for_undervalued", return_value=[val]),
+            patch("src.analyzer.CompanyAnalyzer") as MockAnalyzer,
+            patch("yfinance.Ticker"),
+            patch("src.bubble_detector.classify_market_regime") as mock_regime,
+            patch("src.valuation.ValuationAggregator") as MockAggregator,
+            patch("src.fx.get_usd_dkk_rate", return_value=6.9),
+        ):
+            MockAnalyzer.return_value.quick_screen.return_value = {
+                "worth_analysis": True,
+                "moat_hint": 5,
+                "quality_hint": 5,
+                "valid": True,
+            }
+            mock_regime.return_value.regime = "fair_value"
+            MockAggregator.return_value.get_valuation.return_value = MagicMock(margin_of_safety=-0.10)
+            weekly_auto_trade()
+
+        account.sell.assert_called_once()
+        account.buy.assert_not_called()  # paper buys deferred behind the pending sell, as before
+        rec = db.get_latest_single_buy_recommendation()
+        assert rec is not None and rec["ticker"] == "NEWCO"
 
     def test_immediate_full_sell_retries_if_outcome_write_fails(self, tmp_path, monkeypatch):
         from scripts.scheduler import reconcile_broker_orders, weekly_auto_trade

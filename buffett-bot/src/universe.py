@@ -11,6 +11,7 @@ Results are cached for 7 days to avoid hammering external sources.
 
 import json
 import logging
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -37,6 +38,28 @@ def _universe_cache_file() -> Path:
     return _cache_dir / "stock_universe.json"
 
 
+_TICKER_RE = re.compile(r"^[A-Z]{1,5}([.\-][A-Z]{1,2})?$")
+
+
+def looks_like_valid_universe(tickers: list[str]) -> bool:
+    """
+    Reject a ticker list that a vendor change has mangled.
+
+    On 2026-09-18 the Finviz fetch returned every ticker with its first letter
+    doubled ("AAAPL", "AABBV"); it was cached as truth, the weekly screen then
+    found almost nothing and silently fell back to the 183-name curated list
+    for a month (audit L2). At least 95% of entries must look like US tickers
+    and the list must not be dominated by a repeated leading letter.
+    """
+    if not tickers:
+        return False
+    well_formed = sum(1 for t in tickers if isinstance(t, str) and _TICKER_RE.match(t))
+    if well_formed / len(tickers) < 0.95:
+        return False
+    doubled = sum(1 for t in tickers if isinstance(t, str) and len(t) >= 3 and t[0] == t[1])
+    return doubled / len(tickers) < 0.5
+
+
 def get_stock_universe(force_refresh: bool = False) -> list[str]:
     """
     Get list of stock tickers to screen.
@@ -60,6 +83,10 @@ def get_stock_universe(force_refresh: bool = False) -> list[str]:
     # Try Finviz first (widest net)
     universe = _fetch_finviz_universe()
 
+    if universe and len(universe) >= 50 and not looks_like_valid_universe(universe):
+        logger.error("Finviz returned a malformed ticker list (e.g. %s) — ignoring it", universe[:5])
+        universe = None
+
     if universe and len(universe) >= 50:
         logger.info(f"Finviz universe: {len(universe)} stocks")
         _save_universe_cache(universe, source="finviz")
@@ -68,6 +95,10 @@ def get_stock_universe(force_refresh: bool = False) -> list[str]:
     # Fallback to Wikipedia S&P 600
     logger.warning("Finviz failed or returned too few results, trying Wikipedia S&P 600")
     universe = _fetch_sp600_from_wikipedia()
+
+    if universe and len(universe) >= 50 and not looks_like_valid_universe(universe):
+        logger.error("Wikipedia returned a malformed ticker list (e.g. %s) — ignoring it", universe[:5])
+        universe = None
 
     if universe and len(universe) >= 50:
         logger.info(f"Wikipedia S&P 600 universe: {len(universe)} stocks")
@@ -405,7 +436,11 @@ def _load_cached_universe() -> Optional[list[str]]:
             logger.info(f"Universe cache expired ({age.days} days old)")
             return None
 
-        return data.get("tickers", [])
+        tickers = data.get("tickers", [])
+        if not looks_like_valid_universe(tickers):
+            logger.error("Universe cache is malformed (e.g. %s) — ignoring it", tickers[:5])
+            return None
+        return tickers
 
     except Exception as e:
         logger.warning(f"Failed to load universe cache: {e}")

@@ -163,3 +163,60 @@ class TestTrendMetricsIgnoreNaNColumn:
         out = screener._fetch_historical_data("X", t)
         assert out["revenue_cagr"] == pytest.approx((200 / 100) ** (1 / 3) - 1)
         assert out["earnings_consistency"] == 3.0
+
+
+# ─── A4 / L2: universe validation and the DB-driven weekly screen ─────────────
+
+
+class TestUniverseValidation:
+    def test_doubled_first_letter_list_is_rejected(self):
+        from src.universe import looks_like_valid_universe
+
+        assert not looks_like_valid_universe(["AAAPL", "AABBV", "AABNB", "UUSLM", "ZZ"])
+
+    def test_normal_list_is_accepted(self):
+        from src.universe import looks_like_valid_universe
+
+        assert looks_like_valid_universe(["AAPL", "ABBV", "BRK-B", "CWEN-A", "BF.B", "AA", "KKR"])
+
+    def test_garbage_is_rejected(self):
+        from src.universe import looks_like_valid_universe
+
+        assert not looks_like_valid_universe([])
+        assert not looks_like_valid_universe(["<a href>", "123", "aapl", None, "MSFT"])
+
+    def test_malformed_cache_is_ignored(self, tmp_path):
+        import json
+
+        from src import universe
+
+        universe.set_cache_dir(tmp_path)
+        (tmp_path / "stock_universe.json").write_text(
+            json.dumps({"tickers": ["AAAPL", "AABBV", "AABNB"], "cached_at": datetime.now().isoformat()})
+        )
+        assert universe._load_cached_universe() is None
+
+
+class TestWeeklyScreenUsesDbUniverse:
+    def test_screens_db_universe_with_force_sets(self, db):
+        from scripts.scheduler import _screen_db_universe
+
+        for i in range(60):
+            db.upsert_universe_stock(f"T{i:02d}", source="finviz_screen")
+        db.upsert_universe_stock("V", source="conviction")
+        db.upsert_universe_stock("AAPL", source="sp500_filter")
+        screener = MagicMock()
+        screener.screen_tickers.return_value = ["screened"]
+        with patch("src.database.Database", return_value=db):
+            out = _screen_db_universe(screener, criteria="crit")
+        assert out == ["screened"]
+        args, kwargs = screener.screen_tickers.call_args
+        assert "V" in args[0] and "AAPL" in args[0] and len(args[0]) == 62
+        assert kwargs["force_include"] == {"V"} and kwargs["force_large_cap"] == {"AAPL"}
+
+    def test_falls_back_when_db_universe_is_small(self, db):
+        from scripts.scheduler import _screen_db_universe
+
+        db.upsert_universe_stock("ONLY", source="finviz_screen")
+        with patch("src.database.Database", return_value=db):
+            assert _screen_db_universe(MagicMock(), criteria="crit") is None
