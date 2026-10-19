@@ -716,8 +716,11 @@ class StockScreener:
                     ni_row = financials.loc[label]
                     break
 
-            if ni_row is not None and len(ni_row) >= 2:
-                ni_vals = ni_row.astype(float).values
+            # yfinance pads the statement with an oldest column that is mostly
+            # NaN; a NaN comparison is always False, so it silently counted as
+            # a down year and the ideal of 4 was unreachable (audit A6).
+            if ni_row is not None and len(ni_row.dropna()) >= 2:
+                ni_vals = ni_row.dropna().astype(float).values
                 # financials columns are newest-first, reverse for chronological
                 ni_vals = ni_vals[::-1]
                 growth_years = sum(1 for i in range(1, len(ni_vals)) if ni_vals[i] > ni_vals[i - 1])
@@ -733,8 +736,10 @@ class StockScreener:
                     rev_row = financials.loc[label]
                     break
 
-            if rev_row is not None and len(rev_row) >= 2:
-                rev_vals = rev_row.astype(float).values
+            # Same NaN oldest column: `earliest_rev > 0` is False for NaN, so
+            # the metric was missing for 875 of 876 five-column histories.
+            if rev_row is not None and len(rev_row.dropna()) >= 2:
+                rev_vals = rev_row.dropna().astype(float).values
                 # newest first — iloc[0] is latest, iloc[-1] is earliest
                 latest_rev = rev_vals[0]
                 earliest_rev = rev_vals[-1]
@@ -812,11 +817,19 @@ class StockScreener:
         criteria: Optional[ScreeningCriteria] = None,
         force_include: Optional[set[str]] = None,
         force_large_cap: Optional[set[str]] = None,
+        top_n: Optional[int] = None,
     ) -> list[ScreenedStock]:
         """
         Screen an explicit list of tickers instead of the Finviz universe.
 
         Identical to screen() except the universe is provided externally.
+
+        top_n: how many of the sorted candidates to return. None means
+        criteria.top_n (the weekly watchlist cap); 0 means return every
+        candidate that passed the hard filters. The Monday refresh must use 0:
+        from 2026-07-26 to 2026-10-19 it took the default, so only the top 100
+        of ~1,080 scored names were persisted each week and the other ~950
+        kept June fundamentals and June percentile ranks (audit A1).
 
         force_include: tickers that bypass ALL hard filters (equity type,
         industry, too-hard, market cap ceiling).  Use for conviction stocks
@@ -1030,10 +1043,10 @@ class StockScreener:
                 return (band, cap, rng.random())
 
             candidates.sort(key=_sort_key)
-            top_n = criteria.top_n
-            if len(candidates) > top_n:
-                logger.info(f"Keeping top {top_n} by score (from {len(candidates)})")
-                candidates = candidates[:top_n]
+            keep = criteria.top_n if top_n is None else top_n
+            if keep and len(candidates) > keep:
+                logger.info(f"Keeping top {keep} by score (from {len(candidates)})")
+                candidates = candidates[:keep]
 
         logger.info(f"Returning {len(candidates)} candidates")
 

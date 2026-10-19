@@ -831,6 +831,29 @@ class Database:
                 (quality_score, ticker),
             )
 
+    def clear_quality_scores_except(self, keep: list[str]) -> int:
+        """
+        Null the quality_score of every universe row NOT in `keep`.
+
+        Called after Monday's rescoring with the tickers scored this week. A
+        score is a percentile within one week's scored set; a row that was not
+        scored this week would otherwise keep a number from an older, larger
+        cohort and out-rank fresh names in every queue (audit A1/A3).
+        """
+        with _open(self.path) as conn:
+            conn.execute("CREATE TEMP TABLE IF NOT EXISTS _keep (ticker TEXT PRIMARY KEY)")
+            conn.execute("DELETE FROM _keep")
+            conn.executemany("INSERT OR IGNORE INTO _keep (ticker) VALUES (?)", [(t,) for t in keep])
+            cur = conn.execute(
+                """
+                UPDATE universe SET quality_score = NULL
+                WHERE quality_score IS NOT NULL
+                  AND ticker NOT IN (SELECT ticker FROM _keep)
+                """
+            )
+            conn.execute("DROP TABLE _keep")
+            return int(cur.rowcount or 0)
+
     def get_universe(self, source_filter: Optional[str] = None) -> list[dict]:
         """Return all active universe stocks, optionally filtered by source."""
         with _open(self.path) as conn:
@@ -2549,12 +2572,13 @@ class Database:
                 SELECT u.ticker
                 FROM universe u
                 WHERE u.in_universe = 1
+                  AND u.quality_score IS NOT NULL   -- passed this week's hard filters
                   AND NOT EXISTS (
                       SELECT 1 FROM haiku_screens h
                       WHERE h.ticker = u.ticker
                         AND datetime(h.expires_at) > datetime('now')
                   )
-                ORDER BY u.quality_score DESC NULLS LAST
+                ORDER BY u.quality_score DESC
                 LIMIT ?
                 """,
                 (limit,),
@@ -2577,6 +2601,7 @@ class Database:
                 FROM universe u
                 JOIN haiku_screens h ON h.ticker = u.ticker
                 WHERE u.in_universe = 1
+                  AND u.quality_score IS NOT NULL   -- passed this week's hard filters
                   AND h.screened_at = (
                       SELECT MAX(screened_at) FROM haiku_screens h2
                       WHERE h2.ticker = u.ticker
@@ -2605,6 +2630,7 @@ class Database:
                 FROM universe u
                 JOIN haiku_screens h ON h.ticker = u.ticker
                 WHERE u.in_universe = 1
+                  AND u.quality_score IS NOT NULL   -- passed this week's hard filters
                   AND h.screened_at = (
                       SELECT MAX(screened_at) FROM haiku_screens h2
                       WHERE h2.ticker = u.ticker

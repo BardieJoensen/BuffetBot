@@ -90,7 +90,7 @@ screening:
       max: 0.12
       weight: 1.5
     earnings_consistency:
-      ideal: 4             # 4 out of ~4 years with earnings growth
+      ideal: 3             # yfinance gives 4 real years = 3 growth comparisons; 4 was unreachable
       min: 1
       weight: 2.0
     revenue_cagr:

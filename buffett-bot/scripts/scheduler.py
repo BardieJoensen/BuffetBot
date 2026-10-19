@@ -106,7 +106,9 @@ def _build_db_summary(ticker: str, db) -> str:
 
     Used by wednesday_haiku_batch and friday_sonnet_batch to supply
     context to the LLM without making fresh yfinance calls.
-    Monday's fundamentals refresh ensures this data is ≤4 days old.
+    Monday's fundamentals refresh keeps this ≤7 days old for every name that
+    passes the hard filters; the as-of date is printed so the model is never
+    told a months-old row is "current" (audit A2).
     """
     u = db.get_universe_stock(ticker)
     f = db.get_latest_fundamentals(ticker)
@@ -123,9 +125,10 @@ def _build_db_summary(ticker: str, db) -> str:
 
     if f:
         lines.append("")
-        lines.append("=== KEY FINANCIAL METRICS ===")
+        as_of = f.get("date")
+        lines.append(f"=== KEY FINANCIAL METRICS (as of {as_of}) ===" if as_of else "=== KEY FINANCIAL METRICS ===")
         if f.get("price"):
-            lines.append(f"Current Price: ${f['price']:.2f}")
+            lines.append(f"Price (as of {as_of}): ${f['price']:.2f}" if as_of else f"Current Price: ${f['price']:.2f}")
         if f.get("pe_ratio"):
             lines.append(f"P/E Ratio: {f['pe_ratio']:.1f}x")
         if f.get("roe") is not None:
@@ -1190,8 +1193,12 @@ def monday_maintenance():
                 screener = StockScreener()
                 criteria = load_criteria_from_yaml()
                 sp500_tickers = {s["ticker"] for s in universe if s.get("source") == "sp500_filter"}
+                # top_n=0: persist EVERY name that passes the hard filters, not
+                # the weekly-watchlist top 100. The default truncation here froze
+                # ~950 names at their 2026-06-29 fundamentals for three months
+                # and put quality scores on two percentile scales (audit A1/L1).
                 screened = screener.screen_tickers(
-                    tickers, criteria, force_include=conviction_tickers, force_large_cap=sp500_tickers
+                    tickers, criteria, force_include=conviction_tickers, force_large_cap=sp500_tickers, top_n=0
                 )
 
                 today = _date.today().isoformat()
@@ -1236,7 +1243,12 @@ def monday_maintenance():
 
                 for sym, qs in scores.items():
                     db.update_quality_score(sym, qs.score)
-                logger.info("Recomputed quality scores for %d stocks", len(scores))
+                # A name that failed this week's hard filters keeps no score:
+                # the Haiku/Sonnet queues order by quality_score and skip NULLs,
+                # which is how the too-hard / cap / P/E filters reach the paid
+                # stages at all (audit B3/L5).
+                cleared = db.clear_quality_scores_except(list(scores))
+                logger.info("Recomputed quality scores for %d stocks (%d stale scores cleared)", len(scores), cleared)
 
         except Exception as exc:
             logger.error("Monday maintenance step failed (%s): %s", "2. Refresh fundamentals + quality scores", exc)
