@@ -399,7 +399,12 @@ def run_news_pipeline(
     alerts = db.get_price_alerts(tiers=["S", "A", "B"])
     watched = [a["ticker"] for a in alerts]
 
-    held = [t for t in db.get_held_tickers() if t in set(watched)]
+    # Every held name is monitored whatever its tier. Under ruleset 3.0.0 a
+    # fired pre-registered breaker is the only forced sell, and a holding that
+    # has been re-rated C still has breakers on its latest analysis; filtering
+    # holdings to S/A/B left 3 of 7 positions (CCI, CTSH, NNI, 37% of equity)
+    # with no path to a sell at all (audit L3 / D-area, ai:F7).
+    held = list(db.get_held_tickers())
     seen: set[str] = set()
     tickers: list[str] = []
     for t in held + watched:
@@ -412,9 +417,9 @@ def run_news_pipeline(
         return stats
 
     stats["tickers_checked"] = len(tickers)
-    logger.info("News pipeline: monitoring %d S/A/B ticker(s)", len(tickers))
+    logger.info("News pipeline: monitoring %d ticker(s) (holdings + S/A/B watchlist)", len(tickers))
     if held:
-        logger.info("Portfolio holdings jump the news queue: %s", ", ".join(held))
+        logger.info("Portfolio holdings jump the news queue (any tier): %s", ", ".join(held))
 
     if dry_run:
         logger.info("[dry_run] Skipping Finnhub fetch and LLM calls")

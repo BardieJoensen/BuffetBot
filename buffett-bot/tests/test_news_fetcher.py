@@ -783,8 +783,10 @@ class TestPortfolioPrioritization:
         checked = [c[0][0] for c in analyzer.check_news_for_red_flags.call_args_list]
         assert checked[0] == "HELD"
 
-    def test_held_ticker_not_on_watchlist_is_not_added(self, db):
-        """Holdings jump the queue; they don't expand it beyond S/A/B."""
+    def test_held_ticker_not_on_watchlist_is_monitored(self, db):
+        """A holding is monitored whatever its tier: a C-rated position
+        still has pre-registered breakers, and the breaker is the only
+        forced sell (2026-10-19 audit, L3)."""
         _setup_watched_ticker(db, "AAPL")
         self._hold(db, "NOTWATCHED")
 
@@ -792,7 +794,8 @@ class TestPortfolioPrioritization:
         run_news_pipeline(db, _make_analyzer(), fetcher)
 
         requested = fetcher.get_news_for_tickers.call_args[0][0]
-        assert "NOTWATCHED" not in requested
+        assert requested[0] == "NOTWATCHED"
+        assert "AAPL" in requested
 
     def test_no_holdings_leaves_order_unchanged(self, db):
         _setup_watched_ticker(db, "AAPL")
