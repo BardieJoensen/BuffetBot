@@ -121,8 +121,11 @@ Rules in force since 3.0.0 (2026-10-18):
   (analyst consensus, P/E, Graham, DCF) sets target entry = fair value ×
   (1 − margin of safety); the model's own target is a fallback only.
 - **Moat NONE and LOW conviction are never bought**, in the tier engine and
-  again in the deployment planner. Evidence: in the 2026-10-17 cohort test,
-  moat NONE names averaged −10.5 pp vs SPY with 2 of 22 ahead.
+  again in the deployment planner. This is a prior, not a tested result: the
+  "−10.5 pp, 2 of 22" cohort figure first quoted here was a data-migration
+  artefact (20 of the 22 names were legacy rows defaulted to NONE; see
+  `docs/research/BUFFETTBOT_AUDIT.md`, section 1). Migrated rows are now
+  excluded from cohort validation.
 - **Monthly cohort validation** (1st of the month, free): forward return of
   every first rating (tier, moat, conviction) vs the benchmark since the
   rating date and over 90 days, stored in `cohort_validation` and shown in

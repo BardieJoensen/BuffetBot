@@ -66,8 +66,16 @@ class DeployCandidate:
 # Ruleset 3.0.0: names the model rates as having no moat, or that it holds
 # with low conviction, are never bought. The tier engine already maps both to
 # C; this is defense in depth for callers that build candidates themselves.
-# Evidence (2026-10-17 cohort test, 293 first ratings): moat NONE n=22
-# averaged -10.5 pp vs SPY with 2 of 22 ahead; LOW conviction n=27 -7.5 pp.
+#
+# This is a prior, not a tested result. The figure first quoted here ("moat
+# NONE n=22 averaged -10.5 pp vs SPY") came from the 2026-10-17 cohort run,
+# in which 20 of the 22 NONE names were legacy registry rows that the
+# migration had defaulted to NONE (their source files rate them STRONG or
+# MODERATE) and the other 2 had zero-length windows; the LOW-conviction
+# figure came from the rating parser fixed on 2026-10-01 and is -3.9 pp
+# (t = -0.58, n = 17) on clean data. See docs/research/BUFFETTBOT_AUDIT.md
+# section 1. The rule is kept because it is cheap and sensible on priors;
+# it rarely binds (NONE occurs in about 1.5% of real analyses).
 EXCLUDED_MOATS = frozenset({"NONE"})
 EXCLUDED_CONVICTIONS = frozenset({"LOW"})
 

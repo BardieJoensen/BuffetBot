@@ -452,3 +452,23 @@ class TestEdgarSectionSlicer:
         assert sections["risk_factors"].startswith("Item 1A. Risk Factors REALRISK")
         assert sections["mda"].startswith("Item 7. Management's Discussion and Analysis REALMDA")
         assert "REALMDA" in sections["mda"] and "notes to the financial" not in sections["mda"]
+
+
+# ─── F1: migrated registry rows are not ratings ───────────────────────────────
+
+
+class TestFirstRatingsSkipMigratedRows:
+    def test_one_day_expiry_rows_are_ignored(self, db):
+        db.upsert_universe_stock("CWT", source="finviz_screen")
+        # The migration signature: no LLM call, moat defaulted, one-day expiry.
+        db.save_deep_analysis("CWT", tier="C", conviction="MEDIUM", moat_rating="NONE", expires_days=1)
+        with _open(db.path) as conn:
+            conn.execute(
+                "UPDATE deep_analyses SET analyzed_at = ?, expires_at = ? WHERE ticker = 'CWT'",
+                ("2026-04-07T15:44:07", "2026-04-08T15:44:07"),
+            )
+        assert db.get_first_ratings() == []
+
+        db.save_deep_analysis("CWT", tier="B", conviction="MEDIUM", moat_rating="WIDE", expires_days=180)
+        first = db.get_first_ratings()
+        assert len(first) == 1 and first[0]["moat_rating"] == "WIDE"

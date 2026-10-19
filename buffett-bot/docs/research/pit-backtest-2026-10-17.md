@@ -64,3 +64,18 @@ python -m src.backtest --pit-backtest   # run_point_in_time_backtest on June-1 r
 
 The EDGAR companyfacts cache (4.0 GB for the universe) was deleted after the
 run; the `pit_fundamentals` table (945,674 rows) was kept in the bot database.
+
+## Correction (2026-10-19)
+
+The cohort figures quoted above (moat NONE n=22: −10.5 pp; LOW conviction
+n=27: −7.5 pp) do not hold. The 2026-10-19 audit found that 20 of the 22
+"moat NONE" first ratings were legacy `registry.json` rows that
+`migrate_from_registry` defaulted to NONE (the legacy schema stores the moat
+under `analysis.moat.durability`; 13 of them were STRONG, 7 MODERATE), and the
+other 2 were rated on the measurement day. The LOW-conviction cohort came from
+the rating parser fixed on 2026-10-01; on clean data it is n=17, −3.9 pp
+(t = −0.58) since rating and +0.8 pp at 90 days. The exclusion rule in ruleset
+3.0.0 is kept as a prior, not as a tested result. The point-in-time result
+above also carries a split look-ahead in FCF yield (adjusted prices × as-filed
+shares); without the affected observations the pooled Spearman is +0.004.
+Details: `docs/research/BUFFETTBOT_AUDIT.md`, section 1 and items F1, F2, F5.

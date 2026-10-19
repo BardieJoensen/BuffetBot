@@ -1224,13 +1224,26 @@ class Database:
         Each ticker's FIRST deep analysis — the rating the bot gave before it
         knew anything about what happened next. This is the cohort-validation
         entry signal; later re-ratings are deliberately ignored.
+
+        Rows written by migrate_from_registry are not ratings and are skipped.
+        They carry a one-day expiry (real analyses expire in 30 or 180 days),
+        no LLM call, and a moat that defaulted to NONE because the legacy
+        schema keeps it under moat.durability: 20 of the 22 "moat NONE"
+        names behind the ruleset 3.0.0 cohort figure were such rows, rated
+        STRONG or MODERATE in their source files (2026-10-19 audit, F1).
         """
         with _open(self.path) as conn:
             rows = conn.execute(
                 """
+                WITH real AS (
+                    SELECT ticker, analyzed_at, tier, moat_rating, conviction
+                    FROM deep_analyses
+                    WHERE expires_at IS NULL
+                       OR julianday(expires_at) - julianday(analyzed_at) > 2
+                )
                 SELECT d.ticker, d.analyzed_at AS rated_at, d.tier, d.moat_rating, d.conviction
-                FROM deep_analyses d
-                JOIN (SELECT ticker, MIN(analyzed_at) AS first_at FROM deep_analyses GROUP BY ticker) f
+                FROM real d
+                JOIN (SELECT ticker, MIN(analyzed_at) AS first_at FROM real GROUP BY ticker) f
                   ON f.ticker = d.ticker AND f.first_at = d.analyzed_at
                 GROUP BY d.ticker
                 ORDER BY d.ticker
