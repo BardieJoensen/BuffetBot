@@ -4,7 +4,7 @@ Tier Engine Module — v2 (S/A/B/C system)
 Assigns investment tiers based on business quality and valuation:
 
     S  — Wonderful business at or below fair value.
-         Wide moat + HIGH conviction. Full 3-stage entry.
+         Wide moat + MEDIUM/HIGH conviction at or below target. Full 3-stage entry.
          You'd hold through a 50% drawdown.
 
     A  — Good business at or below target entry.
@@ -94,7 +94,7 @@ def normalize_tier(value, *, moat: Optional[str] = None, conviction: Optional[st
         if moat is not None or conviction is not None:
             moat_value = (moat or "").lower()
             conviction_value = (conviction or "").upper()
-            return Tier.S if moat_value == "wide" and conviction_value == "HIGH" else Tier.A
+            return Tier.S if moat_value == "wide" and conviction_value in ("HIGH", "MEDIUM") else Tier.A
         return Tier.S
     if value == 2:
         return Tier.B
@@ -168,13 +168,13 @@ def assign_tier(
     Assign S/A/B/C tier based on moat quality and price vs. target entry.
 
     Decision matrix:
-        WIDE moat + HIGH conviction + gap ≤ 0%   → S
-        WIDE moat + HIGH conviction + gap < 50%   → B  (wonderful but wait)
-        WIDE moat + HIGH conviction + gap ≥ 50%   → C  (extreme premium)
-        Any moat + MEDIUM+ conviction + gap ≤ 0%  → A
-        Any moat + MEDIUM+ conviction + gap < 50% → B  (good but wait)
-        Any moat + MEDIUM+ conviction + gap ≥ 50% → C  (too expensive)
-        LOW conviction or NONE moat               → C  (skip)
+        WIDE moat + MEDIUM/HIGH conviction + gap ≤ 0%   → S
+        WIDE moat + MEDIUM/HIGH conviction + gap < 50%  → B  (wonderful but wait)
+        WIDE moat + MEDIUM/HIGH conviction + gap ≥ 50%  → C  (extreme premium)
+        NARROW moat + MEDIUM/HIGH conviction + gap ≤ 0% → A
+        NARROW moat + MEDIUM/HIGH conviction + gap < 50%→ B  (good but wait)
+        NARROW moat + MEDIUM/HIGH conviction + gap ≥ 50%→ C  (too expensive)
+        LOW conviction or NONE moat                     → C  (skip)
 
     When no price data is available, quality stocks default to B (can't
     confirm the price is right, but worth watching).
@@ -224,9 +224,14 @@ def assign_tier(
         approaching = 0 < gap <= proximity_alert_pct
 
     # ── Determine quality level ───────────────────────────────────────────
-    if moat == "wide" and conviction == "HIGH":
+    # Ruleset 3.1.0: "wonderful" is a WIDE moat with MEDIUM or HIGH conviction.
+    # Requiring HIGH made S unreachable: in 293 analyses the model said HIGH 7
+    # times (never on a wide-moat name at a good price), so every wonderful
+    # business at a wonderful price would have landed in A at 85% sizing.
+    # S stays the crash tier: the price leg is unchanged.
+    if moat == "wide" and conviction in ("HIGH", "MEDIUM"):
         quality = "wonderful"
-    elif conviction in ("HIGH", "MEDIUM") and moat in ("wide", "narrow"):
+    elif conviction in ("HIGH", "MEDIUM") and moat == "narrow":
         quality = "good"
     elif conviction == "LOW" and moat == "none":
         quality = "low"
@@ -308,7 +313,7 @@ def assign_tier(
 
     # Fair price exception: wonderful business within 10% of target, top-quintile quality.
     # Buffett's evolved principle: moat itself provides margin of safety.
-    # Promotes B → A when Wide moat + HIGH conviction + quality_score ≥ 80 + gap ≤ 10%.
+    # Promotes B → A when Wide moat + MEDIUM/HIGH conviction + quality_score ≥ 80 + gap ≤ 10%.
     if quality == "wonderful" and 0 < gap <= 0.10 and quality_score is not None and quality_score >= 80:
         return TierAssignment(
             symbol=symbol,

@@ -109,7 +109,7 @@ Batch API (50% discount) and prompt caching are enabled by default to reduce cos
    such a holding is only rotated out when a strictly better candidate waits.
 4. Regime-shift and approaching-target alerts sent via notifications
 
-### Ruleset versioning (v3.0.0)
+### Ruleset versioning (v3.1.0)
 `src/ruleset.py` holds `RULESET_VERSION` and a changelog. Every decision,
 tier change and validation run is stamped with it, because a paper equity
 curve produced under two rulesets is two experiments. Bump the version
@@ -126,6 +126,11 @@ Rules in force since 3.0.0 (2026-10-18):
   artefact (20 of the 22 names were legacy rows defaulted to NONE; see
   `docs/research/BUFFETTBOT_AUDIT.md`, section 1). Migrated rows are now
   excluded from cohort validation.
+- **S tier is a WIDE moat with MEDIUM or HIGH conviction at or below target**
+  (ruleset 3.1.0, 2026-10-20). It is the crash tier: the price leg is
+  unchanged, but the old HIGH-only quality leg was a word the model used 7
+  times in 293 analyses, so a wonderful business at a wonderful price would
+  have been bought as a merely good one at 85% sizing.
 - **Monthly cohort validation** (1st of the month, free): forward return of
   every first rating (tier, moat, conviction) vs the benchmark since the
   rating date and over 90 days, stored in `cohort_validation` and shown in

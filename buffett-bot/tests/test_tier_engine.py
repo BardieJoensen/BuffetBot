@@ -107,10 +107,19 @@ class TestATier:
         a = assign_tier(make("narrow", "MEDIUM", target=100.0, current=90.0))
         assert a.tier == "A"
 
-    def test_wide_medium_at_target(self):
-        """Wide moat + MEDIUM conviction (not HIGH) → A, not S."""
+    def test_wide_medium_at_target_is_s_since_3_1(self):
+        """Wide moat + MEDIUM conviction at/below target → S (ruleset 3.1.0).
+
+        HIGH was required until 3.0.0; the model said it 7 times in 293
+        analyses and never on a wide-moat name at a good price, so S could
+        not occur in the crash it exists for."""
         a = assign_tier(make("wide", "MEDIUM", target=100.0, current=95.0))
-        assert a.tier == "A"
+        assert a.tier == "S"
+        assert a.quality_level == "wonderful"
+
+    def test_wide_low_is_still_c(self):
+        a = assign_tier(make("wide", "LOW", target=100.0, current=95.0))
+        assert a.tier == "C"
 
     def test_a_tier_quality_level(self):
         a = assign_tier(make("narrow", "MEDIUM", target=100.0, current=80.0))

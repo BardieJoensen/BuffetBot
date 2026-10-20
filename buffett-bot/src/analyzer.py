@@ -172,6 +172,14 @@ Target Entry Price: $PRICE [fair value minus 20-30% margin of safety]
 
 ## CONVICTION LEVEL
 [HIGH / MEDIUM / LOW] - [One sentence explanation]
+Use this rubric, not a general feeling:
+- HIGH: return on invested capital has exceeded the cost of capital for roughly ten years including \
+at least one recession, the share count is flat or falling, the moat has not been dented by a well-funded \
+entrant in that time, and you can name no plausible event in the next five years that removes the moat.
+- MEDIUM: a durable business with one real weakness (a cyclical end market, a dependence on one product, \
+a competitor gaining share, leverage, or a short public record).
+- LOW: the thesis depends on a turnaround, a regulatory outcome, a commodity price, or a moat you cannot name.
+Skepticism belongs in the RISKS sections; do not express it by withholding HIGH from a business that meets the rubric.
 
 ## INVESTMENT SUMMARY
 [2-3 sentences: what makes this business wonderful (or not), and what would make it a compelling buy]

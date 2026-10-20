@@ -13,7 +13,7 @@ config knob moving (e.g. MARGIN_OF_SAFETY_PCT) is a rule change too.
 
 from __future__ import annotations
 
-RULESET_VERSION = "3.0.0"
+RULESET_VERSION = "3.1.0"
 
 # (version, effective date, what changed). Oldest first.
 RULESET_CHANGELOG: list[tuple[str, str, str]] = [
@@ -29,6 +29,15 @@ RULESET_CHANGELOG: list[tuple[str, str, str]] = [
         "re-analysis never forces a sell); deterministic valuation drives target entry; "
         "moat NONE / LOW conviction never buyable (defense in depth); monthly tier-cohort "
         "validation; Danish lot sizing and single-buy recommendation.",
+    ),
+    (
+        "3.1.0",
+        "2026-10-20",
+        "S tier = WIDE moat with MEDIUM or HIGH conviction at/below target (was HIGH only, which the "
+        "model emitted 7 times in 293 analyses, never on a wide-moat name at a good price); the "
+        "analysis prompt gets an observable rubric for HIGH/MEDIUM/LOW. Also live since 2026-10-19: "
+        "Monday scores the full universe, LLM queues skip names that fail the hard filters, held "
+        "names are news-monitored at any tier, suspect broker reads are not traded on.",
     ),
 ]
 

@@ -31,7 +31,7 @@ LLM Layer (Claude) → Data Services (APIs) → Tier Engine → Output (Briefing
 
 ### 4. **Tier Engine** (`src/tier_engine.py`)
 - Assigns the canonical S/A/B/C tiers: S/A (buy zone), B (watch), C (monitor/pass)
-- S = wide moat + HIGH conviction at/below target; A = qualifying quality at/below target
+- S = wide moat + MEDIUM/HIGH conviction at/below target (ruleset 3.1.0); A = narrow moat + MEDIUM/HIGH at/below target
 - Staged entry suggestions: three tranches for S and two for A
 - Movement tracking: detects new/removed/tier_up/tier_down/approaching changes between runs
 
