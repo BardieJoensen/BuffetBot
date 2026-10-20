@@ -50,6 +50,7 @@ from src.database import DEFAULT_DB_PATH
 # the replay ran.
 PRICES = {
     "claude-haiku-4-5": (1.00, 0.10, 5.00),
+    "claude-haiku-5-5": (0.10, 0.01, 0.50),  # list price 2026-10; cache read taken as 0.1x input
     "deepseek-flash": (0.30, 0.006, 1.20),
     "deepseek-flash (off-peak)": (0.15, 0.003, 0.60),
 }

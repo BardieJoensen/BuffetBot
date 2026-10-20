@@ -358,7 +358,7 @@ class TestThinkingPerModel:
         assert analyzer_mod._thinking_kwargs("claude-sonnet-5-5") == {"thinking": {"type": "between_tools"}}
 
     def test_older_models_still_disable(self):
-        for m in ("claude-sonnet-5", "claude-haiku-4-5", "claude-opus-5"):
+        for m in ("claude-sonnet-5", "claude-haiku-4-5", "claude-haiku-5-5", "claude-opus-5"):
             assert analyzer_mod._thinking_kwargs(m) == {"thinking": {"type": "disabled"}}
 
     def test_models_that_cannot_disable_use_low_effort(self):

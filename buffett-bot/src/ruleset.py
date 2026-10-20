@@ -13,7 +13,7 @@ config knob moving (e.g. MARGIN_OF_SAFETY_PCT) is a rule change too.
 
 from __future__ import annotations
 
-RULESET_VERSION = "3.1.0"
+RULESET_VERSION = "3.1.1"
 
 # (version, effective date, what changed). Oldest first.
 RULESET_CHANGELOG: list[tuple[str, str, str]] = [
@@ -38,6 +38,13 @@ RULESET_CHANGELOG: list[tuple[str, str, str]] = [
         "analysis prompt gets an observable rubric for HIGH/MEDIUM/LOW. Also live since 2026-10-19: "
         "Monday scores the full universe, LLM queues skip names that fail the hard filters, held "
         "names are news-monitored at any tier, suspect broker reads are not traded on.",
+    ),
+    (
+        "3.1.1",
+        "2026-10-20",
+        "Light model (Haiku quick screen, news red-flag check, Friday quick screen) moves from "
+        "Claude Haiku 4.5 to Claude Haiku 5.5. A model change in the gate that decides what "
+        "reaches Sonnet is a rule change; measured after the fact by the model benchmark.",
     ),
 ]
 

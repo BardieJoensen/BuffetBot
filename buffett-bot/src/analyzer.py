@@ -92,6 +92,9 @@ def _thinking_kwargs(model: str) -> dict:
         high or below - the default).
       - Claude Opus 5.5, Fable and Mythos cannot turn thinking off at all;
         omit `thinking` (adaptive) and keep it short with low effort.
+      - Claude Haiku 5.5 accepts {"type": "disabled"} at effort high or
+        below (its default is medium) and rejects budget_tokens and any
+        non-default temperature/top_p/top_k, none of which these routes send.
       - Everything older (Sonnet 5, Opus 5, Haiku 4.5) still accepts
         {"type": "disabled"}.
     """
@@ -100,6 +103,8 @@ def _thinking_kwargs(model: str) -> dict:
         return {"thinking": {"type": "between_tools"}}
     if name.startswith(("claude-opus-5-5", "claude-fable", "claude-mythos")):
         return {"output_config": {"effort": "low"}}
+    if name.startswith("claude-haiku-5-5"):
+        return {"thinking": {"type": "disabled"}}
     return {"thinking": {"type": "disabled"}}
 
 
