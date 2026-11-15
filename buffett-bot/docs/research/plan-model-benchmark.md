@@ -53,7 +53,7 @@ Light role: Claude Haiku 5.5 (incumbent since 3.1.1), Claude Haiku 4.5 (previous
 | `src/database.py` | `llm_calls` table (new) + `log_llm_call(...)` | Audit ID1: model id, prompt hash, parser version, raw response, usage, latency, for every production call too. The benchmark writes here with `source="benchmark"`. Prerequisite for any later re-parse or re-score. |
 | `src/analyzer.py` | `_thinking_kwargs` | One explicit branch per candidate model name. |
 | `src/analyzer.py` | `CompanyAnalyzer.__init__` | Accept an injected client (the replay script already assigns `.client`; make it a constructor argument). |
-| `config/benchmark_models.example.json` (new) | | `[{"role": "deep", "name": "claude-sonnet-5-5"}, {"role": "deep", "name": "deepseek-v4.1", "base_url": "...", "api_key_env": "DEEPSEEK_API_KEY"}, ...]`. |
+| `config/benchmark_models.example.json` (new) | | `[{"role": "deep", "name": "claude-sonnet-5-5"}, {"role": "deep", "name": "deepseek-v4.1", "base_url": "..."}, ...]`. An entry for another vendor also carries `api_key_env`: the name of the environment variable that holds its key (`DEEPSEEK_API_KEY` for DeepSeek). |
 | `docs/research/model-benchmark-<date>.md` | | The report: one table per metric, the grading-sheet results, the decision against the rule above, and the trial ledger (every configuration run). |
 | `tests/test_benchmark_models.py` (new) | | Freeze is deterministic for a seed; scoring on synthetic results; grading sheet hides names; ceiling stops the run. |
 
