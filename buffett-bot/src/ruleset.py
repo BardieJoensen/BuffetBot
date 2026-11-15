@@ -41,10 +41,12 @@ RULESET_CHANGELOG: list[tuple[str, str, str]] = [
     ),
     (
         "3.1.1",
-        "2026-10-20",
+        "2026-11-15",
         "Light model (Haiku quick screen, news red-flag check, Friday quick screen) moves from "
         "Claude Haiku 4.5 to Claude Haiku 5.5. A model change in the gate that decides what "
-        "reaches Sonnet is a rule change; measured after the fact by the model benchmark.",
+        "reaches Sonnet is a rule change; measured after the fact by the model benchmark. "
+        "Committed 2026-10-20, live 2026-11-15: no image was built in between, so decisions "
+        "up to then ran on 3.1.0.",
     ),
 ]
 
