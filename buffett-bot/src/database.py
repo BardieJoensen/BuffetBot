@@ -1991,11 +1991,29 @@ class Database:
             return True
 
     def count_decisions_since(self, account_id: Optional[str], since: str, action: Optional[str] = None) -> int:
-        """Decisions journaled for one account after `since` (ISO timestamp),
-        optionally of one action. Used by the snapshot plausibility gate to
-        tell a real position change from a truncated broker read."""
-        sql = "SELECT COUNT(*) FROM decision_log WHERE decided_at > ?"
-        params: list = [since]
+        """Journal rows for one account that can explain a change at the broker
+        after `since` (ISO timestamp), optionally of one action. Used by the
+        snapshot plausibility gate to tell a real position change from a
+        truncated broker read.
+
+        A row counts when it was journaled after `since`, when its order filled
+        after `since`, or when its order is still open at the broker. The last
+        two cover an order that executes after the snapshot that follows its
+        decision: a sell queued after Friday's close is journaled on Friday and
+        fills on Monday, by which time the weekend snapshots are the last
+        trusted ones (2026-11-09: four such sells got six daily snapshots
+        flagged and Friday's run refused)."""
+        terminal = self.TERMINAL_ORDER_STATUSES
+        placeholders = ",".join("?" for _ in terminal)
+        sql = f"""
+            SELECT COUNT(*) FROM decision_log
+            WHERE (
+                decided_at > ?
+                OR filled_at > ?
+                OR (order_id IS NOT NULL AND order_status != 'legacy' AND order_status NOT IN ({placeholders}))
+            )
+        """  # nosec B608 -- placeholders are generated from a fixed tuple
+        params: list = [since, since, *terminal]
         if account_id:
             sql += " AND (account_id = ? OR account_id IS NULL)"
             params.append(account_id)

@@ -403,7 +403,10 @@ def _snapshot_anomaly(db, account_id: str, state, positions) -> "str | None":
     book and re-bought names already held (audit E5). A position that
     vanished with no sell in the journal, or an equity move above
     SNAPSHOT_MAX_UNEXPLAINED_EQUITY_MOVE with no order at all, is a bad read
-    until proven otherwise. Returns the reason, or None when plausible.
+    until proven otherwise. An order explains the change when it was
+    journaled or filled after the last trusted snapshot, or is still open
+    (see Database.count_decisions_since). Returns the reason, or None when
+    plausible.
     """
     prev = db.get_latest_snapshots(account_id, limit=1)
     if not prev:
@@ -414,12 +417,18 @@ def _snapshot_anomaly(db, account_id: str, state, positions) -> "str | None":
     now_symbols = {p.symbol for p in positions}
     missing = sorted(prev_symbols - now_symbols)
     if missing and db.count_decisions_since(account_id, since, action="sell") == 0:
-        return f"{len(missing)} position(s) missing with no journaled sell since {since}: {', '.join(missing)}"
+        return (
+            f"{len(missing)} position(s) missing with no sell journaled, filled or open "
+            f"since {since}: {', '.join(missing)}"
+        )
     prev_equity = prev.get("equity") or 0.0
     if prev_equity > 0 and state.equity > 0:
         move = abs(state.equity / prev_equity - 1.0)
         if move > SNAPSHOT_MAX_UNEXPLAINED_EQUITY_MOVE and db.count_decisions_since(account_id, since) == 0:
-            return f"equity moved {move:+.0%} ({prev_equity:,.0f} → {state.equity:,.0f}) with no journaled order"
+            return (
+                f"equity moved {move:+.0%} ({prev_equity:,.0f} → {state.equity:,.0f}) "
+                f"with no order journaled, filled or open since {since}"
+            )
     return None
 
 

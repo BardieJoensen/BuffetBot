@@ -294,6 +294,61 @@ class TestSnapshotAnomaly:
         db.log_decision("AIZ", "sell", account_id="alpaca_paper", order_status="submitted")
         assert _snapshot_anomaly(db, "alpaca_paper", _state(19_500.0), [_pos("AGM")]) is None
 
+    def _old_sell(self, db, symbol, *, status, decided_days_ago=3, filled_days_ago=None):
+        """A sell journaled before the last trusted snapshot (seeded 1 day ago)."""
+        decision_id = db.log_decision(
+            symbol, "sell", account_id="alpaca_paper", order_id=f"order-{symbol}", order_status=status
+        )
+        stamp = "%Y-%m-%d %H:%M:%S"
+        decided = (datetime.now() - timedelta(days=decided_days_ago)).strftime(stamp)
+        filled = None
+        if filled_days_ago is not None:
+            filled = (datetime.now() - timedelta(days=filled_days_ago)).strftime(stamp)
+        with _open(db.path) as conn:
+            conn.execute(
+                "UPDATE decision_log SET decided_at = ?, filled_at = ? WHERE id = ?",
+                (decided, filled, decision_id),
+            )
+
+    def test_sell_decided_before_the_last_snapshot_and_filled_after_it_is_fine(self, db):
+        """Friday-evening sell, weekend snapshots, Monday fill (2026-11-09)."""
+        from scripts.scheduler import _snapshot_anomaly
+
+        self._seed(db, ["AGM", "AIZ"], equity=20_000.0)
+        self._old_sell(db, "AIZ", status="filled", filled_days_ago=0)
+        assert _snapshot_anomaly(db, "alpaca_paper", _state(19_500.0), [_pos("AGM")]) is None
+
+    def test_sell_decided_before_the_last_snapshot_and_still_open_is_fine(self, db):
+        """The snapshot can run before the fill is reconciled into the journal."""
+        from scripts.scheduler import _snapshot_anomaly
+
+        self._seed(db, ["AGM", "AIZ"], equity=20_000.0)
+        self._old_sell(db, "AIZ", status="submitted")
+        assert _snapshot_anomaly(db, "alpaca_paper", _state(19_500.0), [_pos("AGM")]) is None
+
+    def test_sell_filled_before_the_last_snapshot_does_not_explain_a_vanished_position(self, db):
+        from scripts.scheduler import _snapshot_anomaly
+
+        self._seed(db, ["AGM", "AIZ"], equity=20_000.0)
+        self._old_sell(db, "CCI", status="filled", filled_days_ago=2)
+        reason = _snapshot_anomaly(db, "alpaca_paper", _state(19_500.0), [_pos("AGM")])
+        assert reason and "AIZ" in reason
+
+    def test_cancelled_old_sell_does_not_explain_a_vanished_position(self, db):
+        from scripts.scheduler import _snapshot_anomaly
+
+        self._seed(db, ["AGM", "AIZ"], equity=20_000.0)
+        self._old_sell(db, "AIZ", status="canceled")
+        reason = _snapshot_anomaly(db, "alpaca_paper", _state(19_500.0), [_pos("AGM")])
+        assert reason and "AIZ" in reason
+
+    def test_equity_jump_explained_by_a_late_fill_is_fine(self, db):
+        from scripts.scheduler import _snapshot_anomaly
+
+        self._seed(db, ["AGM"], equity=100_000.0)
+        self._old_sell(db, "AGM", status="filled", filled_days_ago=0)
+        assert _snapshot_anomaly(db, "alpaca_paper", _state(58_000.0), [_pos("AGM")]) is None
+
     def test_equity_jump_without_orders_is_suspect(self, db):
         from scripts.scheduler import _snapshot_anomaly
 
